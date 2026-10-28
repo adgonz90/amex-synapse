@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2020 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    Parent POM for applications built with Synapse. Brings Spring Boot (via spring-boot-starter-parent),
+    the Synapse BOM and Synapse's build conventions for consumer projects.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!-- Keep in sync with spring-boot.version in the root pom.xml. -->
+        <version>4.1.2</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.americanexpress.synapse</groupId>
+    <artifactId>synapse-parent</artifactId>
+    <version>2.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Parent POM for applications built with Synapse.</description>
+    <url>https://github.com/americanexpress/synapse</url>
+
+    <licenses>
+        <license>
+            <name>The Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>American Express Travel Related Services, Inc.</name>
+            <organizationUrl>https://americanexpress.com</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <url>https://github.com/americanexpress/synapse</url>
+        <connection>scm:git:https://github.com/americanexpress/synapse.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/americanexpress/synapse.git</developerConnection>
+    </scm>
+
+    <properties>
+        <!-- Minimum Java for Synapse applications; consumers may raise it. -->
+        <java.version>21</java.version>
+        <synapse.version>2.0.0-SNAPSHOT</synapse.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-bom</artifactId>
+                <version>${synapse.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <plugins>
+            <!-- Lets `./mvnw spotless:apply|check` run from the repo root. Not inherited by consumer projects. -->
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>3.10.4</version>
+                <inherited>false</inherited>
+            </plugin>
+        </plugins>
+    </build>
+</project>

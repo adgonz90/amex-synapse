@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
     Copyright 2020 American Express Travel Related Services Company, Inc.
 
@@ -11,20 +12,31 @@
     or implied. See the License for the specific language governing permissions and limitations under
     the License.
 -->
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<!--
+    Root aggregator and internal build parent for Synapse's own modules.
+    Consumers never inherit from this POM: they use synapse-parent or import synapse-bom.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>io.americanexpress.synapse</groupId>
     <artifactId>synapse</artifactId>
-    <name>${project.groupId}:${project.artifactId}</name>
+    <version>2.0.0-SNAPSHOT</version>
     <packaging>pom</packaging>
-    <version>0.4.30-SNAPSHOT</version>
 
+    <name>${project.groupId}:${project.artifactId}</name>
     <description>
-        Synapse is a set of lightweight foundational framework modules for rapid development built-in with enterprise
-        grade maturity and quality.
+        Synapse is a set of Spring Boot starters that expose protocol-agnostic service operations over REST, gRPC,
+        GraphQL and cloud functions, with prescriptive conventions for clients, data and messaging.
     </description>
     <url>https://github.com/americanexpress/synapse</url>
+
+    <licenses>
+        <license>
+            <name>The Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
 
     <developers>
         <developer>
@@ -37,7 +49,6 @@
         <url>https://github.com/americanexpress/synapse</url>
         <connection>scm:git:https://github.com/americanexpress/synapse.git</connection>
         <developerConnection>scm:git:ssh://git@github.com/americanexpress/synapse.git</developerConnection>
-        <tag>synapse-0.4.18</tag>
     </scm>
 
     <issueManagement>
@@ -45,1331 +56,250 @@
         <url>https://github.com/americanexpress/synapse/issues</url>
     </issueManagement>
 
-    <licenses>
-        <license>
-            <name>The Apache License, Version 2.0</name>
-            <url>./LICENSE</url>
-        </license>
-    </licenses>
-
-    <properties>
-        <!--Java-->
-        <java.version>21</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
-        <maven.compiler.plugin.version>3.15.0</maven.compiler.plugin.version>
-
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-
-        <!--Kotlin-->
-        <kotlin.version>2.3.20</kotlin.version>
-
-        <!--Spring Versions-->
-        <spring-boot-framework.version>3.5.16</spring-boot-framework.version>
-        <spring-cloud-framework.version>2025.0.3</spring-cloud-framework.version>
-
-        <!--Springdoc-->
-        <springdoc.version>2.8.17</springdoc.version>
-
-        <!--Swagger-->
-        <swagger.version>2.2.49</swagger.version>
-
-        <!-- GraphQL -->
-        <spring-boot-graphql.version>15.1.0</spring-boot-graphql.version>
-        <spring-boot-graphiql.version>11.1.0</spring-boot-graphiql.version>
-
-        <!--Mockito Versions-->
-        <mockito.version>5.23.0</mockito.version>
-
-        <!--JUnit Versions-->
-        <junit.version>5.14.4</junit.version>
-
-        <!--Logging-->
-        <log4j.version>2.25.5</log4j.version>
-        <slf4j.version>2.0.17</slf4j.version>
-
-        <!--Db2-->
-        <db2-db2jcc4.version>11.5</db2-db2jcc4.version>
-        <db2-jcc.version>11.5.0.0</db2-jcc.version>
-    </properties>
-
     <modules>
-        <module>api</module>
-        <module>archetype</module>
-        <module>framework</module>
-        <module>service</module>
-        <module>function</module>
-        <module>client</module>
-        <module>data</module>
-        <module>publisher</module>
-        <module>subscriber</module>
-        <module>utility</module>
+        <module>bom/synapse-bom</module>
+        <module>parent/synapse-parent</module>
+        <module>core/synapse-core</module>
     </modules>
 
-    <!--Dependency Management-->
+    <properties>
+        <!-- Java: built with JDK 25, bytecode and API level 21 (see specs/v2/SPEC.md) -->
+        <java.release>21</java.release>
+        <build.java.version>[25,)</build.java.version>
+        <maven.compiler.release>${java.release}</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <project.build.outputTimestamp>2026-10-27T00:00:00Z</project.build.outputTimestamp>
+
+        <!-- Platform. Keep in sync with the parent version in parent/synapse-parent/pom.xml. -->
+        <spring-boot.version>4.1.2</spring-boot.version>
+
+        <!-- Static analysis -->
+        <error-prone.version>2.51.0</error-prone.version>
+        <nullaway.version>0.14.3</nullaway.version>
+
+        <!--
+            Eclipse JDT formatter engine used by Spotless. Pinned so a Spotless upgrade can't silently reformat the
+            codebase; bump deliberately, run ./mvnw spotless:apply and commit the result separately.
+        -->
+        <eclipse-formatter.version>4.41</eclipse-formatter.version>
+
+        <!--
+            Test quality gates (specs/v2/SPEC.md, Quality gates):
+            - per-module coverage floor (JaCoCo, unit + integration tests merged)
+            - 90% coverage of changed lines per pull request (diff-cover in CI)
+            - mutation score for modules that opt in to PIT (nightly)
+        -->
+        <jacoco.line.minimum>0.80</jacoco.line.minimum>
+        <jacoco.branch.minimum>0.70</jacoco.branch.minimum>
+        <pitest.skip>true</pitest.skip>
+        <pitest.mutation.threshold>70</pitest.mutation.threshold>
+        <pitest-maven.version>1.30.1</pitest-maven.version>
+        <pitest-junit5-plugin.version>1.2.3</pitest-junit5-plugin.version>
+
+        <!-- Plugins -->
+        <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
+        <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
+        <maven-deploy-plugin.version>3.2.0</maven-deploy-plugin.version>
+        <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
+        <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
+        <maven-failsafe-plugin.version>3.6.1</maven-failsafe-plugin.version>
+        <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
+        <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
+        <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
+        <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
+        <maven-resources-plugin.version>3.5.0</maven-resources-plugin.version>
+        <maven-site-plugin.version>3.22.0</maven-site-plugin.version>
+        <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
+        <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
+        <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
+        <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
+        <jacoco-maven-plugin.version>0.8.16</jacoco-maven-plugin.version>
+        <spotless-maven-plugin.version>3.10.4</spotless-maven-plugin.version>
+    </properties>
+
     <dependencyManagement>
         <dependencies>
-            <!--Synapse Dependencies-->
-            <!-- Archetype -->
+            <!-- Synapse modules. Mirrors bom/synapse-bom (a reactor BOM can't be imported by its own build). -->
             <dependency>
                 <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-graphql</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-delete</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-get</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-post</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-put</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-reactive</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-reactive-delete</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-reactive-get</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-reactive-post</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-client-rest-reactive-put</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-data-postgres</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-service-rest-delete</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-service-rest-post</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-service-rest-get</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-service-rest-put</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-service-rest-reactive-get</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-service-rest-reactive-post</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-archetype-service-rest-reactive-put</artifactId>
+                <artifactId>synapse-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
-            <!--Framework-->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-framework-logging</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-framework-exception</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-framework-test</artifactId>
-                <version>${project.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-framework-api-docs</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!-- Api -->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-api-rest-imperative</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-api-rest-reactive</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!--Service-->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-service-graphql</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-service-imperative</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-service-reactive</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-service-reactive-rest</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-service-rest</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-service-test</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!--Function-->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-function</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!--Client-->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-client-graphql</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-client-rest</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-client-test</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-client-soap</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!--Data-->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-cassandra</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-couchbase</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-db2</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-jdbc</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-jpa</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-mongodb</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-mssql</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-mysql</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-oracle</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-postgres</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-data-redis</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!--Utility-->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-utilities-common</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-utility-cryptography</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-utility-date</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-utility-number</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-utility-telephone</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!-- Publisher -->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-publisher-kafka</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!-- Subscriber -->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>synapse-subscriber-kafka</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!-- Client Samples -->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>client-samples</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-client-graphql-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-client-reactive-football</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-client-reactive-weather</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-client-weather</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!-- Data Samples -->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>data-samples</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-cassandra-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-cassandra-reactive</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-mongodb-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-db2-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-mongodb-reactive</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-mssql-reactive-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-mysql-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-mysql-reactive-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-oracle-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-oracle-reactive-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-oracle-reactive-cp-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-postgres-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-data-redis-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!-- Function Samples -->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>function-samples</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-function-book-aws</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-function-greeter-aws</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-function-greeter-gcp</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-function-greeting</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-function-rest-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!-- Service Samples -->
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>service-samples</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-db2-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-graphql-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-imperative-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-cassandra-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-mongodb-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-mssql-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-mysql-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-oracle-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-oracle-cp-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-rest-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-reactive-weather-client</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-rest-cassandra-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-rest-mysql-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-rest-native-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-rest-oracle-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.americanexpress.synapse</groupId>
-                <artifactId>sample-service-rest-postgres-book</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <!--External Dependencies-->
-            <!--Temporary For Vulnerability Fix-->
-            <!-- 20 CVEs across netty-codec-http/http2/stomp/haproxy/xml/redis/dns/compression and
-                 netty-handler-ssl-ocsp (memory exhaustion, CR/LF injection, zip bomb, OCSP cert
-                 validation) - Fixed in 4.1.136.Final, added 2026-07-27.
-                 CVE-2026-75595 (Critical) netty-handler, CVE-2026-75596 (Moderate) netty-handler,
-                 CVE-2026-59903 (Moderate) netty-codec-http - Fixed in 4.1.137.Final; pinned to
-                 4.1.138.Final, updated 2026-09-29.
-                 Spring Boot 3.5.16 still manages netty 4.1.135.Final. Stay on the 4.1.x line
-                 that Boot/reactor-netty are tested against - do NOT move to 4.2.x here.
-                 TODO: Remove this override when spring-boot-dependencies includes netty >= 4.1.137.Final
-                 Check: mvn dependency:tree | grep io.netty -->
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-bom</artifactId>
-                <version>4.1.138.Final</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-            <!-- CVE-2026-55956 (Moderate) default servlet security constraints ignored method, plus
-                 CVE-2026-59084, CVE-2026-59083, CVE-2026-55955, CVE-2026-55276, CVE-2026-53434,
-                 CVE-2026-53404, CVE-2026-50229 (Low) - Fixed in 10.1.57, added 2026-07-27.
-                 CVE-2026-65905, CVE-2026-65182, CVE-2026-68525 (Critical) - Fixed in 10.1.58;
-                 pinned to 10.1.60, updated 2026-09-29.
-                 Spring Boot 3.5.16 still manages tomcat 10.1.55. All three embed artifacts are
-                 pinned together so the Tomcat version stays internally consistent.
-                 TODO: Remove this override when spring-boot-dependencies includes tomcat >= 10.1.58
-                 Check: mvn dependency:tree | grep tomcat-embed -->
-            <dependency>
-                <groupId>org.apache.tomcat.embed</groupId>
-                <artifactId>tomcat-embed-core</artifactId>
-                <version>10.1.60</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.tomcat.embed</groupId>
-                <artifactId>tomcat-embed-el</artifactId>
-                <version>10.1.60</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.tomcat.embed</groupId>
-                <artifactId>tomcat-embed-websocket</artifactId>
-                <version>10.1.60</version>
-            </dependency>
-            <!-- CVE-2025-48924 (High/7.5) - Fixed in 3.18.0; pinned to 3.20.0, added 2025-07-11
-                 TODO: Remove this override when spring-boot-dependencies includes commons-lang3 >= 3.18.0
-                 Check: mvn dependency:tree | grep commons-lang3 -->
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-lang3</artifactId>
-                <version>3.20.0</version>
-            </dependency>
-            <!-- CVE-2024-29131 (High/7.3) - Fixed in 2.10.1, added 2026-02-11
-                 TODO: Remove this override when spring-boot-dependencies includes commons-configuration2 >= 2.10.1
-                 Check: mvn dependency:tree | grep commons-configuration2 -->
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-configuration2</artifactId>
-                <version>2.14.0</version>
-            </dependency>
-            <!-- CVE-2025-48976 (High/7.5) - Fixed in 1.6.0, added 2026-02-11
-                 TODO: Remove this override when spring-boot-dependencies includes commons-fileupload >= 1.6.0
-                 Check: mvn dependency:tree | grep commons-fileupload -->
-            <dependency>
-                <groupId>commons-fileupload</groupId>
-                <artifactId>commons-fileupload</artifactId>
-                <version>1.6.0</version>
-            </dependency>
-            <!-- CVE-2026-59889, CVE-2026-54515, GHSA-mhm7-754m-9p8w (Moderate) - @JsonView and
-                 @JsonIgnoreProperties bypasses on deserialization - Fixed in 2.21.5, added 2026-07-27.
-                 CVE-2026-68497 (High), CVE-2026-83557, CVE-2026-19032 (Moderate) jackson-databind -
-                 Fixed in 2.21.6; pinned to 2.21.7, updated 2026-09-29.
-                 Spring Boot 3.5.16 manages jackson-bom 2.21.4. Stays on the 2.21.x line.
-                 NOTE: this import must remain ABOVE the spring-boot-dependencies import or it is a no-op.
-                 TODO: Remove this override when spring-boot-dependencies includes jackson-bom >= 2.21.6
-                 Check: mvn dependency:tree | grep jackson-databind -->
-            <dependency>
-                <groupId>com.fasterxml.jackson</groupId>
-                <artifactId>jackson-bom</artifactId>
-                <version>2.21.7</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-            <!-- CVE-2026-54291 (High) - silent channel-binding authentication downgrade - Fixed in
-                 42.7.12; pinned to 42.7.13, added 2026-07-27.
-                 Spring Boot 3.5.15/3.5.16 manage postgresql 42.7.11.
-                 TODO: Remove this override when spring-boot-dependencies includes postgresql >= 42.7.12
-                 Check: mvn dependency:tree | grep org.postgresql -->
-            <dependency>
-                <groupId>org.postgresql</groupId>
-                <artifactId>postgresql</artifactId>
-                <version>42.7.13</version>
-            </dependency>
-            <!-- CVE-2026-59949 (Moderate) - native XXHash can crash the JVM on invalid byte array
-                 ranges - Fixed in 1.11.1, added 2026-07-27. Pulled in transitively by
-                 kafka-clients 3.9.2 via spring-kafka; Spring Boot manages kafka, not lz4.
-                 TODO: Remove this override when kafka-clients ships lz4-java >= 1.11.1
-                 Check: mvn dependency:tree | grep lz4 -->
-            <dependency>
-                <groupId>at.yawk.lz4</groupId>
-                <artifactId>lz4-java</artifactId>
-                <version>1.11.1</version>
-            </dependency>
-            <!-- CVE-2024-26308, CVE-2024-25710 (Moderate) - Fixed in 1.26.0; pinned to 1.28.0,
-                 added 2026-07-27. Only the test-scoped path was vulnerable: testcontainers 1.21.4
-                 pulls 1.24.0 while spring-boot-loader-tools already pulls 1.27.1, so this pin also
-                 removes that version split.
-                 TODO: Remove this override when testcontainers ships commons-compress >= 1.26.0
-                 Check: mvn dependency:tree | grep commons-compress -->
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-compress</artifactId>
-                <version>1.28.0</version>
-            </dependency>
-            <!-- CVE-2026-54399 (High) httpcore5, CVE-2026-54428 (High) httpcore5-h2 - Fixed in 5.4.3;
-                 CVE-2026-64607 (Moderate) httpclient5 - Fixed in 5.6.3. Pinned to httpclient5 5.6.4 /
-                 httpcore5 5.4.4, added 2026-09-29. Used by synapse-client-rest.
-                 Spring Boot 3.5.16 manages httpclient5 5.5.2 / httpcore5 5.3.6, and httpclient5 5.6.x
-                 requires the httpcore5 5.4.x line, so all three are pinned together.
-                 TODO: Remove this override when spring-boot-dependencies includes httpclient5 >= 5.6.3
-                       and httpcore5 >= 5.4.3
-                 Check: mvn dependency:tree | grep httpcomponents -->
-            <dependency>
-                <groupId>org.apache.httpcomponents.client5</groupId>
-                <artifactId>httpclient5</artifactId>
-                <version>5.6.4</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5</artifactId>
-                <version>5.4.4</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.httpcomponents.core5</groupId>
-                <artifactId>httpcore5-h2</artifactId>
-                <version>5.4.4</version>
-            </dependency>
-            <!--./END Temporary For Vulnerability Fix-->
-            <dependency>
-                <groupId>com.github.stefanbirkner</groupId>
-                <artifactId>system-rules</artifactId>
-                <!--                <scope>compile</scope>&lt;!&ndash; IN THIS CASE COMPILES NEEDS TO BE OVERRIDDEN BECAUSE THE DEFAULT IS TEST&ndash;&gt;-->
-                <version>1.19.0</version>
-            </dependency>
-            <dependency>
-                <groupId>org.projectlombok</groupId>
-                <artifactId>lombok</artifactId>
-                <version>1.18.46</version>
-                <scope>provided</scope>
-            </dependency>
-
-            <!--Logging BOM-->
-            <!-- MUST stay ABOVE the spring-boot-dependencies import below. Maven resolves
-                 dependencyManagement first-declaration-wins, so if spring-boot-dependencies is
-                 imported first its log4j2.version (2.24.3) silently wins and ${log4j.version} has
-                 no effect at all. Verify with: mvn dependency:tree | grep log4j-core -->
-            <dependency>
-                <groupId>org.apache.logging.log4j</groupId>
-                <artifactId>log4j-bom</artifactId>
-                <version>${log4j.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!--Couchbase SDK BOM-->
-            <!-- MUST stay ABOVE the spring-boot-dependencies import below. Maven resolves
-                 dependencyManagement first-declaration-wins. Spring Boot manages
-                 com.couchbase.client:java-client (couchbase-client.version, 3.8.3 as of Boot
-                 3.5.16) but does NOT manage core-io. So with this BOM imported after Boot's,
-                 Boot won for java-client while this BOM won for core-io, splitting the SDK
-                 across java-client 3.8.3 + core-io 3.11.2. The whole com.couchbase.client
-                 family must move as ONE set - that is what this BOM is for (every artifact in
-                 it shares ${revision}).
-                 Verify with: mvn dependency:tree | grep com.couchbase.client -->
-            <dependency>
-                <groupId>com.couchbase.client</groupId>
-                <artifactId>couchbase-client-bom</artifactId>
-                <version>3.11.2</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!--Spring Dependencies-->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
-                <version>${spring-boot-framework.version}</version>
+                <version>${spring-boot.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.springframework.cloud</groupId>
-                <artifactId>spring-cloud-dependencies</artifactId>
-                <version>${spring-cloud-framework.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-starter-test</artifactId>
-                <version>${spring-boot-framework.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-starter</artifactId>
-                <version>${spring-boot-framework.version}</version>
-                <exclusions>
-                    <exclusion>
-                        <artifactId>spring-boot-starter-logging</artifactId>
-                        <groupId>org.springframework.boot</groupId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-starter-logging</artifactId>
-                <version>${spring-boot-framework.version}</version>
-                <scope>provided</scope> <!-- Exclude Spring Logging in favor of Log4j2 -->
-            </dependency>
-
-            <!--Logging-->
-            <dependency>
-                <groupId>com.lmax</groupId>
-                <artifactId>disruptor</artifactId>
-                <version>4.0.0</version>
-            </dependency>
-
-            <!--Guava-->
-            <dependency>
-                <groupId>com.google.guava</groupId>
-                <artifactId>guava</artifactId>
-                <version>33.6.0-jre</version>
-            </dependency>
-
-            <!--GraphQL-->
-            <dependency>
-                <groupId>com.graphql-java-kickstart</groupId>
-                <artifactId>graphql-java-tools</artifactId>
-                <version>14.0.1</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-core</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.module</groupId>
-                        <artifactId>jackson-module-kotlin</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.datatype</groupId>
-                        <artifactId>jackson-datatype-jdk8</artifactId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-
-            <dependency>
-                <groupId>com.graphql-java-kickstart</groupId>
-                <artifactId>graphql-spring-boot-starter</artifactId>
-                <version>${spring-boot-graphql.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.graphql-java-kickstart</groupId>
-                <artifactId>graphiql-spring-boot-starter</artifactId>
-                <version>${spring-boot-graphiql.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.graphql-java-kickstart</groupId>
-                <artifactId>voyager-spring-boot-starter</artifactId>
-                <version>${spring-boot-graphiql.version}</version>
-            </dependency>
-
-            <!--Apache Dependencies-->
-            <dependency>
-                <groupId>commons-beanutils</groupId>
-                <artifactId>commons-beanutils</artifactId>
-                <version>1.11.0</version>
-            </dependency>
-            <dependency>
-                <groupId>commons-io</groupId>
-                <artifactId>commons-io</artifactId>
-                <version>2.20.0</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-collections4</artifactId>
-                <version>4.5.0</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-text</artifactId>
-                <version>1.15.0</version>
-            </dependency>
-
-            <!--EhCache-->
-            <dependency>
-                <groupId>org.ehcache</groupId>
-                <artifactId>ehcache</artifactId>
-                <version>3.12.0</version>
-            </dependency>
-
-            <!--Jasypt-->
-            <dependency>
-                <groupId>org.jasypt</groupId>
-                <artifactId>jasypt</artifactId>
-                <version>1.9.3</version>
-            </dependency>
-
-            <dependency>
-                <groupId>com.openpojo</groupId>
-                <artifactId>openpojo</artifactId>
-                <version>0.9.1</version>
-            </dependency>
-            <dependency>
-                <groupId>com.obsidiandynamics.pojotester</groupId>
-                <artifactId>core</artifactId>
-                <version>0.9.0</version>
-            </dependency>
-            <dependency>
-                <groupId>nl.jqno.equalsverifier</groupId>
-                <artifactId>equalsverifier</artifactId>
-                <version>3.15.8</version>
-            </dependency>
-
-            <dependency>
-                <groupId>com.google.http-client</groupId>
-                <artifactId>google-http-client</artifactId>
-                <version>1.47.1</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.mockito</groupId>
-                <artifactId>mockito-bom</artifactId>
-                <version>${mockito.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <dependency>
-                <groupId>org.junit</groupId>
-                <artifactId>junit-bom</artifactId>
-                <version>${junit.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!--Slf4j-->
-            <dependency>
-                <groupId>org.slf4j</groupId>
-                <artifactId>slf4j-api</artifactId>
-                <version>${slf4j.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.slf4j</groupId>
-                <artifactId>slf4j-ext</artifactId>
-                <version>${slf4j.version}</version>
-            </dependency>
-
-
-            <!--Springdoc-->
-            <dependency>
-                <groupId>org.springdoc</groupId>
-                <artifactId>springdoc-openapi-bom</artifactId>
-                <version>${springdoc.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!--Swagger Annotations-->
-            <dependency>
-                <groupId>io.swagger.core.v3</groupId>
-                <artifactId>swagger-annotations-jakarta</artifactId>
-                <version>${swagger.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>io.swagger.core.v3</groupId>
-                <artifactId>swagger-models-jakarta</artifactId>
-                <version>${swagger.version}</version>
-            </dependency>
-
-            <!--Kotlin-->
-            <dependency>
-                <groupId>org.jetbrains.kotlin</groupId>
-                <artifactId>kotlin-bom</artifactId>
-                <version>${kotlin.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <dependency>
-                <groupId>io.asyncer</groupId>
-                <artifactId>r2dbc-mysql</artifactId>
-                <version>1.4.2</version>
-            </dependency>
-
-            <!--AWS-->
-            <dependency>
-                <groupId>com.amazonaws</groupId>
-                <artifactId>aws-lambda-java-events</artifactId>
-                <version>3.16.1</version>
-                <scope>provided</scope>
-            </dependency>
-            <dependency>
-                <groupId>com.amazonaws</groupId>
-                <artifactId>aws-lambda-java-core</artifactId>
-                <version>1.4.0</version>
-                <scope>provided</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
 
-    <!--Plugin Management-->
     <build>
         <pluginManagement>
             <plugins>
-                <!-- Sonatype Central Publishing Plugin -->
-                <plugin>
-                    <groupId>org.sonatype.central</groupId>
-                    <artifactId>central-publishing-maven-plugin</artifactId>
-                    <version>0.10.0</version>
-                    <extensions>true</extensions>
-                    <configuration>
-                        <publishingServerId>central</publishingServerId>
-                        <autoPublish>true</autoPublish>
-                    </configuration>
-                </plugin>
-
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-javadoc-plugin</artifactId>
-                    <version>3.12.0</version>
-                    <executions>
-                        <execution>
-                            <id>attach-javadocs</id>
-                            <goals>
-                                <goal>jar</goal>
-                            </goals>
-                        </execution>
-                    </executions>
+                    <artifactId>maven-clean-plugin</artifactId>
+                    <version>${maven-clean-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>${maven-resources-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
                     <configuration>
-                        <!-- TODO: Resolve JavaDoc errors and remove this -->
-                        <failOnError>false</failOnError>
-                        <failOnWarnings>false</failOnWarnings>
-                        <doclint>none</doclint>
+                        <release>${java.release}</release>
+                        <parameters>true</parameters>
+                        <showWarnings>true</showWarnings>
+                        <annotationProcessorPathsUseDepMgmt>true</annotationProcessorPathsUseDepMgmt>
+                        <compilerArgs>
+                            <arg>-Xlint:all,-processing,-serial</arg>
+                            <arg>-XDcompilePolicy=simple</arg>
+                            <arg>--should-stop=ifError=FLOW</arg>
+                            <arg>-Xplugin:ErrorProne -XepDisableWarningsInGeneratedCode -Xep:NullAway:ERROR -XepOpt:NullAway:JSpecifyMode=true -XepOpt:NullAway:OnlyNullMarked=true</arg>
+                        </compilerArgs>
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>com.google.errorprone</groupId>
+                                <artifactId>error_prone_core</artifactId>
+                                <version>${error-prone.version}</version>
+                            </path>
+                            <path>
+                                <groupId>com.uber.nullaway</groupId>
+                                <artifactId>nullaway</artifactId>
+                                <version>${nullaway.version}</version>
+                            </path>
+                            <path>
+                                <groupId>org.springframework.boot</groupId>
+                                <artifactId>spring-boot-configuration-processor</artifactId>
+                            </path>
+                        </annotationProcessorPaths>
                     </configuration>
+                </plugin>
+                <!--
+                    Tests: Mockito is attached as a -javaagent (dynamic agent loading is deprecated on JDK 21+).
+                    Pass -Djvm=<path to java> to run tests on another JDK (CI uses this for JDK 21).
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                    <configuration>
+                        <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${maven-failsafe-plugin.version}</version>
+                    <configuration>
+                        <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>${maven-dependency-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>${maven-jar-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-install-plugin</artifactId>
+                    <version>${maven-install-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-deploy-plugin</artifactId>
+                    <version>${maven-deploy-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-site-plugin</artifactId>
+                    <version>${maven-site-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-source-plugin</artifactId>
-                    <version>3.4.0</version>
-                    <executions>
-                        <execution>
-                            <id>attach-sources</id>
-                            <goals>
-                                <goal>jar-no-fork</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
-
-                <plugin>
-                    <groupId>org.codehaus.mojo</groupId>
-                    <artifactId>versions-maven-plugin</artifactId>
-                    <version>2.21.0</version>
-                </plugin>
-
-                <plugin>
-                    <groupId>org.jetbrains.kotlin</groupId>
-                    <artifactId>kotlin-maven-plugin</artifactId>
-                    <version>${kotlin.version}</version>
-                    <extensions>true</extensions>
+                    <version>${maven-source-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-release-plugin</artifactId>
-                    <version>3.3.1</version>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>${maven-javadoc-plugin.version}</version>
                     <configuration>
-                        <autoVersionSubmodules>true</autoVersionSubmodules>
-                        <goals>deploy</goals>
+                        <release>${java.release}</release>
                     </configuration>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-gpg-plugin</artifactId>
-                    <version>3.2.8</version>
-                    <executions>
-                        <execution>
-                            <id>sign-artifacts</id>
-                            <phase>verify</phase>
-                            <goals>
-                                <goal>sign</goal>
-                            </goals>
-                            <configuration>
-                                <bestPractices>true</bestPractices>
-                            </configuration>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
-                    <groupId>org.springdoc</groupId>
-                    <artifactId>springdoc-openapi-maven-plugin</artifactId>
-                    <version>1.5</version>
+                    <version>${maven-gpg-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-resources-plugin</artifactId>
-                    <version>3.5.0</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.codehaus.mojo</groupId>
-                    <artifactId>jaxws-maven-plugin</artifactId>
-                    <version>2.6</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-checkstyle-plugin</artifactId>
-                    <version>3.6.0</version>
-                    <configuration>
-                        <logViolationsToConsole>true</logViolationsToConsole>
-                        <skip>true</skip>
-                    </configuration>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-compiler-plugin</artifactId>
-                    <version>${maven.compiler.plugin.version}</version>
-                    <configuration>
-                        <release>${java.version}</release>
-                        <parameters>true</parameters>
-                    </configuration>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-jar-plugin</artifactId>
-                    <version>3.5.0</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-assembly-plugin</artifactId>
-                    <version>3.8.0</version>
-                    <executions>
-                        <execution>
-                            <id>dist</id>
-                            <phase>package</phase>
-                            <goals>
-                                <goal>single</goal>
-                            </goals>
-                            <configuration>
-                                <descriptors>
-                                    <descriptor>${project.basedir}/assembly.xml</descriptor>
-                                </descriptors>
-                                <tarLongFileMode>posix</tarLongFileMode>
-                            </configuration>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-dependency-plugin</artifactId>
-                    <version>3.10.0</version>
-                    <executions>
-                        <execution>
-                            <id>analyze</id>
-                            <goals>
-                                <goal>analyze-only</goal>
-                            </goals>
-                            <configuration>
-                                <failOnWarning>false</failOnWarning>
-                                <outputXML>true</outputXML>
-                                <ignoreNonCompile>true</ignoreNonCompile>
-                            </configuration>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-failsafe-plugin</artifactId>
-                    <version>3.5.5</version>
-                    <executions>
-                        <execution>
-                            <goals>
-                                <goal>integration-test</goal>
-                                <goal>verify</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                    <configuration>
-                        <skipITs>true</skipITs>
-                    </configuration>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.5.5</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-pmd-plugin</artifactId>
-                    <version>3.28.0</version>
-                </plugin>
-                <plugin>
-                    <groupId>com.github.spotbugs</groupId>
-                    <artifactId>spotbugs-maven-plugin</artifactId>
-                    <version>4.9.8.1</version>
-                    <executions>
-                        <execution>
-                            <id>spotbugs-report</id>
-                            <phase>verify</phase>
-                            <goals>
-                                <goal>spotbugs</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                    <configuration>
-                        <xmlOutput>true</xmlOutput>
-                        <!-- Keep report output location stable for existing CI parsing -->
-                        <xmlOutputDirectory>target/site</xmlOutputDirectory>
-                    </configuration>
-                </plugin>
-                <plugin>
-                    <groupId>org.codehaus.mojo</groupId>
-                    <artifactId>jaxb2-maven-plugin</artifactId>
-                    <version>4.1.0</version>
-                    <executions>
-                        <execution>
-                            <phase>generate-sources</phase>
-                            <goals>
-                                <goal>xjc</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                    <configuration>
-                        <sources>
-                            <source>${basedir}/src/main/resources/xsd/</source>
-                        </sources>
-                        <outputDirectory>${basedir}/target/xjc/</outputDirectory>
-                    </configuration>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>${maven-enforcer-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.jacoco</groupId>
                     <artifactId>jacoco-maven-plugin</artifactId>
-                    <version>0.8.14</version>
-                    <executions>
-                        <execution>
-                            <id>pre-unit-test</id>
-                            <goals>
-                                <goal>prepare-agent</goal>
-                            </goals>
-                        </execution>
-                        <execution>
-                            <id>post-unit-test</id>
-                            <phase>test</phase>
-                            <goals>
-                                <goal>report</goal>
-                            </goals>
-                        </execution>
-                        <execution>
-                            <id>report-aggregate</id>
-                            <phase>verify</phase>
-                            <goals>
-                                <goal>report-aggregate</goal>
-                            </goals>
-                        </execution>
-                        <execution>
-                            <id>coverage-check</id>
-                            <goals>
-                                <goal>check</goal>
-                            </goals>
-                            <configuration>
-                                <rules>
-                                    <rule>
-                                        <element>PACKAGE</element>
-                                        <limits>
-                                            <limit>
-                                                <counter>LINE</counter>
-                                                <value>COVEREDRATIO</value>
-                                                <minimum>25%</minimum>
-                                            </limit>
-                                            <limit>
-                                                <counter>BRANCH</counter>
-                                                <value>COVEREDRATIO</value>
-                                                <minimum>90%</minimum>
-                                            </limit>
-                                        </limits>
-                                    </rule>
-                                </rules>
-                            </configuration>
-                        </execution>
-                    </executions>
+                    <version>${jacoco-maven-plugin.version}</version>
                 </plugin>
                 <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-clean-plugin</artifactId>
-                    <version>3.5.0</version>
+                    <groupId>com.diffplug.spotless</groupId>
+                    <artifactId>spotless-maven-plugin</artifactId>
+                    <version>${spotless-maven-plugin.version}</version>
                 </plugin>
                 <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-install-plugin</artifactId>
-                    <version>3.1.4</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-deploy-plugin</artifactId>
-                    <version>3.1.4</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-site-plugin</artifactId>
-                    <version>3.21.0</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-shade-plugin</artifactId>
-                    <version>3.6.2</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-project-info-reports-plugin</artifactId>
-                    <version>3.9.0</version>
-                </plugin>
-
-                <!--Native Plugins-->
-                <plugin>
-                    <groupId>org.graalvm.buildtools</groupId>
-                    <artifactId>native-maven-plugin</artifactId>
-                    <version>1.1.0</version>
+                    <groupId>org.pitest</groupId>
+                    <artifactId>pitest-maven</artifactId>
+                    <version>${pitest-maven.version}</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.pitest</groupId>
+                            <artifactId>pitest-junit5-plugin</artifactId>
+                            <version>${pitest-junit5-plugin.version}</version>
+                        </dependency>
+                    </dependencies>
                     <configuration>
+                        <skip>${pitest.skip}</skip>
+                        <targetClasses>
+                            <param>io.americanexpress.synapse.*</param>
+                        </targetClasses>
+                        <mutationThreshold>${pitest.mutation.threshold}</mutationThreshold>
+                        <failWhenNoMutations>false</failWhenNoMutations>
+                        <timestampedReports>false</timestampedReports>
+                        <outputFormats>
+                            <param>HTML</param>
+                            <param>XML</param>
+                        </outputFormats>
                     </configuration>
-                    <executions>
-                        <execution>
-                            <id>build-native</id>
-                            <goals>
-                                <goal>compile-no-fork</goal>
-                            </goals>
-                            <phase>package</phase>
-                        </execution>
-                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.cyclonedx</groupId>
+                    <artifactId>cyclonedx-maven-plugin</artifactId>
+                    <version>${cyclonedx-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.sonatype.central</groupId>
+                    <artifactId>central-publishing-maven-plugin</artifactId>
+                    <version>${central-publishing-maven-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
-                    <version>${spring-boot-framework.version}</version>
-                </plugin>
-                <plugin>
-                    <groupId>com.google.cloud.functions</groupId>
-                    <artifactId>function-maven-plugin</artifactId>
-                    <version>1.0.1</version>
+                    <version>${spring-boot.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -1377,56 +307,338 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-javadoc-plugin</artifactId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>enforce</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>${build.java.version}</version>
+                                    <message>Synapse is built with JDK 25 (it targets Java 21 bytecode via --release).</message>
+                                </requireJavaVersion>
+                                <requireMavenVersion>
+                                    <version>[3.9.6,)</version>
+                                </requireMavenVersion>
+                                <dependencyConvergence/>
+                                <banDuplicatePomDependencyVersions/>
+                                <bannedDependencies>
+                                    <message>Banned dependency: see the Quality gates section of specs/v2/SPEC.md.</message>
+                                    <excludes>
+                                        <!-- Legacy or vulnerable logging APIs. (commons-logging is allowed:
+                                             Spring Framework 7 depends on commons-logging 1.3, which bridges to SLF4J/Log4j.) -->
+                                        <exclude>org.slf4j:slf4j-ext</exclude>
+                                        <exclude>log4j:log4j</exclude>
+                                        <!-- JUnit 4 -->
+                                        <exclude>junit:junit</exclude>
+                                        <!-- Test libraries must stay in test scope -->
+                                        <exclude>org.junit.jupiter:*:*:*:compile</exclude>
+                                        <exclude>org.junit.jupiter:*:*:*:runtime</exclude>
+                                        <exclude>org.mockito:*:*:*:compile</exclude>
+                                        <exclude>org.mockito:*:*:*:runtime</exclude>
+                                        <exclude>org.assertj:*:*:*:compile</exclude>
+                                        <exclude>org.assertj:*:*:*:runtime</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-test:*:*:compile</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-test:*:*:runtime</exclude>
+                                        <!-- Synapse jars must not choose a logging backend -->
+                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:compile</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:runtime</exclude>
+                                    </excludes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
+            <!--
+                Code style: the Synapse Eclipse formatter profile (.config/synapse-java-format.xml).
+                Local builds format files in place; CI (env CI=true) only checks. See the spotless-* profiles below.
+            -->
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-source-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>versions-maven-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>com.github.spotbugs</groupId>
-                <artifactId>spotbugs-maven-plugin</artifactId>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <configuration>
+                    <lineEndings>UNIX</lineEndings>
+                    <java>
+                        <eclipse>
+                            <version>${eclipse-formatter.version}</version>
+                            <file>${maven.multiModuleProjectDirectory}/.config/synapse-java-format.xml</file>
+                        </eclipse>
+                        <importOrder>
+                            <order>java|javax|jakarta,,io.americanexpress.synapse,\#</order>
+                        </importOrder>
+                        <removeUnusedImports/>
+                        <trimTrailingWhitespace/>
+                        <endWithNewline/>
+                        <licenseHeader>
+                            <file>${maven.multiModuleProjectDirectory}/.config/license-header.txt</file>
+                        </licenseHeader>
+                    </java>
+                </configuration>
             </plugin>
         </plugins>
     </build>
 
-    <!--Profiles-->
     <profiles>
+        <!-- Local builds: format sources in place, so formatting never fails a developer's build. -->
         <profile>
-            <id>snapshot</id>
+            <id>spotless-apply</id>
+            <activation>
+                <property>
+                    <name>!env.CI</name>
+                </property>
+            </activation>
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-gpg-plugin</artifactId>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <groupId>com.diffplug.spotless</groupId>
+                        <artifactId>spotless-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>spotless-apply</id>
+                                <phase>process-sources</phase>
+                                <goals>
+                                    <goal>apply</goal>
+                                </goals>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>
         </profile>
-        <!--Profile release-->
+
+        <!-- CI (GitHub Actions sets CI=true): fail on unformatted code. -->
+        <profile>
+            <id>spotless-check</id>
+            <activation>
+                <property>
+                    <name>env.CI</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.diffplug.spotless</groupId>
+                        <artifactId>spotless-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>spotless-check</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Mutation testing (test quality, not just coverage). Run nightly: ./mvnw -Pmutation verify
+            Applied to modules that set <pitest.skip>false</pitest.skip>.
+        -->
+        <profile>
+            <id>mutation</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pitest</groupId>
+                        <artifactId>pitest-maven</artifactId>
+                        <executions>
+                            <execution>
+                                <id>mutation-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>mutationCoverage</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Applied to every module that produces a jar (activated by the presence of src/main/java). -->
+        <profile>
+            <id>java-module</id>
+            <activation>
+                <file>
+                    <exists>${basedir}/src/main/java</exists>
+                </file>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <!-- Exposes ${org.mockito:mockito-core:jar} for the surefire/failsafe argLine. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>dependency-paths</id>
+                                <goals>
+                                    <goal>properties</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>prepare-agent</id>
+                                <goals>
+                                    <goal>prepare-agent</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>prepare-agent-integration</id>
+                                <goals>
+                                    <goal>prepare-agent-integration</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>merge-results</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>merge</goal>
+                                </goals>
+                                <configuration>
+                                    <fileSets>
+                                        <fileSet>
+                                            <directory>${project.build.directory}</directory>
+                                            <includes>
+                                                <include>jacoco.exec</include>
+                                                <include>jacoco-it.exec</include>
+                                            </includes>
+                                        </fileSet>
+                                    </fileSets>
+                                    <destFile>${project.build.directory}/jacoco-merged.exec</destFile>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>report</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>report</goal>
+                                </goals>
+                                <configuration>
+                                    <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>check</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                                    <rules>
+                                        <rule>
+                                            <element>BUNDLE</element>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>${jacoco.line.minimum}</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>${jacoco.branch.minimum}</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Release: sources, javadoc, SBOM, signing and Central publishing. Used by the release workflow. -->
         <profile>
             <id>release</id>
             <build>
                 <plugins>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-release-plugin</artifactId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.cyclonedx</groupId>
+                        <artifactId>cyclonedx-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>makeAggregateBom</goal>
+                                </goals>
+                            </execution>
+                        </executions>
                     </plugin>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <bestPractices>true</bestPractices>
+                                </configuration>
+                            </execution>
+                        </executions>
                     </plugin>
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>

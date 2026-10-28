@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    # Synapse is compiled with JDK 25 (--release 21); tests run on both supported LTS runtimes.
+    name: Verify (build JDK 25, tests on JDK ${{ matrix.test-jdk }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        test-jdk: ['21', '25']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history so the changed-lines coverage gate can diff against the base branch.
+          fetch-depth: 0
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          # The last entry becomes JAVA_HOME (used to run Maven/javac); both are exported as JAVA_HOME_<n>_X64.
+          java-version: |
+            21
+            25
+          cache: maven
+
+      # CI=true (set by GitHub Actions) switches formatting from apply to check.
+      - name: Build, test and run quality gates
+        env:
+          TEST_JDK: ${{ matrix.test-jdk }}
+        run: |
+          test_java_home_var="JAVA_HOME_${TEST_JDK}_X64"
+          ./mvnw --batch-mode --no-transfer-progress verify -Djvm="${!test_java_home_var}/bin/java"
+
+      # At least 90% of the lines changed by a pull request must be covered by tests (unit + integration).
+      - name: Changed-lines coverage (>= 90%)
+        if: github.event_name == 'pull_request' && matrix.test-jdk == '25'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mapfile -t reports < <(find . -path '*/target/site/jacoco/jacoco.xml' -not -path './.git/*')
+          mapfile -t roots < <(find . -type d -path '*/src/main/java' -not -path '*/target/*')
+          if [ "${#reports[@]}" -eq 0 ]; then
+            echo "No JaCoCo reports found; nothing to check."
+            exit 0
+          fi
+          pipx run diff-cover==11.0.0 "${reports[@]}" \
+            --compare-branch="origin/${BASE_REF}" \
+            --fail-under=90 \
+            --src-roots "${roots[@]}"
