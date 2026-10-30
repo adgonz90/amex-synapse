@@ -45,14 +45,14 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 - **Security:** CodeQL, dependency review (fails on high severity), Dependabot.
 
 ## Engineering rules
-- **Spring Boot first.** Never re-implement what Spring Boot auto-configures (DataSource, Jackson mapper, Kafka, gRPC server, observability exporters). Customize it through auto-configuration: `@AutoConfiguration`, registered in `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`, with `@ConditionalOn…` back-off so users can replace every bean, and properties under `synapse.*` via `@ConfigurationProperties`.
+- **Spring Boot first.** Never re-implement what Spring Boot auto-configures (DataSource, Jackson mapper, Kafka, gRPC server, observability exporters). When Synapse must create additional instances (e.g. named data stores), build them with Boot's builders and property binding, never by hand. Customize it through auto-configuration: `@AutoConfiguration`, registered in `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`, with `@ConditionalOn…` back-off so users can replace every bean, and properties under `synapse.*` via `@ConfigurationProperties`.
 - **No hidden wiring.**
   - No `@ComponentScan` or `@Import` of framework packages.
   - No `@EnableWebMvc` / `@EnableWebFlux`.
   - No `application.properties` or logging configuration shipped inside library jars.
 - **Every auto-configuration has `ApplicationContextRunner` tests:** it activates under its conditions, backs off when the user defines the bean, binds its properties, and stays absent when its condition isn't met.
 - **Layering:**
-  - Service modules (operations) never depend on protocol code (servlet, gRPC, GraphQL, Synapse API plugins).
+  - Operation and business code (`ServiceOperation`/`BusinessOperation` beans and their models) never imports protocol code (servlet, gRPC, GraphQL, Synapse API plugins). In consumer projects, protocol bindings live in the service module's `api.<protocol>` packages, and business code never calls operations.
   - Protocol concerns, such as HTTP status codes, live only in API plugins.
 - **Logging:** SLF4J API only. Library code never chooses a logging backend.
 - **Errors:** never expose stack traces, exception class names or internal messages to callers. Error detail is hidden unless `synapse.errors.include-detail=true`.
