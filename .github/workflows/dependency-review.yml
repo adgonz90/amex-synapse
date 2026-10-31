@@ -5,10 +5,15 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: read # read the dependency changes of the pull request
+
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   dependency-review:
+    name: Dependency review
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: read # check out the code
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
 
 jobs:
   mutation-testing:

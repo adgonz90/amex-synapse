@@ -17,7 +17,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: read # check out the code
 
 concurrency:
   group: snapshot-${{ github.ref }}
@@ -32,6 +32,8 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'publish-snapshot'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The Central token lives only in this environment (no signing key; see REPOSITORY_SETUP.md).
+    environment: snapshots
     steps:
       - name: Check for Central credentials
         id: credentials

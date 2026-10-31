@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: read # check out the code and its history
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -59,8 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      pages: write
-      id-token: write
+      pages: write # publish the site to GitHub Pages
+      id-token: write # OIDC token that actions/deploy-pages requires
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

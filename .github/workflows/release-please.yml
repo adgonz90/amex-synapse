@@ -21,9 +21,11 @@ jobs:
     name: Release pull request
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # RELEASE_PLEASE_TOKEN (optional) lives only in this environment.
+    environment: release-please
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write # push the release branch, tags and GitHub releases
+      pull-requests: write # open and update the release pull request
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -40,10 +42,11 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    uses: ./.github/workflows/release.yml
+      contents: write # granted to release.yml: attach the SBOM to the GitHub release
+      id-token: write # Sigstore OIDC token for signing the build-provenance attestations
+      attestations: write # store the attestations
+    # Keeps the ./ form: actionlint 1.7.12 rejects GitHub's newer $/ self-repository syntax. Switch when it supports it.
+    uses: ./.github/workflows/release.yml # zizmor: ignore[self-repository]
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
     # Passed by name: they live only in the "release" environment, which the called job selects.

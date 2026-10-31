@@ -46,9 +46,9 @@ jobs:
       group: release
       cancel-in-progress: false
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: write # attach the SBOM to the GitHub release
+      id-token: write # Sigstore OIDC token for signing the build-provenance attestations
+      attestations: write # store the attestations
     steps:
       - name: Check the tag format
         env:

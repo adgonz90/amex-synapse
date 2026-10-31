@@ -28,9 +28,12 @@ Everything here is in the repository's **Settings** pages unless noted.
   alone, and only after approval. The values are the same credentials v1 uses today (CircleCI contexts
   `maven_central_credentials` and `code_signing_credentials`).
 
-- [ ] **Repository secrets for snapshots.** *Secrets and variables → Actions → Repository secrets:*
-  `CENTRAL_USERNAME` and `CENTRAL_TOKEN` (same values as above). Never add the GPG secrets here.
-  Why: `snapshot.yml` publishes unsigned snapshots. Until these exist it skips with a notice.
+- [ ] **`snapshots` environment.** *Environments → New environment →* `snapshots`. No required reviewers and no
+  branch restriction (the workflow itself only runs for pushes to `main` and for same-repository PRs carrying the
+  `publish-snapshot` label). Environment secrets: `CENTRAL_USERNAME` and `CENTRAL_TOKEN` (same values as above).
+  Never add the GPG secrets here, and don't add the Central token as a repository secret.
+  Why: `snapshot.yml` publishes unsigned snapshots from this environment only. Until the secrets exist it skips with
+  a notice.
 
 - [ ] **`publish-snapshot` label.** *Issues → Labels → New label* (not under Settings).
   Why: adding it to a pull request from a branch in this repository publishes `<version>-pr<number>-SNAPSHOT`.
@@ -38,8 +41,11 @@ Everything here is in the repository's **Settings** pages unless noted.
 - [ ] **GitHub Pages.** *Pages → Build and deployment → Source:* GitHub Actions.
   Why: `docs.yml` publishes the Antora site from `main`. The workflow creates the `github-pages` environment itself.
 
+- [ ] **`release-please` environment.** *Environments → New environment →* `release-please`, deployment branches
+  limited to `main`. The release-please job always runs in it; nothing else is required.
 - [ ] **`RELEASE_PLEASE_TOKEN` (optional).** A GitHub App installation token or a fine-grained personal access token
-  with *Contents* and *Pull requests* read/write on this repository, saved as a repository secret.
+  with *Contents* and *Pull requests* read/write on this repository, saved as a secret of the `release-please`
+  environment.
   Why: GitHub doesn't start CI on pull requests opened with the default `GITHUB_TOKEN`, so without it the release
   pull request shows no CI checks. If branch protection requires checks, the release PR can't merge without this.
 
@@ -58,7 +64,7 @@ Everything here is in the repository's **Settings** pages unless noted.
 |---|---|
 | Squash merging | Merge a small PR; the commit on `main` has the PR title as its message. |
 | `release` environment and secrets | The release-please dry run on the fork: merging the release PR starts **Release**, which waits for approval, then uploads to Central. |
-| Snapshot secrets | The next push to `main` runs **Snapshot** without the "secrets are not configured" notice, and `2.0.0-SNAPSHOT` appears at `https://central.sonatype.com/repository/maven-snapshots/io/americanexpress/synapse/synapse-core/`. |
+| `snapshots` environment | The next push to `main` runs **Snapshot** without the "secrets are not configured" notice, and `2.0.0-SNAPSHOT` appears at `https://central.sonatype.com/repository/maven-snapshots/io/americanexpress/synapse/synapse-core/`. |
 | `publish-snapshot` label | Add it to a same-repository PR; **Snapshot** publishes `2.0.0-pr<number>-SNAPSHOT`. |
 | Pages | **Docs** on `main` deploys and prints the site URL. |
 | `RELEASE_PLEASE_TOKEN` | The release PR shows CI checks. |

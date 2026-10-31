@@ -15,14 +15,18 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: osv-scanner-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   scan-pr:
     name: New vulnerabilities in this PR
     if: github.event_name == 'pull_request'
     permissions:
-      actions: read
-      contents: read
-      security-events: write
+      actions: read # required by the SARIF upload to code scanning
+      contents: read # check out the code
+      security-events: write # upload results to code scanning
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
     with:
       scan-args: |-
@@ -36,9 +40,9 @@ jobs:
     name: Full scan
     if: github.event_name != 'pull_request'
     permissions:
-      actions: read
-      contents: read
-      security-events: write
+      actions: read # required by the SARIF upload to code scanning
+      contents: read # check out the code
+      security-events: write # upload results to code scanning
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
     with:
       scan-args: |-
