@@ -70,6 +70,7 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 | `parent/synapse-parent` | Parent POM for consumer applications (extends `spring-boot-starter-parent`) |
 | `core/synapse-core` | Protocol-agnostic core |
 | `docs/` | Documentation site (Antora, AsciiDoc); property tables are generated from configuration metadata |
+| `tests/` | Tests of the build itself (maven-invoker projects for the Enforcer rules); never published |
 | `specs/` | Design specifications |
 | `.config/` | Formatter profile and license header |
 

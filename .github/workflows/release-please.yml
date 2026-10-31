@@ -46,4 +46,9 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
-    secrets: inherit
+    # Passed by name: they live only in the "release" environment, which the called job selects.
+    secrets:
+      CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+      CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}

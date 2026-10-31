@@ -1,6 +1,7 @@
 // Generates the configuration property reference from each module's spring-configuration-metadata.json.
 // Run by the Antora Collector extension (see docs/antora.yml) from the repository root. If no module has been
 // compiled yet, it compiles them first. Output: docs/build/generated-docs/modules/ROOT/partials/properties/all.adoc
+// Exits non-zero (failing the docs build) if a synapse.* property has no description.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -36,6 +37,18 @@ if (found.length === 0) {
     shell: process.platform === 'win32',
   });
   found = compiledMetadata();
+}
+
+// Quality gate: every synapse.* property must have a description (taken from the Javadoc of the property).
+const undocumented = found.flatMap(({ module, file }) =>
+  (JSON.parse(readFileSync(file, 'utf8')).properties ?? [])
+    .filter((p) => p.name.startsWith('synapse.') && !p.deprecation && !(p.description ?? '').trim())
+    .map((p) => `${module}: ${p.name}`),
+);
+if (undocumented.length > 0) {
+  console.error('Configuration properties without a description (add Javadoc to the property):');
+  undocumented.forEach((name) => console.error(`  ${name}`));
+  process.exit(1);
 }
 
 const cell = (text) => String(text).replaceAll('|', '\\|');

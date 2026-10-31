@@ -1,0 +1,48 @@
+name: OSV-Scanner
+
+# Known-vulnerability scanning of the Maven and npm dependencies (OSV database), in two parts:
+#   - pull requests: scans the base branch and the PR branch, and fails only if the PR introduces a vulnerability
+#   - main, nightly and on demand: a full scan reported to Security > Code scanning; it never fails the build
+# Accepted vulnerabilities are listed in osv-scanner.toml (each with a reason and an expiry date).
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  scan-pr:
+    name: New vulnerabilities in this PR
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+    with:
+      scan-args: |-
+        --config=./osv-scanner.toml
+        -r
+        ./
+      # Pull requests from forks get a read-only token, so they can't upload to code scanning.
+      upload-sarif: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+
+  scan-full:
+    name: Full scan
+    if: github.event_name != 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+    with:
+      scan-args: |-
+        --config=./osv-scanner.toml
+        -r
+        ./
+      fail-on-vuln: false

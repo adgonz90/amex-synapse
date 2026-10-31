@@ -55,7 +55,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
+          # No dependency cache in a publishing job: a poisoned cache entry would end up in published artifacts.
           server-id: central
           server-username-env-var: CENTRAL_USERNAME
           server-password-env-var: CENTRAL_TOKEN

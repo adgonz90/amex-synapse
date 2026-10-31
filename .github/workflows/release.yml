@@ -17,6 +17,16 @@ on:
         description: Release tag to build, e.g. v2.0.0-M1
         required: true
         type: string
+    # Required, so a missing secret fails the run instead of resolving to an empty string.
+    secrets:
+      CENTRAL_USERNAME:
+        required: true
+      CENTRAL_TOKEN:
+        required: true
+      GPG_PRIVATE_KEY:
+        required: true
+      GPG_PASSPHRASE:
+        required: true
   workflow_dispatch:
     inputs:
       tag:
