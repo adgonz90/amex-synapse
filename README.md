@@ -42,12 +42,13 @@ coverage below the per-module threshold. Pull requests must additionally cover a
 | `bom/synapse-bom` | Bill of materials for Synapse artifacts |
 | `parent/synapse-parent` | Parent POM for applications built with Synapse |
 | `core/synapse-core` | Protocol-agnostic core: operations, errors, correlation, conventions |
+| `docs/` | Documentation site (Antora) |
 | `specs/` | Design specifications |
 
 ## Contributing
 
-Contributions are welcome. Contributors to American Express open-source projects must sign the
-[Contributor License Agreement](https://cla-assistant.io/americanexpress/synapse).
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Contributors to American Express open-source
+projects must sign the [Contributor License Agreement](https://cla-assistant.io/americanexpress/synapse).
 
 ## License
 

@@ -1,3 +1,14 @@
+## Supported versions
+
+| Version | Status | Security fixes |
+|---|---|---|
+| 2.0.x (`main`) | In development, not yet released | Fixed on `main` before release |
+| 0.4.x (`develop`) | Maintenance | Until 12 months after the 2.0.0 GA release |
+| Earlier than 0.4 | End of life | None; upgrade to a supported version |
+
+Fixes are released as new patch versions on the supported lines. Report vulnerabilities privately as described below,
+never in public issues or pull requests.
+
 ## American Express Responsible Disclosure Policy
 
 At American Express, we take cybersecurity seriously and value the contributions of the security

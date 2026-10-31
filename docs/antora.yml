@@ -1,0 +1,14 @@
+name: synapse
+title: Synapse
+version: '2.0'
+prerelease: true
+nav:
+  - modules/ROOT/nav.adoc
+ext:
+  collector:
+    # Generates the configuration property tables from each module's spring-configuration-metadata.json
+    # (compiling the modules first if needed) into docs/build/generated-docs, which is added to this component.
+    run:
+      command: $NODE docs/tools/property-tables.mjs
+    scan:
+      dir: docs/build/generated-docs

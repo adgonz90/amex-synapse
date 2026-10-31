@@ -1,0 +1,3 @@
+* xref:index.adoc[Overview]
+* Reference
+** xref:reference/configuration-properties.adoc[Configuration properties]

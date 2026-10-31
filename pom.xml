@@ -116,6 +116,7 @@
         <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
         <jacoco-maven-plugin.version>0.8.16</jacoco-maven-plugin.version>
         <spotless-maven-plugin.version>3.10.4</spotless-maven-plugin.version>
+        <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -300,6 +301,12 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                     <version>${spring-boot.version}</version>
+                </plugin>
+                <!-- Used by the snapshot workflow to stamp pull request versions (2.0.0-pr123-SNAPSHOT). -->
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>versions-maven-plugin</artifactId>
+                    <version>${versions-maven-plugin.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -575,9 +582,41 @@
             </build>
         </profile>
 
+        <!--
+            Snapshot: sources and Central publishing, without signing (Central doesn't validate snapshots), so the
+            signing key is only ever used by the release workflow. Used by the snapshot workflow.
+        -->
+        <profile>
+            <id>synapse-snapshot</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!-- Release: sources, javadoc, SBOM, signing and Central publishing. Used by the release workflow. -->
         <profile>
-            <id>release</id>
+            <id>synapse-release</id>
             <build>
                 <plugins>
                     <plugin>

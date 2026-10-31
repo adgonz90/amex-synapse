@@ -47,6 +47,20 @@ jobs:
           test_java_home_var="JAVA_HOME_${TEST_JDK}_X64"
           ./mvnw --batch-mode --no-transfer-progress verify -Djvm="${!test_java_home_var}/bin/java"
 
+      # Pull requests from forks can't publish snapshots (no secrets), so their jars are attached to the run instead.
+      - name: Attach jars (fork pull requests)
+        if: >-
+          github.event_name == 'pull_request' && matrix.test-jdk == '25' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: synapse-pr${{ github.event.pull_request.number }}-jars
+          path: |
+            **/target/*.jar
+            !**/target/*-tests.jar
+          retention-days: 14
+          if-no-files-found: error
+
       # At least 90% of the lines changed by a pull request must be covered by tests (unit + integration).
       - name: Changed-lines coverage (>= 90%)
         if: github.event_name == 'pull_request' && matrix.test-jdk == '25'

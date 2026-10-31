@@ -160,3 +160,10 @@ buildNumber.properties
 # Avoid ignoring Maven wrapper jar file (.jar files are usually ignored)
 !/.mvn/wrapper/maven-wrapper.jar
 
+
+######################
+######   Docs   ######
+######################
+
+# Antora site and generated content are written to docs/build/ (covered by build/ above).
+/docs/node_modules/
