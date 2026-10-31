@@ -63,7 +63,8 @@ Each pull request should:
 
 ## Releases (maintainers)
 
-Releases are automated with [release-please](https://github.com/googleapis/release-please):
+Releases are automated with [release-please](https://github.com/googleapis/release-please). The repository settings
+and secrets they need are listed in [.github/REPOSITORY_SETUP.md](.github/REPOSITORY_SETUP.md).
 
 1. Every merge to `main` updates an open release pull request with the next version and the CHANGELOG.
 2. Merging the release pull request tags the release and runs the release workflow, which builds, signs and uploads
