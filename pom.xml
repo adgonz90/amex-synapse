@@ -677,6 +677,10 @@
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
+                            <!-- Publish once Central has validated the bundle, without waiting for publishing to finish,
+                                 which can take longer than the plugin's timeout. -->
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>validated</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>

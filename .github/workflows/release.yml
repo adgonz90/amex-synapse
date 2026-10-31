@@ -8,8 +8,8 @@ name: Release
 #   CENTRAL_USERNAME, CENTRAL_TOKEN   Central Portal user token
 #   GPG_PRIVATE_KEY, GPG_PASSPHRASE   ASCII-armored signing key and its passphrase
 #
-# The Central deployment is uploaded and validated but not published automatically (central-publishing-maven-plugin
-# default); a maintainer publishes it from the Central Portal.
+# The job waits until Central has validated the deployment (a bad signature or POM fails the job), then Central
+# publishes it automatically. It doesn't wait for publishing to finish, which can outlast the plugin's timeout.
 on:
   workflow_call:
     inputs:

@@ -69,8 +69,8 @@ Releases are automated with [release-please](https://github.com/googleapis/relea
 2. Merging the release pull request tags the release and runs the release workflow, which builds, signs and uploads
    the artifacts to Maven Central, attaches the SBOM and records build-provenance attestations. The workflow runs in
    the protected `release` environment and needs a maintainer's approval.
-3. The upload is validated but not published automatically: a maintainer publishes the deployment from the
-   [Central Portal](https://central.sonatype.com).
+3. The workflow waits until Central has validated the upload, then Central publishes it automatically. Publishing can
+   take a while after the workflow finishes; check progress on the [Central Portal](https://central.sonatype.com).
 
 **Milestones (2.0.0-M1, M2, ...).** release-please doesn't derive milestone numbers from commits, so the next
 milestone is set in `release-please-config.json` (`release-as`). After a milestone is released, change `release-as`
