@@ -50,6 +50,8 @@ Thumbs.db
 *.war
 *.ear
 *.zip
+# The vendored Antora UI bundle (see docs/ui/README.md).
+!docs/ui/ui-bundle.zip
 *.tar.gz
 *.rar
 

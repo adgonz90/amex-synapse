@@ -78,14 +78,20 @@ Both rulesets are proposals until the maintainers agree on them. *Rules → Rule
     - `Verify (JDK 25)`
     - `Smoke (tests on JDK 21)`
     - `Conventional Commits title`
-    - `dependency-review`
+    - `Dependency review`
     - `Analyze (java-kotlin)`
     - `Build site`
-    - `actionlint` and `zizmor`
+    - `actionlint`, `zizmor` and `Publish script tests` (see the note below)
     - `New vulnerabilities in this PR`
-    - the CLA check
+    - the CLA check (reported by the CLA assistant, not by a workflow in this repository: pick the name it shows on a
+      pull request)
   - Block force pushes.
   - Restrict deletions.
+
+  The names are the job `name:` keys in `.github/workflows`, so renaming a job there needs the same change here. Only
+  jobs that run on pull requests are listed. The three Workflow lint jobs only run when a pull request changes
+  `.github/**`, and a required check that never runs blocks the merge, so require them only after the path filter is
+  dropped from `workflow-lint.yml` (or leave them out).
 
   Why: every change to `main` is reviewed and gated, and `main`'s history (which the release workflow checks tags
   against) can't be rewritten.

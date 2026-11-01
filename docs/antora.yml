@@ -1,14 +1,18 @@
 name: synapse
 title: Synapse
+# version and prerelease come from the project version in the root pom.xml (docs/tools/component-version.mjs), so a
+# release needs no docs change. The values below are overridden by the generated docs/build/generated-docs/antora.yml.
 version: '2.0'
-prerelease: true
 nav:
   - modules/ROOT/nav.adoc
 ext:
   collector:
-    # Generates the configuration property tables from each module's spring-configuration-metadata.json
-    # (compiling the modules first if needed) into docs/build/generated-docs, which is added to this component.
     run:
-      command: $NODE docs/tools/property-tables.mjs
+      # Generates the configuration property tables from each module's spring-configuration-metadata.json
+      # (compiling the modules first if needed) into docs/build/generated-docs, which is added to this component.
+      - command: $NODE docs/tools/property-tables.mjs
+      # Runs last: the property tables step recreates docs/build/generated-docs from scratch.
+      # Derives the component version and prerelease flag from the project version.
+      - command: $NODE docs/tools/component-version.mjs
     scan:
       dir: docs/build/generated-docs

@@ -21,8 +21,8 @@ asciidoc:
   attributes:
     page-pagination: ''
 
-# Antora's default UI is only distributed as a rolling build. A pinned, Synapse-branded UI bundle is a later task.
+# The stock Antora UI, vendored so builds are reproducible (see docs/ui/README.md for its source and how to update it).
+# The path is relative to this playbook.
 ui:
   bundle:
-    url: https://gitlab.com/antora/antora-ui-default/-/jobs/artifacts/HEAD/raw/build/ui-bundle.zip?job=bundle-stable
-    snapshot: true
+    url: ./ui/ui-bundle.zip
