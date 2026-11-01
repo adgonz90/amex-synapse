@@ -101,6 +101,7 @@
         <pitest-junit5-plugin.version>1.2.3</pitest-junit5-plugin.version>
 
         <!-- Plugins -->
+        <maven-antrun-plugin.version>3.2.0</maven-antrun-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
         <maven-deploy-plugin.version>3.2.0</maven-deploy-plugin.version>
@@ -197,7 +198,7 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
-                        <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -205,8 +206,13 @@
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
-                        <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
                     </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-antrun-plugin</artifactId>
+                    <version>${maven-antrun-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -498,6 +504,29 @@
                                 <goals>
                                     <goal>properties</goal>
                                 </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- Sets synapse.mockitoAgentArg to the Mockito -javaagent when the module has Mockito, and to
+                             nothing otherwise, so the test JVM never gets an unresolved agent path. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>mockito-agent-arg</id>
+                                <phase>process-test-classes</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <exportAntProperties>true</exportAntProperties>
+                                    <target>
+                                        <condition property="synapse.mockitoAgentArg" value="&quot;-javaagent:${org.mockito:mockito-core:jar}&quot;" else="">
+                                            <available file="${org.mockito:mockito-core:jar}"/>
+                                        </condition>
+                                    </target>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>
