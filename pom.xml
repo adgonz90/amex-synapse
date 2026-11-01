@@ -65,7 +65,7 @@
     </modules>
 
     <properties>
-        <!-- Java: built with JDK 25, bytecode and API level 21 (see specs/v2/SPEC.md) -->
+        <!-- Java: built with JDK 25, bytecode and API level 21 (see specs/v2/BUILD.md) -->
         <java.release>21</java.release>
         <build.java.version>[25,)</build.java.version>
         <maven.compiler.release>${java.release}</maven.compiler.release>
@@ -87,7 +87,7 @@
         <eclipse-formatter.version>4.41</eclipse-formatter.version>
 
         <!--
-            Test quality gates (specs/v2/SPEC.md, Quality gates):
+            Test quality gates (specs/v2/BUILD.md, Quality gates and CI):
             - per-module coverage floor (JaCoCo, unit + integration tests merged)
             - 90% coverage of changed lines per pull request (diff-cover in CI)
             - mutation score for modules that opt in to PIT (nightly)
@@ -341,7 +341,7 @@
                                 <dependencyConvergence/>
                                 <banDuplicatePomDependencyVersions/>
                                 <bannedDependencies>
-                                    <message>Banned dependency: see the Quality gates section of specs/v2/SPEC.md.</message>
+                                    <message>Banned dependency: see the Quality gates section of specs/v2/BUILD.md.</message>
                                     <excludes>
                                         <!-- Legacy or vulnerable logging APIs. (commons-logging is allowed:
                                              Spring Framework 7 depends on commons-logging 1.3, which bridges to SLF4J/Log4j.) -->

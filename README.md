@@ -9,7 +9,8 @@ conventions. You write each business operation once, in a module that knows noth
 over REST, gRPC, GraphQL or cloud functions by adding the matching Synapse plugin. Clients, data access and
 messaging follow the same conventions, with secure defaults and built-in observability.
 
-The design, decisions and delivery plan for Synapse 2 are in [specs/v2/SPEC.md](specs/v2/SPEC.md).
+The build specification and delivery plan for Synapse 2 are in [specs/v2/BUILD.md](specs/v2/BUILD.md), and the
+design decisions and roadmap are in [specs/v2/DESIGN.md](specs/v2/DESIGN.md).
 
 ## Requirements
 

@@ -14,5 +14,7 @@ These docs are for teams building services with Synapse. As each module lands th
 guide per module, the configuration property reference, the error codes and categories, and the migration guide from
 0.4.x.
 
-The design decisions and delivery plan for Synapse 2 are in
-https://github.com/americanexpress/synapse/blob/main/specs/v2/SPEC.md[the Synapse 2 specification].
+The build specification and delivery plan for Synapse 2 are in
+https://github.com/americanexpress/synapse/blob/main/specs/v2/BUILD.md[the Synapse 2 build specification], and the
+design decisions and roadmap are in
+https://github.com/americanexpress/synapse/blob/main/specs/v2/DESIGN.md[the Synapse 2 design record].

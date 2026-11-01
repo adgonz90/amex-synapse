@@ -1,8 +1,9 @@
 # Contributing to Synapse
 
 Thanks for your interest in Synapse. This guide covers how to propose a change and how changes are released.
-Design decisions live in [specs/v2/SPEC.md](specs/v2/SPEC.md), and the engineering rules and quality gates are in
-[AGENTS.md](AGENTS.md); read both before starting anything non-trivial.
+What gets built is specified in [specs/v2/BUILD.md](specs/v2/BUILD.md) (the reasons are in
+[specs/v2/DESIGN.md](specs/v2/DESIGN.md)), and the engineering rules and quality gates are in
+[AGENTS.md](AGENTS.md). Read them before starting anything non-trivial.
 
 ## Before you start
 
