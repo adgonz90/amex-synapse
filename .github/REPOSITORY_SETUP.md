@@ -13,7 +13,8 @@ Everything here is in the repository's **Settings** pages unless noted.
   Why: the PR title becomes the commit on `main` that release-please reads (`pr-title.yml` checks the format).
 
 - [ ] **`release` environment.** *Environments → New environment →* `release`.
-  - Required reviewers: the maintainers (a release waits for one approval).
+  - Required reviewers: the maintainers (a release waits for one approval), with **Prevent self-review** on, so
+    whoever started the run can't approve it.
   - Deployment branches and tags: tags matching `v*`, plus `main` (release-please runs the release from `main`).
   - Environment secrets:
 
@@ -24,9 +25,11 @@ Everything here is in the repository's **Settings** pages unless noted.
     | `GPG_PRIVATE_KEY` | ASCII-armored private signing key (`gpg --armor --export-secret-keys <key-id>`) |
     | `GPG_PASSPHRASE` | Passphrase for that key |
 
-  Why: only `release.yml` uses this environment, so the signing key and publishing token are visible to that job
-  alone, and only after approval. The values are the same credentials v1 uses today (CircleCI contexts
-  `maven_central_credentials` and `code_signing_credentials`).
+  Why: only the `publish` job of `release.yml` uses this environment, so the signing key and publishing token are
+  visible to that job alone, and only after approval. The release itself is built and tested by the `build` job,
+  which has no environment and no secrets; `publish` only signs, uploads and attests the files it staged (with
+  `.github/scripts/central-publish.sh`, never Maven). The values are the same credentials v1 uses today (CircleCI
+  contexts `maven_central_credentials` and `code_signing_credentials`).
 
 - [ ] **`snapshots` environment.** *Environments → New environment →* `snapshots`. No required reviewers and no
   branch restriction (the workflow itself only runs for pushes to `main` and for same-repository PRs carrying the
@@ -49,21 +52,45 @@ Everything here is in the repository's **Settings** pages unless noted.
   Why: GitHub doesn't start CI on pull requests opened with the default `GITHUB_TOKEN`, so without it the release
   pull request shows no CI checks. If branch protection requires checks, the release PR can't merge without this.
 
-- [ ] **Branch protection for `main` (proposed; not yet agreed).** *Rules → Rulesets:* require a pull request,
-  require these status checks, and block force pushes and deletion:
-  - `Verify (build JDK 25, tests on JDK 21)` and `Verify (build JDK 25, tests on JDK 25)`
-  - `Conventional Commits title`
-  - `dependency-review`
-  - `Analyze (java-kotlin)`
-  - `Build site`
-  - the CLA check
+## Rulesets (proposed; not yet agreed)
+
+Both rulesets are proposals until the maintainers agree on them. *Rules → Rulesets → New ruleset.*
+
+- [ ] **Branch ruleset for `main`.** Target: the default branch (`main`). Rules:
+  - Require a pull request before merging.
+  - Require these status checks to pass:
+    - `Verify (JDK 25)`
+    - `Smoke (tests on JDK 21)`
+    - `Conventional Commits title`
+    - `dependency-review`
+    - `Analyze (java-kotlin)`
+    - `Build site`
+    - `actionlint` and `zizmor`
+    - `New vulnerabilities in this PR`
+    - the CLA check
+  - Block force pushes.
+  - Restrict deletions.
+
+  Why: every change to `main` is reviewed and gated, and `main`'s history (which the release workflow checks tags
+  against) can't be rewritten.
+
+- [ ] **Tag ruleset for `v*`.** Target: tags matching `v*`. Rules: restrict creations, restrict updates and restrict
+  deletions. Bypass list: the maintainers only, plus the identity release-please uses to create release tags (the
+  app behind `RELEASE_PLEASE_TOKEN`); without that bypass release-please can't tag a release. Not yet checked:
+  whether the default `GITHUB_TOKEN` can be given a bypass, which decides whether `RELEASE_PLEASE_TOKEN` becomes
+  required.
+
+  Why: a release tag selects what the release workflow builds and publishes. The workflow also refuses a tag whose
+  commit isn't on `main`, but only maintainers should be able to create, move or delete one.
 
 ## Checking the setup
 
 | Setting | How to confirm it works |
 |---|---|
 | Squash merging | Merge a small PR; the commit on `main` has the PR title as its message. |
-| `release` environment and secrets | The release-please dry run on the fork: merging the release PR starts **Release**, which waits for approval, then uploads to Central. |
+| `release` environment and secrets | The release-please dry run on the fork: merging the release PR starts **Release**. **Build** runs without approval and uploads `release-staging`; **Publish** waits for approval (the person who started the run can't approve it), then signs and uploads to Central. |
+| Branch ruleset | A push straight to `main`, or a force push, is rejected; a PR can't merge until the listed checks pass. |
+| Tag ruleset | `git push origin v0.0.0-test` from a non-maintainer account is rejected. |
 | `snapshots` environment | The next push to `main` runs **Snapshot** without the "secrets are not configured" notice, and `2.0.0-SNAPSHOT` appears at `https://central.sonatype.com/repository/maven-snapshots/io/americanexpress/synapse/synapse-core/`. |
 | `publish-snapshot` label | Add it to a same-repository PR; **Snapshot** publishes `2.0.0-pr<number>-SNAPSHOT`. |
 | Pages | **Docs** on `main` deploys and prints the site URL. |

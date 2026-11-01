@@ -110,7 +110,6 @@
         <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
         <maven-failsafe-plugin.version>3.6.1</maven-failsafe-plugin.version>
-        <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
         <maven-help-plugin.version>3.5.2</maven-help-plugin.version>
         <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
@@ -119,7 +118,6 @@
         <maven-site-plugin.version>3.22.0</maven-site-plugin.version>
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
-        <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
         <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
         <jacoco-maven-plugin.version>0.8.16</jacoco-maven-plugin.version>
         <spotless-maven-plugin.version>3.10.4</spotless-maven-plugin.version>
@@ -257,11 +255,6 @@
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-gpg-plugin</artifactId>
-                    <version>${maven-gpg-plugin.version}</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-help-plugin</artifactId>
                     <version>${maven-help-plugin.version}</version>
                 </plugin>
@@ -309,11 +302,6 @@
                     <groupId>org.cyclonedx</groupId>
                     <artifactId>cyclonedx-maven-plugin</artifactId>
                     <version>${cyclonedx-maven-plugin.version}</version>
-                </plugin>
-                <plugin>
-                    <groupId>org.sonatype.central</groupId>
-                    <artifactId>central-publishing-maven-plugin</artifactId>
-                    <version>${central-publishing-maven-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.springframework.boot</groupId>
@@ -672,8 +660,9 @@
         </profile>
 
         <!--
-            Snapshot: sources and Central publishing, without signing (Central doesn't validate snapshots), so the
-            signing key is only ever used by the release workflow. Used by the snapshot workflow.
+            Snapshot: sources only, unsigned (Central doesn't validate snapshots). Used by the snapshot build job, which
+            deploys to a local staging directory without secrets; the publish job uploads the staged files with
+            .github/scripts/central-publish.sh.
         -->
         <profile>
             <id>synapse-snapshot</id>
@@ -691,19 +680,15 @@
                             </execution>
                         </executions>
                     </plugin>
-                    <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
-                        <extensions>true</extensions>
-                        <configuration>
-                            <publishingServerId>central</publishingServerId>
-                        </configuration>
-                    </plugin>
                 </plugins>
             </build>
         </profile>
 
-        <!-- Release: sources, javadoc, SBOM, signing and Central publishing. Used by the release workflow. -->
+        <!--
+            Release: sources, javadoc and the aggregate CycloneDX SBOM (target/bom.json, target/bom.xml). Used by the
+            release workflow's build job, which deploys to a local staging directory without secrets; its publish job
+            signs and uploads the staged files with .github/scripts/central-publish.sh.
+        -->
         <profile>
             <id>synapse-release</id>
             <build>
@@ -743,34 +728,6 @@
                                 </goals>
                             </execution>
                         </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-gpg-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>sign-artifacts</id>
-                                <phase>verify</phase>
-                                <goals>
-                                    <goal>sign</goal>
-                                </goals>
-                                <configuration>
-                                    <bestPractices>true</bestPractices>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
-                        <extensions>true</extensions>
-                        <configuration>
-                            <publishingServerId>central</publishingServerId>
-                            <!-- Publish once Central has validated the bundle, without waiting for publishing to finish,
-                                 which can take longer than the plugin's timeout. -->
-                            <autoPublish>true</autoPublish>
-                            <waitUntil>validated</waitUntil>
-                        </configuration>
                     </plugin>
                 </plugins>
             </build>

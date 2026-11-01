@@ -42,14 +42,15 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     permissions:
-      contents: write # granted to release.yml: attach the SBOM to the GitHub release
+      contents: write # granted to release.yml: read the tag (build), attach the SBOM to the release (publish)
       id-token: write # Sigstore OIDC token for signing the build-provenance attestations
       attestations: write # store the attestations
     # Keeps the ./ form: actionlint 1.7.12 rejects GitHub's newer $/ self-repository syntax. Switch when it supports it.
     uses: ./.github/workflows/release.yml # zizmor: ignore[self-repository]
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
-    # Passed by name: they live only in the "release" environment, which the called job selects.
+    # Passed by name: they live only in the "release" environment, which only release.yml's publish job selects. Its
+    # build job never references them and runs without secrets.
     secrets:
       CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
       CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
