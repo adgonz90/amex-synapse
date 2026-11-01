@@ -737,12 +737,14 @@
         </profile>
 
         <!-- Tests are skipped on purpose (for example a packaging-only run), so there is no coverage data to require.
-             Activation takes a single property, hence one profile for each. -->
+             Activation takes a single property, hence one profile for each. Only the value true activates them, so
+             -DskipTests=false or -Dmaven.test.skip=false keeps the coverage gate (a bare -DskipTests sets true). -->
         <profile>
             <id>skip-tests-coverage</id>
             <activation>
                 <property>
                     <name>skipTests</name>
+                    <value>true</value>
                 </property>
             </activation>
             <properties>
@@ -754,6 +756,7 @@
             <activation>
                 <property>
                     <name>maven.test.skip</name>
+                    <value>true</value>
                 </property>
             </activation>
             <properties>
