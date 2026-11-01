@@ -94,6 +94,7 @@
         -->
         <jacoco.line.minimum>0.80</jacoco.line.minimum>
         <jacoco.branch.minimum>0.70</jacoco.branch.minimum>
+        <jacoco.skip>false</jacoco.skip>
         <pitest.skip>true</pitest.skip>
         <pitest.mutation.threshold>70</pitest.mutation.threshold>
         <pitest-maven.version>1.30.1</pitest-maven.version>
@@ -513,6 +514,32 @@
                         </executions>
                     </plugin>
                     <plugin>
+                        <!-- Declared before JaCoCo so it runs ahead of the coverage check: JaCoCo skips the check
+                             when there is no data, which would let a module with no tests pass. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>require-coverage-data</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${jacoco.skip}</skip>
+                                    <rules>
+                                        <requireFilesExist>
+                                            <message>No test coverage data for a module with main sources: add tests (see the Quality gates section of specs/v2/BUILD.md).</message>
+                                            <files>
+                                                <file>${project.build.directory}/jacoco-merged.exec</file>
+                                            </files>
+                                        </requireFilesExist>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
                         <groupId>org.jacoco</groupId>
                         <artifactId>jacoco-maven-plugin</artifactId>
                         <executions>
@@ -693,6 +720,31 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <!-- Tests are skipped on purpose (for example a packaging-only run), so there is no coverage data to require.
+             Activation takes a single property, hence one profile for each. -->
+        <profile>
+            <id>skip-tests-coverage</id>
+            <activation>
+                <property>
+                    <name>skipTests</name>
+                </property>
+            </activation>
+            <properties>
+                <jacoco.skip>true</jacoco.skip>
+            </properties>
+        </profile>
+        <profile>
+            <id>skip-tests-coverage-maven-test-skip</id>
+            <activation>
+                <property>
+                    <name>maven.test.skip</name>
+                </property>
+            </activation>
+            <properties>
+                <jacoco.skip>true</jacoco.skip>
+            </properties>
         </profile>
     </profiles>
 </project>

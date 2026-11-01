@@ -69,9 +69,13 @@ jobs:
         run: |
           mapfile -t reports < <(find . -path '*/target/site/jacoco/jacoco.xml' -not -path './.git/*')
           mapfile -t roots < <(find . -type d -path '*/src/main/java' -not -path '*/target/*')
-          if [ "${#reports[@]}" -eq 0 ]; then
-            echo "No JaCoCo reports found; nothing to check."
+          if [ "${#roots[@]}" -eq 0 ]; then
+            echo "No modules with main sources; nothing to check."
             exit 0
+          fi
+          if [ "${#reports[@]}" -eq 0 ]; then
+            echo "::error::No JaCoCo reports found for modules with main sources."
+            exit 1
           fi
           pipx run diff-cover==11.0.0 "${reports[@]}" \
             --compare-branch="origin/${BASE_REF}" \
