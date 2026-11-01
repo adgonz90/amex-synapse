@@ -31,12 +31,25 @@ Everything here is in the repository's **Settings** pages unless noted.
   `.github/scripts/central-publish.sh`, never Maven). The values are the same credentials v1 uses today (CircleCI
   contexts `maven_central_credentials` and `code_signing_credentials`).
 
-- [ ] **`snapshots` environment.** *Environments → New environment →* `snapshots`. No required reviewers and no
-  branch restriction (the workflow itself only runs for pushes to `main` and for same-repository PRs carrying the
-  `publish-snapshot` label). Environment secrets: `CENTRAL_USERNAME` and `CENTRAL_TOKEN` (same values as above).
-  Never add the GPG secrets here, and don't add the Central token as a repository secret.
-  Why: `snapshot.yml` publishes unsigned snapshots from this environment only. Until the secrets exist it skips with
-  a notice.
+- [ ] **`snapshots` environment.** *Environments → New environment →* `snapshots`. No required reviewers.
+  Deployment branches: `main` only (*Selected branches and tags →* `main`). Environment secrets: `CENTRAL_USERNAME`
+  and `CENTRAL_TOKEN` (same values as above). Never add the GPG secrets here, and don't add the Central token as a
+  repository secret.
+  Why: `snapshot-build.yml` builds snapshots with no environment and no secrets, for pushes to `main` and for
+  same-repository PRs carrying the `publish-snapshot` label. `snapshot-publish.yml` is a `workflow_run` job that
+  always runs from `main` and is the only job in this environment. It uploads the prebuilt files without running
+  Maven or any PR code. Until the secrets exist it checks the staged files, prints what it would upload and skips
+  publishing with a notice.
+  Note: `workflow_run` only starts workflows whose file is on the default branch, so `main` must be the default
+  branch. Both `americanexpress/synapse` and the fork still default to `develop`, so nothing is published until that
+  changes.
+
+- [ ] **SNAPSHOTs enabled on the Central namespace.** On [central.sonatype.com](https://central.sonatype.com),
+  *View Namespaces →* `io.americanexpress.synapse` *→ dropdown → Enable SNAPSHOTs → Confirm*. The namespace then shows
+  a "SNAPSHOTs enabled" badge.
+  Why: Central enables `-SNAPSHOT` publishing per namespace
+  ([Publishing -SNAPSHOT releases](https://central.sonatype.org/publish/publish-portal-snapshots/)). Expect the
+  publish job's uploads to be refused until this is done (not yet observed).
 
 - [ ] **`publish-snapshot` label.** *Issues → Labels → New label* (not under Settings).
   Why: adding it to a pull request from a branch in this repository publishes `<version>-pr<number>-SNAPSHOT`.
@@ -96,7 +109,7 @@ Both rulesets are proposals until the maintainers agree on them. *Rules → Rule
 | `release` environment and secrets | The release-please dry run on the fork: merging the release PR starts **Release**. **Build** runs without approval and uploads `release-staging`; **Publish** waits for approval (the person who started the run can't approve it), then signs and uploads to Central. |
 | Branch ruleset | A push straight to `main`, or a force push, is rejected; a PR can't merge until the listed checks pass. |
 | Tag ruleset | `git push origin v0.0.0-test` from a non-maintainer account is rejected. |
-| `snapshots` environment | The next push to `main` runs **Snapshot** without the "secrets are not configured" notice, and `2.0.0-SNAPSHOT` appears at `https://central.sonatype.com/repository/maven-snapshots/io/americanexpress/synapse/synapse-core/`. |
-| `publish-snapshot` label | Add it to a same-repository PR; **Snapshot** publishes `2.0.0-pr<number>-SNAPSHOT`. |
+| `snapshots` environment and Central SNAPSHOTs | The next push to `main` runs **Snapshot build**, then **Snapshot publish** without the "secrets are not configured" notice, and `2.0.0-SNAPSHOT` appears at `https://central.sonatype.com/repository/maven-snapshots/io/americanexpress/synapse/synapse-core/`. *Environments → snapshots* lists the deployment from `main`. |
+| `publish-snapshot` label | Add it to a same-repository PR: **Snapshot build** builds `2.0.0-pr<number>-SNAPSHOT` and **Snapshot publish** publishes it. On a fork PR both skip their jobs, and the jars are attached to the **CI** run instead. |
 | Pages | **Docs** on `main` deploys and prints the site URL. |
 | `RELEASE_PLEASE_TOKEN` | The release PR shows CI checks. |

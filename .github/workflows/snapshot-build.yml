@@ -1,0 +1,110 @@
+name: Snapshot build
+
+# Builds the snapshots that snapshot-publish.yml publishes to the Central Portal snapshot repository (cleaned up by
+# Central after 90 days):
+#   - every push to main:                        2.0.0-SNAPSHOT
+#   - pull requests labelled "publish-snapshot":  2.0.0-pr<number>-SNAPSHOT, rebuilt on each push
+#
+# This workflow has no environment and no secrets. It runs the full build with its tests and gates, deploys to a local
+# staging directory and uploads it with snapshot.env as the snapshot-staging artifact:
+#   VERSION=<version>     the stamped project version
+#   PR_NUMBER=<number>    the pull request number, empty for a push to main
+#   HEAD_SHA=<sha>        the commit the run was started for (the pull request head, or the pushed commit)
+# The publish workflow treats the artifact as untrusted data: it re-checks the run, the pull request and every staged
+# file before uploading anything, and it never runs Maven or code from this run.
+#
+# Only pull requests from branches in this repository are built here. Pull requests from forks never publish; their
+# jars are attached to the CI run instead. A version that isn't a SNAPSHOT (for example the release commit on main) is
+# not built and nothing is uploaded.
+#
+# Note: Maven orders 2.0.0-pr123-SNAPSHOT above 2.0.0, so never resolve "latest" from the snapshot repository.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [labeled, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read # check out the code
+
+concurrency:
+  group: snapshot-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build snapshot
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.labels.*.name, 'publish-snapshot'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          # No dependency cache: a poisoned cache entry would end up in the published artifacts.
+
+      # A version that isn't a SNAPSHOT is left as it is, so the next step skips it.
+      - name: Stamp the pull request version
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          current="$(./mvnw --batch-mode --no-transfer-progress --quiet help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [[ "$current" != *-SNAPSHOT ]]; then
+            echo "Not stamping ${current}: not a snapshot version."
+            exit 0
+          fi
+          version="${current%-SNAPSHOT}-pr${PR_NUMBER}-SNAPSHOT"
+          echo "Building ${version}"
+          ./mvnw --batch-mode --no-transfer-progress --quiet versions:set \
+            -DnewVersion="${version}" -DprocessAllModules=true -DgenerateBackupPoms=false
+          ./mvnw --batch-mode --no-transfer-progress --quiet -pl parent/synapse-parent versions:set-property \
+            -Dproperty=synapse.version -DnewVersion="${version}" -DgenerateBackupPoms=false
+
+      - name: Read the version
+        id: version
+        run: |
+          version="$(./mvnw --batch-mode --no-transfer-progress --quiet help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [[ "$version" != *-SNAPSHOT ]]; then
+            echo "::notice::Not a snapshot version (${version}); nothing to publish."
+            echo "snapshot=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building ${version}"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "snapshot=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Tests and gates run here too, so a snapshot is never published from a commit that fails them.
+      - name: Build and stage
+        if: steps.version.outputs.snapshot == 'true'
+        run: ./mvnw -B -ntp -Psynapse-snapshot deploy "-DaltDeploymentRepository=staging::file:${GITHUB_WORKSPACE}/target/staging-deploy"
+
+      # The publish workflow checks HEAD_SHA against the run it was started by, and PR_NUMBER against the pull request.
+      - name: Describe the build
+        if: steps.version.outputs.snapshot == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          printf 'VERSION=%s\nPR_NUMBER=%s\nHEAD_SHA=%s\n' "$VERSION" "$PR_NUMBER" "$HEAD_SHA" > target/snapshot.env
+          cat target/snapshot.env
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.version.outputs.snapshot == 'true'
+        with:
+          name: snapshot-staging
+          path: |
+            target/staging-deploy
+            target/snapshot.env
+          if-no-files-found: error
+          retention-days: 3
