@@ -789,7 +789,8 @@ All must pass for a phase to be done; enforced in CI on every pull request unles
 - release-please (Maven strategy) maintains the release PR; milestones are set with `release-as`.
 - **Builds run without secrets.** A release or snapshot build and its tests run in a job with no secrets and upload
   their artifacts; a separate job in a protected environment only signs (release), publishes and attests them.
-- Releases: `release` environment limited to `main`, required reviewers with self-review prevented, a tag ruleset
+- Releases: `release` environment limited to `main`, required reviewers with self-review prevented (upstream; the
+  single-maintainer fork has no required reviewers), a tag ruleset
   (only maintainers create `v*`), and the workflow checks that the tag commit is on `main`. Central deployments are
   auto-published once validated. SBOM (CycloneDX) attached; build provenance attested.
 - Snapshots: `2.0.0-SNAPSHOT` from `main`; `<version>-pr<N>-SNAPSHOT` for same-repository PRs carrying the
@@ -797,7 +798,8 @@ All must pass for a phase to be done; enforced in CI on every pull request unles
   job, which runs from `main` in the `snapshots` environment (deployments limited to `main`), downloads and publishes
   those prebuilt artifacts without executing any PR code. Fork PRs attach jars to the CI run. The snapshot job skips
   non-SNAPSHOT versions.
-- Dependabot: Maven, Actions and docs npm on `main`; Maven on `develop` until 0.4.x end of life.
+- Dependabot: Maven, Actions, docs npm and the CI pip lock on `main`. No Dependabot on `develop`: its security updates
+  only target the default branch (see DESIGN.md 4.1).
 - Every GitHub Action pinned by SHA; least-privilege `permissions:`; repository setup in
   [.github/REPOSITORY_SETUP.md](../../.github/REPOSITORY_SETUP.md).
 
@@ -821,8 +823,8 @@ agent argument only for modules that have Mockito, the pinned Antora UI bundle w
 version, and REPOSITORY_SETUP check names matching job names. Release and snapshot workflows split into secret-free
 build jobs and environment publish jobs, with a tag-on-main check, documented rulesets and the `snapshots` environment
 limited to `main`. CI matrix per gate 1 (full on JDK 25, smoke on JDK 21, full JDK 21 nightly), nightly failure
-issues, Maven wrapper checksum, Maven dependency submission, OpenSSF Scorecard workflow and Dependabot `develop`
-entries. Snapshot versions after a milestone (`2.0.1-M1-SNAPSHOT`, `2.0.1-M1-pr<N>-SNAPSHOT`) accepted by the publish
+issues, Maven wrapper checksum, Maven dependency submission, OpenSSF Scorecard workflow
+(Dependabot `develop` entry later removed by maintainer decision). Snapshot versions after a milestone (`2.0.1-M1-SNAPSHOT`, `2.0.1-M1-pr<N>-SNAPSHOT`) accepted by the publish
 checks and the docs version; the snapshot publish checks moved into a tested script. v1 side: dead `main`-filtered
 CircleCI workflow deleted and a README maintenance note added that gives the EOL as 6 months after 2.0.0 GA, on the
 local branch `chore/v1-maintenance-notice`. Verified locally: `./mvnw verify` on JDK 25, the JDK 21 smoke run,

@@ -31,13 +31,5 @@ updates:
     schedule:
       interval: "weekly"
 
-  # Until 0.4.x end of life (6 months after 2.0.0 GA).
-  - package-ecosystem: "maven"
-    directory: "/"
-    target-branch: "develop"
-    schedule:
-      interval: "weekly"
-    groups:
-      maven-security:
-        applies-to: security-updates
-        patterns: ["*"]
+# No entry for develop (0.4.x): security updates only ever target the default branch, so an entry there could only
+# open version-update PRs. See specs/v2/DESIGN.md 4.1.

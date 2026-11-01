@@ -27,7 +27,8 @@ Everything here is in the repository's **Settings** pages unless noted.
   (`schedule`, `workflow_run`, `workflow_dispatch`, `branch_protection_rule`), the
   [Dependabot options reference](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference)
   (`target-branch`), and the `release-please-action` source.
-  Not affected: the release and snapshot workflows check out `refs/heads/main` explicitly, not the default branch.
+  Not affected: the trusted-script checkouts in the release and snapshot workflows, which use `refs/heads/main`
+  explicitly rather than the default branch.
 
 - [ ] **Squash merging only.** *General → Pull Requests:* allow squash merging; turn off merge commits and rebase
   merging. Set the default squash commit message to the pull request title.
@@ -35,7 +36,8 @@ Everything here is in the repository's **Settings** pages unless noted.
 
 - [ ] **`release` environment.** *Environments → New environment →* `release`.
   - Required reviewers: the maintainers (a release waits for one approval), with **Prevent self-review** on, so
-    whoever started the run can't approve it.
+    whoever started the run can't approve it. **On a single-maintainer fork, add no required reviewers:** with
+    self-review prevented, nobody could approve a release there.
   - Deployment branches and tags: `main` only (*Selected branches and tags →* `main`; no tag rules).
     release-please runs the release from `main`, and a manual re-run of **Release** is dispatched from `main` with
     the tag as its `tag` input; the workflow checks the tag out itself.
@@ -137,7 +139,7 @@ Both rulesets are proposals until the maintainers agree on them. *Rules → Rule
 | Setting | How to confirm it works |
 |---|---|
 | Squash merging | Merge a small PR; the commit on `main` has the PR title as its message. |
-| `release` environment and secrets | The release-please dry run on the fork: merging the release PR starts **Release**. **Build** runs without approval and uploads `release-staging`; **Publish** waits for approval (the person who started the run can't approve it), then signs and uploads to Central. |
+| `release` environment and secrets | The release-please dry run on the fork: merging the release PR starts **Release**. **Build** runs without approval and uploads `release-staging`; **Publish** waits for approval upstream (the person who started the run can't approve it; on the single-maintainer fork it runs without approval), then signs and uploads to Central. |
 | Branch ruleset | A push straight to `main`, or a force push, is rejected; a PR can't merge until the listed checks pass. |
 | Tag ruleset | `git push origin v0.0.0-test` from a non-maintainer account is rejected. |
 | `snapshots` environment and Central SNAPSHOTs | The next push to `main` runs **Snapshot build**, then **Snapshot publish** without the "secrets are not configured" notice, and `2.0.0-SNAPSHOT` appears at `https://central.sonatype.com/repository/maven-snapshots/io/americanexpress/synapse/synapse-core/`. *Environments → snapshots* lists the deployment from `main`. |
