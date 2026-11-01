@@ -2,7 +2,8 @@ name: Workflow lint
 
 # Checks the GitHub Actions workflows and their scripts: actionlint for syntax, expressions and embedded shell
 # (shellcheck), zizmor for security problems (injection, credential persistence, dangerous triggers, unpinned
-# actions), and the tests of .github/scripts/central-publish.sh (paths .github/** include .github/scripts/**).
+# actions), and the tests of .github/scripts/central-publish.sh and snapshot-check.sh (paths .github/** include
+# .github/scripts/**).
 # Findings fail the job; a deliberate exception gets an inline "# zizmor: ignore[<audit>]" with a reason.
 on:
   pull_request:
@@ -65,3 +66,7 @@ jobs:
       # (local Windows runs use the JDK's jar) and case 9 signs with a real throwaway gpg key.
       - name: Test central-publish.sh
         run: bash .github/scripts/test-central-publish.sh
+
+      # Fake gh only; nothing reaches the GitHub API.
+      - name: Test snapshot-check.sh
+        run: bash .github/scripts/test-snapshot-check.sh

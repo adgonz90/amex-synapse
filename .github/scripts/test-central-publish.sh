@@ -13,8 +13,8 @@
 # the License.
 #
 # Tests for central-publish.sh. Fake curl, gpg and gpgconf on PATH log their arguments and return canned
-# responses, so nothing ever reaches Central. Needs bash, git, unzip, md5sum, sha1sum, and zip or a JDK's jar
-# (JAVA_HOME/bin/jar); case 9 also needs a real gpg.
+# responses, so nothing ever reaches Central. Needs bash, git, unzip, md5sum and sha1sum; zip, or else a JDK's jar on
+# PATH or at JAVA_HOME/bin/jar (Git Bash on Windows has no zip); and a real gpg for case 9.
 #
 #   bash .github/scripts/test-central-publish.sh                          run every case
 #   bash .github/scripts/test-central-publish.sh stage-check DIR VERSION  sign DIR (a real Maven staging deploy) with a
@@ -458,6 +458,68 @@ case_9_release_signs_with_real_key() {
     new_case case9
     release_tree "$CASE_DIR/staging" 2.0.0-M1
     sign_with_real_key "$CASE_DIR/staging" 2.0.0-M1
+}
+
+# After a milestone, release-please sets main to <next patch>-M<n>-SNAPSHOT; pull request builds stamp it further.
+case_10_snapshot_after_milestone() {
+    local base="https://central.invalid/repository/maven-snapshots/$GROUP" v
+    for v in 2.0.1-M1-SNAPSHOT 2.0.1-M1-pr12-SNAPSHOT 2.0.0-RC1-SNAPSHOT; do
+        new_case "case10-$v"
+        snapshot_tree "$CASE_DIR/staging" "$v"
+        run_publish snapshot "$CASE_DIR/staging" "$v"
+        assert_rc 0 || return 1
+        assert_file_contains "$CASE_DIR/log/puts.log" \
+            "PUT $base/synapse-core/$v/synapse-core-${v%-SNAPSHOT}-20261101.120000-1.jar" || return 1
+    done
+    # Still strict: the qualifier comes before the pull request number, and only M<n> or RC<n>.
+    for v in 2.0.1-pr12-M1-SNAPSHOT 2.0.1-beta1-SNAPSHOT 2.0.1-M-SNAPSHOT 2.0.1-M1-RC1-SNAPSHOT; do
+        new_case "case10-bad-$v"
+        snapshot_tree "$CASE_DIR/staging" "$v"
+        run_publish snapshot "$CASE_DIR/staging" "$v"
+        assert_rc_nonzero || return 1
+        assert_no_http || return 1
+    done
+}
+
+# DRY_RUN says what it would do, never that it published.
+case_11_snapshot_dry_run() {
+    new_case case11
+    snapshot_tree "$CASE_DIR/staging" 2.0.0-SNAPSHOT
+    EXTRA_ENV=(DRY_RUN=1 CENTRAL_USERNAME= CENTRAL_TOKEN=)
+    run_publish snapshot "$CASE_DIR/staging" 2.0.0-SNAPSHOT
+    EXTRA_ENV=()
+    assert_rc 0 || return 1
+    assert_no_http || return 1
+    assert_output_contains "Would PUT https://central.invalid/repository/maven-snapshots/$GROUP/synapse-core/" || return 1
+    assert_output_contains "Would publish 2.0.0-SNAPSHOT" || return 1
+    if grep -q "^Published" "$OUT"; then fail "a dry run claims it published"; return 1; fi
+}
+
+# A find that fails part-way (for example on an unreadable directory) must fail the run, not shorten the file list.
+case_12_find_failure_fails_the_run() {
+    local real_find mode version
+    real_find="$(command -v find)"
+    for mode in validate release snapshot; do
+        new_case "case12-$mode"
+        cat > "$CASE_DIR/bin/find" << EOF
+#!/usr/bin/env bash
+"$real_find" "\$@"
+echo "find: '\$1/unreadable': Permission denied" >&2
+exit 1
+EOF
+        chmod +x "$CASE_DIR/bin/find"
+        version=2.0.0-M1
+        if [ "$mode" = snapshot ]; then
+            version=2.0.0-SNAPSHOT
+            snapshot_tree "$CASE_DIR/staging" "$version"
+        else
+            release_tree "$CASE_DIR/staging" "$version"
+        fi
+        run_publish "$mode" "$CASE_DIR/staging" "$version"
+        assert_rc_nonzero || return 1
+        assert_no_http || return 1
+        [ ! -s "$CASE_DIR/log/gpg.log" ] || fail "gpg ran after find failed" || return 1
+    done
 }
 
 # ---------------------------------------------------------------------------------------------------------------------

@@ -5,15 +5,16 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// <major>.<minor>.<patch> with an optional -SNAPSHOT, -M<n> or -RC<n> qualifier.
-const VERSION = /^(\d+)\.(\d+)\.(\d+)(-(?:SNAPSHOT|M\d+|RC\d+))?$/;
+// <major>.<minor>.<patch> with an optional -M<n> or -RC<n> qualifier, then an optional -SNAPSHOT. After a milestone,
+// release-please sets the next development version to, for example, 2.0.1-M1-SNAPSHOT.
+const VERSION = /^(\d+)\.(\d+)\.(\d+)((?:-(?:M|RC)\d+)?(?:-SNAPSHOT)?)$/;
 
 export function componentVersion(pomVersion) {
   const match = VERSION.exec(pomVersion);
   if (!match) {
-    throw new Error(`Unsupported project version '${pomVersion}': expected <major>.<minor>.<patch>[-SNAPSHOT|-M<n>|-RC<n>]`);
+    throw new Error(`Unsupported project version '${pomVersion}': expected <major>.<minor>.<patch>[-M<n>|-RC<n>][-SNAPSHOT]`);
   }
-  return { version: `${match[1]}.${match[2]}`, prerelease: match[4] !== undefined };
+  return { version: `${match[1]}.${match[2]}`, prerelease: match[4] !== '' };
 }
 
 // The project's own <version> is the first one after the </parent> element, or the first one if there is no parent.

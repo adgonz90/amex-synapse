@@ -31,6 +31,9 @@ Building needs JDK 25 (applications run on Java 21 or newer). Always use the Mav
 ./mvnw verify -Djvm=/path/to/jdk-21/bin/java   # run the tests on a Java 21 runtime
 ```
 
+The publishing script tests (`bash .github/scripts/test-central-publish.sh`) also need `zip`, or a JDK's `jar` on
+`PATH` or in `JAVA_HOME`, plus `gpg`.
+
 Local builds format your code; CI only checks formatting. Every gate in the [AGENTS.md](AGENTS.md#quality-gates-ci-fails-on-any-of-these)
 list must pass, including at least 90% coverage of the lines your pull request changes. Bug fixes start with a test
 that reproduces the bug.

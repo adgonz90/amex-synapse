@@ -32,11 +32,17 @@
 #   POLL_INTERVAL_SECONDS             delay between status requests (default 10)
 #   DRY_RUN=1                         do everything except HTTP requests (the release bundle is kept and printed)
 #   RUNNER_TEMP                       parent of the working directory (default TMPDIR, then /tmp)
+#
+# Snapshot versions: <major>.<minor>.<patch>[-M<n>|-RC<n>][-pr<number>]-SNAPSHOT. After a milestone, release-please
+# sets main to the next patch with the milestone qualifier (for example 2.0.1-M1-SNAPSHOT).
 set -euo pipefail
+# Command substitutions inherit errexit, so a failing find inside validate fails the run instead of returning a
+# partial file list.
+shopt -s inherit_errexit
 
 readonly GROUP_PATH="io/americanexpress/synapse"
 readonly RELEASE_VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-(M|RC)[0-9]+)?$'
-readonly SNAPSHOT_VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-pr[0-9]+)?-SNAPSHOT$'
+readonly SNAPSHOT_VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-(M|RC)[0-9]+)?(-pr[0-9]+)?-SNAPSHOT$'
 readonly TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-(M|RC)[0-9]+)?$'
 
 CENTRAL_API="${CENTRAL_API:-https://central.sonatype.com/api/v1/publisher}"
@@ -320,7 +326,11 @@ snapshot() {
             done <<< "$files"
         done
     done < <(awk '{ sub(/\/[^\/]*$/, ""); print }' <<< "$files" | LC_ALL=C sort -u)
-    echo "Published $version to $CENTRAL_SNAPSHOTS."
+    if is_dry_run; then
+        echo "Would publish $version to $CENTRAL_SNAPSHOTS (DRY_RUN=1: nothing uploaded)."
+    else
+        echo "Published $version to $CENTRAL_SNAPSHOTS."
+    fi
 }
 
 # --- main --------------------------------------------------------------------------------------------------------------
@@ -337,7 +347,11 @@ main() {
             make_work_dir
             local dir="${2%/}"
             case "$mode" in
-                validate) validate "$dir" "$3" > /dev/null && echo "$dir holds only ${GROUP_PATH} files for $3." ;;
+                validate)
+                    # Two commands, not "validate ... && echo": errexit is off inside a command on the left of &&.
+                    validate "$dir" "$3" > /dev/null
+                    echo "$dir holds only ${GROUP_PATH} files for $3."
+                    ;;
                 release) release "$dir" "$3" ;;
                 snapshot) snapshot "$dir" "$3" ;;
             esac
