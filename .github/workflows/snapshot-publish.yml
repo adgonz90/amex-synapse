@@ -5,10 +5,11 @@ name: Snapshot publish
 # workflow_run workflows always run from the default branch (main), so neither this file nor the publishing script
 # can be changed by the run that triggered it. The triggering run's snapshot-staging artifact is untrusted data: it is
 # downloaded outside the workspace and never executed. This job:
-#   - runs only for a successful Snapshot build from this repository: a push to main, or a pull request
+#   - runs only for a successful run of .github/workflows/snapshot-build.yml (the workflow name alone isn't unique)
+#     from this repository: a push to main, or a pull request
 #   - checks snapshot.env strictly: HEAD_SHA must be the triggering run's commit, and VERSION must be
 #     2.<minor>.<patch>-SNAPSHOT for main or 2.<minor>.<patch>-pr<PR_NUMBER>-SNAPSHOT for a pull request
-#   - for main, checks that the commit is on main
+#   - for main, checks that the commit is on the main branch (refs/heads/main, so a tag named main doesn't count)
 #   - for a pull request, asks the GitHub API that PR_NUMBER is an open pull request into main from a branch in this
 #     repository, carries the publish-snapshot label, and has the triggering run's commit as its head, so a run can't
 #     publish under another pull request's number
@@ -31,6 +32,7 @@ jobs:
     name: Publish snapshot
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/snapshot-build.yml' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       ((github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') ||
        github.event.workflow_run.event == 'pull_request')
@@ -66,11 +68,13 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Only the publishing script, from main; nothing from the triggering run.
+      # Only the publishing script, from the main branch; nothing from the triggering run. Fully qualified, so a tag
+      # named main can't be checked out instead; and main, not the default branch, because the snapshots environment
+      # only allows main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.artifact.outputs.found == 'true'
         with:
-          ref: main
+          ref: refs/heads/main
           path: trusted
           persist-credentials: false
           sparse-checkout: /.github/scripts/
@@ -93,6 +97,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_PATH: ${{ github.event.workflow_run.path }}
         run: |
           fail() { echo "::error::$*"; exit 1; }
           skip() {
@@ -100,6 +105,10 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           }
+
+          # Repeats the job condition: only snapshot-build.yml's artifacts are published, whatever the workflow is named.
+          [[ "$RUN_PATH" == .github/workflows/snapshot-build.yml ]] \
+            || fail "The triggering run is not .github/workflows/snapshot-build.yml (path: ${RUN_PATH})."
 
           [[ "$RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "Unexpected head commit for the triggering run: ${RUN_HEAD_SHA}"
 
@@ -123,9 +132,10 @@ jobs:
             push)
               [[ -z "$pr_number" ]] || fail "A push to main staged a pull request snapshot (PR_NUMBER=${pr_number})."
               [[ "$version" =~ ^2\.[0-9]+\.[0-9]+-SNAPSHOT$ ]] || fail "Version ${version} is not a main snapshot version."
-              status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${RUN_HEAD_SHA}...main" --jq .status)"
+              # The main branch, not a tag that happens to be called main: head_branch is only a name.
+              status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${RUN_HEAD_SHA}...refs/heads/main" --jq .status)"
               [[ "$status" == identical || "$status" == ahead ]] \
-                || fail "Commit ${RUN_HEAD_SHA} is not on main (compare status: ${status})."
+                || fail "Commit ${RUN_HEAD_SHA} is not on the main branch (compare status: ${status})."
               ;;
             pull_request)
               [[ -n "$pr_number" ]] || fail "A pull request run staged no PR_NUMBER."
