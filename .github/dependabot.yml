@@ -30,3 +30,14 @@ updates:
     directory: "/.github/requirements"
     schedule:
       interval: "weekly"
+
+  # Until 0.4.x end of life (6 months after 2.0.0 GA).
+  - package-ecosystem: "maven"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    groups:
+      maven-security:
+        applies-to: security-updates
+        patterns: ["*"]
