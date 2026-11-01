@@ -52,6 +52,9 @@ Everything here is in the repository's **Settings** pages unless noted.
   publish job's uploads to be refused until this is done (not yet observed).
 
 - [ ] **`publish-snapshot` label.** *Issues → Labels → New label* (not under Settings).
+
+- [ ] **`nightly-failure` label.** *Issues → Labels → New label* (not under Settings).
+  Why: the nightly workflow opens one issue with this label when a nightly job fails, and comments on it while it stays open.
   Why: adding it to a pull request from a branch in this repository publishes `<version>-pr<number>-SNAPSHOT`.
 
 - [ ] **GitHub Pages.** *Pages → Build and deployment → Source:* GitHub Actions.

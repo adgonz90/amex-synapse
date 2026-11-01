@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: read # check out the code
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -15,14 +15,10 @@ concurrency:
 
 jobs:
   verify:
-    # Synapse is compiled with JDK 25 (--release 21); tests run on both supported LTS runtimes.
-    name: Verify (build JDK 25, tests on JDK ${{ matrix.test-jdk }})
+    # Synapse is compiled with JDK 25 (--release 21); this job builds and tests on it, with all quality gates.
+    name: Verify (JDK 25)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        test-jdk: ['21', '25']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,24 +29,17 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          # The last entry becomes JAVA_HOME (used to run Maven/javac); both are exported as JAVA_HOME_<n>_X64.
-          java-version: |
-            21
-            25
+          java-version: '25'
           cache: maven
 
       # CI=true (set by GitHub Actions) switches formatting from apply to check.
       - name: Build, test and run quality gates
-        env:
-          TEST_JDK: ${{ matrix.test-jdk }}
-        run: |
-          test_java_home_var="JAVA_HOME_${TEST_JDK}_X64"
-          ./mvnw --batch-mode --no-transfer-progress verify -Djvm="${!test_java_home_var}/bin/java"
+        run: ./mvnw --batch-mode --no-transfer-progress verify javadoc:javadoc
 
       # Pull requests from forks can't publish snapshots (no secrets), so their jars are attached to the run instead.
       - name: Attach jars (fork pull requests)
         if: >-
-          github.event_name == 'pull_request' && matrix.test-jdk == '25' &&
+          github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name != github.repository
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -63,19 +52,19 @@ jobs:
 
       # Python 3.12 matches the interpreter the diff-cover lock was compiled for (pip-compile output is version-specific).
       - name: Set up Python (changed-lines coverage)
-        if: github.event_name == 'pull_request' && matrix.test-jdk == '25'
+        if: github.event_name == 'pull_request'
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
       # Hash-locked install: any package whose hash differs from .github/requirements/diff-cover.txt is rejected.
       - name: Install diff-cover
-        if: github.event_name == 'pull_request' && matrix.test-jdk == '25'
+        if: github.event_name == 'pull_request'
         run: python -m pip install --require-hashes --no-deps -r .github/requirements/diff-cover.txt
 
       # At least 90% of the lines changed by a pull request must be covered by tests (unit + integration).
       - name: Changed-lines coverage (>= 90%)
-        if: github.event_name == 'pull_request' && matrix.test-jdk == '25'
+        if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
@@ -93,3 +82,49 @@ jobs:
             --compare-branch="origin/${BASE_REF}" \
             --fail-under=90 \
             --src-roots "${roots[@]}"
+
+  smoke:
+    # Builds with JDK 25 and runs the unit tests plus the integration tests tagged "smoke" on JDK 21.
+    # The full JDK 21 run is nightly. Coverage is measured and gated in the JDK 25 job, so it is skipped here.
+    name: Smoke (tests on JDK 21)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          # The last entry becomes JAVA_HOME (runs Maven/javac); both are exported as JAVA_HOME_<n>_X64.
+          java-version: |
+            21
+            25
+          cache: maven
+
+      - name: Build and run unit and smoke tests on JDK 21
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress verify
+          -Djvm="$JAVA_HOME_21_X64/bin/java" -Dsynapse.it.groups=smoke -Djacoco.skip=true
+
+  dependency-graph:
+    # Feeds GitHub's dependency graph (and so Dependabot alerts and dependency review) with the full Maven tree.
+    name: Dependency graph
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # submit the dependency snapshot to the repository's dependency graph
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - uses: advanced-security/maven-dependency-submission-action@a64327a7329c9939cf675e458452febe1894a70c # v6.0.1

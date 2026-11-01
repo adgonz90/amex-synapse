@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.core.autoconfigure;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
@@ -26,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Boots a real application to prove the auto-configuration is registered through the {@code AutoConfiguration.imports}
  * file rather than only being loadable when referenced directly.
  */
+@Tag("smoke")
 @SpringBootTest(classes = SynapseCoreAutoConfigurationIT.TestApplication.class)
 class SynapseCoreAutoConfigurationIT {
 

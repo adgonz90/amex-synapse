@@ -32,3 +32,49 @@ jobs:
 
       - name: Verify with mutation testing
         run: ./mvnw --batch-mode --no-transfer-progress -Pmutation verify
+
+  full-jdk21:
+    # Builds with JDK 25 and runs every unit and integration test on JDK 21 (pull requests only run the smoke subset).
+    name: Full build (tests on JDK 21)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          # The last entry becomes JAVA_HOME (runs Maven/javac); both are exported as JAVA_HOME_<n>_X64.
+          java-version: |
+            21
+            25
+          cache: maven
+
+      - name: Build and run all tests on JDK 21
+        run: ./mvnw --batch-mode --no-transfer-progress verify -Djvm="$JAVA_HOME_21_X64/bin/java"
+
+  report-failure:
+    # Keeps one open issue per ongoing failure streak: later failures comment on it instead of opening duplicates.
+    name: Report failure
+    needs: [full-jdk21, mutation-testing]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write # open or comment on the nightly-failure issue
+    steps:
+      - name: Open or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          existing="$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "The nightly build failed again: ${RUN_URL}"
+          else
+            gh issue create --label nightly-failure --title "Nightly build failed" \
+              --body "The nightly build failed: ${RUN_URL}"
+          fi

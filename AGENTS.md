@@ -42,6 +42,8 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 - **Dependencies:** the Maven Enforcer bans some dependencies (see the root `pom.xml`) and requires dependency convergence. Test libraries must stay in test scope.
 - **Tests:**
   - Unit tests (`*Test`, surefire) and integration tests (`*IT`, failsafe) are never skipped. Pull requests run all of them on JDK 25, and unit tests plus one smoke integration test per module on JDK 21; the full JDK 21 run is nightly. Oracle and SQL Server integration tests run nightly, on release, and on PRs that change those modules.
+  - Every module with integration tests tags one of them `@Tag("smoke")`; that is the one the JDK 21 pull request leg runs (`-Dsynapse.it.groups=smoke`).
+  - `-DskipTests` also skips the coverage gate (there is no execution data), so a build with it is not a passing build.
   - Per-module JaCoCo floor: 80% line / 70% branch.
   - Pull requests must cover at least 90% of the lines they change.
 - **Security:**
