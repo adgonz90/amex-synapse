@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      issues: write # open or comment on the nightly-failure issue
+      issues: write # create the nightly-failure label; open or comment on the nightly-failure issue
     steps:
       - name: Open or update the failure issue
         env:
@@ -71,6 +71,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Creates the label if it's missing (--force updates it otherwise), so the report never fails on it.
+          gh label create nightly-failure --force --color B60205 \
+            --description "Opened by the nightly workflow when a nightly job fails"
           existing="$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "The nightly build failed again: ${RUN_URL}"

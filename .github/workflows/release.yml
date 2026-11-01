@@ -2,7 +2,9 @@ name: Release
 
 # Builds a release tag, publishes it to Maven Central, attaches the CycloneDX SBOM to the GitHub release and records
 # build-provenance attestations. Called by release-please.yml after a release pull request is merged;
-# workflow_dispatch exists for re-running a failed publish or for tagging a milestone by hand.
+# workflow_dispatch exists for re-running a failed publish or for tagging a milestone by hand: dispatch it from main
+# with the tag as the "tag" input (the release environment only accepts runs from main). The workflow never needs to
+# run from the tag ref: it checks the tag out explicitly.
 #
 # Two jobs, so the build never sees a secret:
 #   build    No environment, no secrets, read-only token. Checks that the tag's commit is on main and matches the POM
@@ -18,8 +20,8 @@ name: Release
 #            and waits until Central has validated it (a bad signature or POM fails the job). Central then publishes
 #            it automatically; the job doesn't wait for publishing to finish.
 #
-# Both jobs run central-publish.sh from the default branch (checked out into trusted/), never from the tag, so a tag
-# can't change the code that checks it or the code that handles the secrets.
+# Both jobs run central-publish.sh from main (checked out into trusted/), never from the tag, so a tag can't change the
+# code that checks it or the code that handles the secrets.
 on:
   workflow_call:
     inputs:
@@ -27,7 +29,8 @@ on:
         description: Release tag to build, e.g. v2.0.0-M1
         required: true
         type: string
-    # Required, so a missing secret fails the run instead of resolving to an empty string.
+    # required: true only makes GitHub reject a caller that doesn't pass a secret; it doesn't check the value, which
+    # can still be empty. central-publish.sh refuses to publish when one is empty (require_env).
     secrets:
       CENTRAL_USERNAME:
         required: true
@@ -55,7 +58,7 @@ jobs:
       group: release-build
       cancel-in-progress: false
     permissions:
-      contents: read # check out the tag and the default branch's scripts
+      contents: read # check out the tag and main's scripts
     outputs:
       commit: ${{ steps.tag.outputs.commit }}
     steps:
@@ -75,10 +78,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The checking code comes from the default branch, not from the tag being checked.
+      # The checking code comes from main, not from the tag being checked. refs/heads/main, not the default branch:
+      # check-tag already requires the tag to be on origin/main, and a tag named main can't be checked out instead
+      # (as in snapshot-publish.yml).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: refs/heads/main
           path: trusted
           persist-credentials: false
           sparse-checkout: /.github/scripts/
@@ -154,10 +159,10 @@ jobs:
           fi
           echo "Tag ${TAG} still points at ${BUILT_COMMIT}."
 
-      # Only the publishing script, from the default branch; nothing from the tag.
+      # Only the publishing script, from main (refs/heads/main, as above); nothing from the tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: refs/heads/main
           path: trusted
           persist-credentials: false
           sparse-checkout: /.github/scripts/
