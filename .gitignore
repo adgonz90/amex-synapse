@@ -2,8 +2,10 @@
 **/**/target
 **/**/**/target
 *.settings
-/.classpath
-/.project
+# Eclipse project files, at any depth.
+.classpath
+.project
+.factorypath
 *.idea
 /ideaFiles
 **/*.iml
