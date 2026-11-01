@@ -8,6 +8,27 @@ Everything here is in the repository's **Settings** pages unless noted.
 
 ## Checklist
 
+- [ ] **Make `main` the default branch.** *General → Default branch.* Both `americanexpress/synapse` and the fork
+  still default to `develop`. Until this changes, these don't work as intended:
+  - **Snapshot publishing:** `snapshot-publish.yml` is a `workflow_run` workflow, which GitHub only starts when the
+    workflow file is on the default branch.
+  - **Scheduled runs:** `nightly.yml`, `codeql.yml`, `scorecard.yml` and `osv-scanner.yml`'s full scan run on a
+    `schedule`, which only runs on the default branch.
+  - **Manual runs:** `workflow_dispatch` (re-running `release.yml`, `nightly.yml`, `docs.yml`, `osv-scanner.yml` by
+    hand) only offers workflows whose file is on the default branch. Scorecard's `branch_protection_rule` trigger has
+    the same rule.
+  - **Dependabot:** reads `.github/dependabot.yml` from the default branch only, and security updates always target
+    the default branch.
+  - **release-please:** with no `target-branch` input, `release-please-action` loads its config and manifest from the
+    repository's default branch (seen in the action's `src/index.ts`; how it picks the release pull request's base in
+    that case wasn't checked). Expect it to need `main` as the default branch, or a `target-branch: main` input.
+
+  Sources: GitHub's [events that trigger workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+  (`schedule`, `workflow_run`, `workflow_dispatch`, `branch_protection_rule`), the
+  [Dependabot options reference](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference)
+  (`target-branch`), and the `release-please-action` source.
+  Not affected: the release and snapshot workflows check out `refs/heads/main` explicitly, not the default branch.
+
 - [ ] **Squash merging only.** *General → Pull Requests:* allow squash merging; turn off merge commits and rebase
   merging. Set the default squash commit message to the pull request title.
   Why: the PR title becomes the commit on `main` that release-please reads (`pr-title.yml` checks the format).
@@ -15,7 +36,9 @@ Everything here is in the repository's **Settings** pages unless noted.
 - [ ] **`release` environment.** *Environments → New environment →* `release`.
   - Required reviewers: the maintainers (a release waits for one approval), with **Prevent self-review** on, so
     whoever started the run can't approve it.
-  - Deployment branches and tags: tags matching `v*`, plus `main` (release-please runs the release from `main`).
+  - Deployment branches and tags: `main` only (*Selected branches and tags →* `main`; no tag rules).
+    release-please runs the release from `main`, and a manual re-run of **Release** is dispatched from `main` with
+    the tag as its `tag` input; the workflow checks the tag out itself.
   - Environment secrets:
 
     | Secret | Value |
@@ -40,9 +63,7 @@ Everything here is in the repository's **Settings** pages unless noted.
   always runs from `main` and is the only job in this environment. It uploads the prebuilt files without running
   Maven or any PR code. Until the secrets exist it checks the staged files, prints what it would upload and skips
   publishing with a notice.
-  Note: `workflow_run` only starts workflows whose file is on the default branch, so `main` must be the default
-  branch. Both `americanexpress/synapse` and the fork still default to `develop`, so nothing is published until that
-  changes.
+  Note: nothing is published until `main` is the default branch (first item).
 
 - [ ] **SNAPSHOTs enabled on the Central namespace.** On [central.sonatype.com](https://central.sonatype.com),
   *View Namespaces →* `io.americanexpress.synapse` *→ dropdown → Enable SNAPSHOTs → Confirm*. The namespace then shows
@@ -54,8 +75,9 @@ Everything here is in the repository's **Settings** pages unless noted.
 - [ ] **`publish-snapshot` label.** *Issues → Labels → New label* (not under Settings).
   Why: adding it to a pull request from a branch in this repository publishes `<version>-pr<number>-SNAPSHOT`.
 
-- [ ] **`nightly-failure` label.** *Issues → Labels → New label* (not under Settings).
-  Why: the nightly workflow opens one issue with this label when a nightly job fails, and comments on it while it stays open.
+- **`nightly-failure` label: nothing to do.** The nightly workflow opens one issue with this label when a nightly job
+  fails, and comments on it while it stays open. It creates the label itself before reporting (with `--force`, which
+  also resets the label's colour and description each time).
 
 - [ ] **GitHub Pages.** *Pages → Build and deployment → Source:* GitHub Actions.
   Why: `docs.yml` publishes the Antora site from `main`. The workflow creates the `github-pages` environment itself.

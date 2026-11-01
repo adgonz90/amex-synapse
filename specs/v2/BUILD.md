@@ -747,8 +747,8 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 - **Images:** configures `spring-boot:build-image` with a Java 25 runtime and AOT-cache training
   (`BP_JVM_AOTCACHE_ENABLED=true`); Java 21 runtimes get CDS only. The archetype adds `spring.main.keep-alive=true`
   where needed, `spring.threads.virtual.enabled=true`, a sample Dockerfile and docs on heap sizing for small pods.
-- All parent plugins are `<inherited>false</inherited>` where they serve Synapse's own release, and profile ids are
-  Synapse-specific (`synapse-release`, `synapse-snapshot`).
+- Parent plugins that serve Synapse's own build are `<inherited>false</inherited>`. The release and snapshot profiles
+  (`synapse-release`, `synapse-snapshot`) live in the root build, not in the parent, so consumers never inherit them.
 
 ---
 
@@ -822,11 +822,16 @@ version, and REPOSITORY_SETUP check names matching job names. Release and snapsh
 build jobs and environment publish jobs, with a tag-on-main check, documented rulesets and the `snapshots` environment
 limited to `main`. CI matrix per gate 1 (full on JDK 25, smoke on JDK 21, full JDK 21 nightly), nightly failure
 issues, Maven wrapper checksum, Maven dependency submission, OpenSSF Scorecard workflow and Dependabot `develop`
-entries. v1 side: dead `main`-filtered CircleCI workflow deleted and the README maintenance note with the EOL date
-added, on the local branch `chore/v1-maintenance-notice`. Verified locally: `./mvnw verify` on JDK 25, the JDK 21
-smoke run, Javadoc, the docs tool tests and Antora build, actionlint, zizmor and the Central publish script tests.
+entries. Snapshot versions after a milestone (`2.0.1-M1-SNAPSHOT`, `2.0.1-M1-pr<N>-SNAPSHOT`) accepted by the publish
+checks and the docs version; the snapshot publish checks moved into a tested script. v1 side: dead `main`-filtered
+CircleCI workflow deleted and a README maintenance note added that gives the EOL as 6 months after 2.0.0 GA, on the
+local branch `chore/v1-maintenance-notice`. Verified locally: `./mvnw verify` on JDK 25, the JDK 21 smoke run,
+Javadoc, the docs tool tests and Antora build, actionlint, zizmor, and the Central publish and snapshot check script
+tests.
 
 **Remaining scope:** what needs GitHub and waits for a push to the fork, which the maintainer controls:
+- First, make `main` the default branch (fork, later upstream): snapshot publishing, scheduled and manually started
+  workflows, Dependabot and release-please depend on it (see REPOSITORY_SETUP).
 - Demonstrate the rejected PR (failing test, formatting error, NullAway error), then revert it.
 - Run the release-please dry run and record the version it proposes for `main` afterwards.
 - Snapshot publishing from `main` and from a labelled same-repo PR; nothing published for fork PRs.
