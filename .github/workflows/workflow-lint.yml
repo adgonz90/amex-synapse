@@ -1,8 +1,9 @@
 name: Workflow lint
 
-# Checks the GitHub Actions workflows themselves: actionlint for syntax, expressions and embedded shell
+# Checks the GitHub Actions workflows and their scripts: actionlint for syntax, expressions and embedded shell
 # (shellcheck), zizmor for security problems (injection, credential persistence, dangerous triggers, unpinned
-# actions). Findings fail the job; a deliberate exception gets an inline "# zizmor: ignore[<audit>]" with a reason.
+# actions), and the tests of .github/scripts/central-publish.sh (paths .github/** include .github/scripts/**).
+# Findings fail the job; a deliberate exception gets an inline "# zizmor: ignore[<audit>]" with a reason.
 on:
   pull_request:
     branches: [main]
@@ -50,3 +51,17 @@ jobs:
           version: 1.31.1
           # Also report the findings zizmor hides by default (undocumented permissions, concurrency, names...).
           persona: auditor
+
+  publish-script-tests:
+    name: Publish script tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fake curl and gpg only; nothing reaches Central. On ubuntu this covers the zip branch of the bundle step
+      # (local Windows runs use the JDK's jar) and case 9 signs with a real throwaway gpg key.
+      - name: Test central-publish.sh
+        run: bash .github/scripts/test-central-publish.sh

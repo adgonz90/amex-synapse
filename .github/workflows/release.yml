@@ -7,15 +7,19 @@ name: Release
 # Two jobs, so the build never sees a secret:
 #   build    No environment, no secrets, read-only token. Checks that the tag's commit is on main and matches the POM
 #            version, runs the full build with its tests and gates, deploys to a local staging directory and uploads
-#            it as the release-staging artifact.
+#            it as the release-staging artifact. Outputs the commit it built.
 #   publish  Runs in the protected "release" environment, which holds the only copies of the signing key and Central
 #            token:
 #              CENTRAL_USERNAME, CENTRAL_TOKEN   Central Portal user token
 #              GPG_PRIVATE_KEY, GPG_PASSPHRASE   ASCII-armored signing key and its passphrase
-#            It never runs Maven or anything the build produced. .github/scripts/central-publish.sh checks that the
-#            staged files are only this version's Synapse artifacts, signs them with a throwaway keyring, uploads the
-#            bundle and waits until Central has validated it (a bad signature or POM fails the job). Central then
-#            publishes it automatically; the job doesn't wait for publishing to finish.
+#            After the approval wait it checks that the tag still points at the commit the build job built. It never
+#            runs Maven or anything the build produced. .github/scripts/central-publish.sh checks that the staged
+#            files are only this version's Synapse artifacts, signs them with a throwaway keyring, uploads the bundle
+#            and waits until Central has validated it (a bad signature or POM fails the job). Central then publishes
+#            it automatically; the job doesn't wait for publishing to finish.
+#
+# Both jobs run central-publish.sh from the default branch (checked out into trusted/), never from the tag, so a tag
+# can't change the code that checks it or the code that handles the secrets.
 on:
   workflow_call:
     inputs:
@@ -51,8 +55,19 @@ jobs:
       group: release-build
       cancel-in-progress: false
     permissions:
-      contents: read # check out the tag
+      contents: read # check out the tag and the default branch's scripts
+    outputs:
+      commit: ${{ steps.tag.outputs.commit }}
     steps:
+      - name: Check the tag format
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(M|RC)[0-9]+)?$ ]]; then
+            echo "::error::'$TAG' is not a release tag (expected v2.0.0, v2.0.0-M1 or v2.0.0-RC1)."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ inputs.tag }}
@@ -60,10 +75,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The checking code comes from the default branch, not from the tag being checked.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: /.github/scripts/
+          sparse-checkout-cone-mode: false
+
       - name: Check the tag
+        id: tag
         env:
           TAG: ${{ inputs.tag }}
-        run: bash .github/scripts/central-publish.sh check-tag "$TAG"
+        run: |
+          bash trusted/.github/scripts/central-publish.sh check-tag "$TAG"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
@@ -105,14 +132,33 @@ jobs:
       group: release
       cancel-in-progress: false
     permissions:
-      contents: write # attach the SBOM to the GitHub release
+      contents: write # read the tag; attach the SBOM to the GitHub release
       id-token: write # Sigstore OIDC token for signing the build-provenance attestations
       attestations: write # store the attestations
     steps:
-      # Only the publishing script, from the tag the build job checked; nothing else from the repository.
+      # The approval wait can be long: refuse to publish if the tag was moved after the build job checked it.
+      - name: Check the tag still points at the built commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          BUILT_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          if ! [[ "$BUILT_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The build job did not report the commit it built."
+            exit 1
+          fi
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/commits/refs/tags/${TAG}" --jq .sha)"
+          if [ "$current" != "$BUILT_COMMIT" ]; then
+            echo "::error::Tag ${TAG} now points at ${current}, not at ${BUILT_COMMIT}, which the build job built and checked."
+            exit 1
+          fi
+          echo "Tag ${TAG} still points at ${BUILT_COMMIT}."
+
+      # Only the publishing script, from the default branch; nothing from the tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
           persist-credentials: false
           sparse-checkout: /.github/scripts/
           sparse-checkout-cone-mode: false
@@ -130,7 +176,7 @@ jobs:
           CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: bash .github/scripts/central-publish.sh release "${RUNNER_TEMP}/release-staging/staging-deploy" "${TAG#v}"
+        run: bash trusted/.github/scripts/central-publish.sh release "${RUNNER_TEMP}/release-staging/staging-deploy" "${TAG#v}"
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

@@ -75,13 +75,18 @@ Both rulesets are proposals until the maintainers agree on them. *Rules → Rule
   against) can't be rewritten.
 
 - [ ] **Tag ruleset for `v*`.** Target: tags matching `v*`. Rules: restrict creations, restrict updates and restrict
-  deletions. Bypass list: the maintainers only, plus the identity release-please uses to create release tags (the
-  app behind `RELEASE_PLEASE_TOKEN`); without that bypass release-please can't tag a release. Not yet checked:
-  whether the default `GITHUB_TOKEN` can be given a bypass, which decides whether `RELEASE_PLEASE_TOKEN` becomes
-  required.
+  deletions. Bypass list: the maintainers, plus whatever identity release-please creates the release tags with.
+  release-please creates every `v*` tag when a release pull request is merged, so without that bypass it can't
+  tag a release:
+  - with the default `GITHUB_TOKEN`: GitHub Actions (the `github-actions` app);
+  - with `RELEASE_PLEASE_TOKEN`: the GitHub App or user behind that token.
+
+  Not yet checked: whether GitHub Actions can be added to a ruleset's bypass list. If it can't, `RELEASE_PLEASE_TOKEN`
+  becomes required.
 
   Why: a release tag selects what the release workflow builds and publishes. The workflow also refuses a tag whose
-  commit isn't on `main`, but only maintainers should be able to create, move or delete one.
+  commit isn't on `main`, and a tag moved after the build was checked, but only maintainers and release-please should
+  be able to create, move or delete one.
 
 ## Checking the setup
 
