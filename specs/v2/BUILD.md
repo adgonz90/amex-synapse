@@ -815,17 +815,23 @@ release, and is built on `feature/v2-p<n>-…` branches merged to `main`. P0 shi
 (CI, nightly, CodeQL, dependency review, OSV-Scanner, workflow lint, release-please, release, snapshot, docs, PR
 title); Antora skeleton with generated property tables; build-rule invoker tests; CONTRIBUTING, SECURITY,
 REPOSITORY_SETUP.
+Hardening: the JaCoCo/diff-cover no-data bypass, the enforcer exception for `synapse-test`, the snapshot job skipping
+non-SNAPSHOT versions, Javadoc on the JDK 25 CI leg, pinned `maven-help-plugin` and diff-cover dependencies, the Mockito
+agent argument only for modules that have Mockito, the pinned Antora UI bundle with the `prerelease` flag driven by the
+version, and REPOSITORY_SETUP check names matching job names. Release and snapshot workflows split into secret-free
+build jobs and environment publish jobs, with a tag-on-main check, documented rulesets and the `snapshots` environment
+limited to `main`. CI matrix per gate 1 (full on JDK 25, smoke on JDK 21, full JDK 21 nightly), nightly failure
+issues, Maven wrapper checksum, Maven dependency submission, OpenSSF Scorecard workflow and Dependabot `develop`
+entries. v1 side: dead `main`-filtered CircleCI workflow deleted and the README maintenance note with the EOL date
+added, on the local branch `chore/v1-maintenance-notice`. Verified locally: `./mvnw verify` on JDK 25, the JDK 21
+smoke run, Javadoc, the docs tool tests and Antora build, actionlint, zizmor and the Central publish script tests.
 
-**Remaining scope:**
-- Fix: JaCoCo/diff-cover no-data bypass; enforcer exception for `synapse-test`; snapshot job skips non-SNAPSHOT
-  versions; Javadoc on the JDK 25 CI leg; pin `maven-help-plugin`; pin diff-cover's dependencies; Mockito agent
-  argument only when the module has Mockito; Antora UI bundle pinned and the `prerelease` flag driven by the version;
-  REPOSITORY_SETUP check names match job names.
-- Split release and snapshot workflows into secret-free build jobs and environment publish jobs; tag-on-main check;
-  rulesets documented; `snapshots` environment limited to `main`.
-- CI matrix per gate 1 (full on JDK 25, smoke on JDK 21, full JDK 21 nightly); nightly failure issues; Maven wrapper
-  checksum; Maven dependency submission; OpenSSF Scorecard workflow; Dependabot `develop` entries.
-- v1 side (on `develop`): delete the dead `main`-filtered CircleCI workflow; README maintenance note with the EOL date.
+**Remaining scope:** what needs GitHub and waits for a push to the fork, which the maintainer controls:
+- Demonstrate the rejected PR (failing test, formatting error, NullAway error), then revert it.
+- Run the release-please dry run and record the version it proposes for `main` afterwards.
+- Snapshot publishing from `main` and from a labelled same-repo PR; nothing published for fork PRs.
+- Docs CI: the Antora site building in CI with a generated property table.
+- Merge the `develop` maintenance branch (`chore/v1-maintenance-notice`, local only).
 
 **Acceptance:**
 - `./mvnw verify` passes locally on JDK 25 and in CI (JDK 25 full, JDK 21 smoke).
