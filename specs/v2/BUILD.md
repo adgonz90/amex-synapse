@@ -824,12 +824,12 @@ version, and REPOSITORY_SETUP check names matching job names. Release and snapsh
 build jobs and environment publish jobs, with a tag-on-main check, documented rulesets and the `snapshots` environment
 limited to `main`. CI matrix per gate 1 (full on JDK 25, smoke on JDK 21, full JDK 21 nightly), nightly failure
 issues, Maven wrapper checksum, Maven dependency submission, OpenSSF Scorecard workflow
-(Dependabot `develop` entry later removed by maintainer decision). Snapshot versions after a milestone (`2.0.1-M1-SNAPSHOT`, `2.0.1-M1-pr<N>-SNAPSHOT`) accepted by the publish
-checks and the docs version; the snapshot publish checks moved into a tested script. v1 side: dead `main`-filtered
-CircleCI workflow deleted and a README maintenance note added that gives the EOL as 6 months after 2.0.0 GA, on the
-local branch `chore/v1-maintenance-notice`. Verified locally: `./mvnw verify` on JDK 25, the JDK 21 smoke run,
-Javadoc, the docs tool tests and Antora build, actionlint, zizmor, and the Central publish and snapshot check script
-tests.
+(Dependabot `develop` entry later removed by maintainer decision). Snapshot versions after a milestone
+(`2.0.1-M1-SNAPSHOT`, `2.0.1-M1-pr<N>-SNAPSHOT`) accepted by the publish checks and the docs version; the snapshot
+publish checks moved into a tested script. v1 side dropped by maintainer decision (2026-11-01): no work on 0.4.x.
+Verified locally: `./mvnw verify` on JDK 25, the JDK 21 smoke run, Javadoc, the docs tool tests and Antora build,
+actionlint, zizmor, and the Central publish and snapshot check script tests. Deferred review findings are tracked in
+[plans/2026-11-01-p0-follow-ups.md](plans/2026-11-01-p0-follow-ups.md).
 
 **Remaining scope:** what needs GitHub and waits for a push to the fork, which the maintainer controls:
 - First, make `main` the default branch (fork, later upstream): snapshot publishing, scheduled and manually started
@@ -838,7 +838,6 @@ tests.
 - Run the release-please dry run and record the version it proposes for `main` afterwards.
 - Snapshot publishing from `main` and from a labelled same-repo PR; nothing published for fork PRs.
 - Docs CI: the Antora site building in CI with a generated property table.
-- Merge the `develop` maintenance branch (`chore/v1-maintenance-notice`, local only).
 
 **Acceptance:**
 - `./mvnw verify` passes locally on JDK 25 and in CI (JDK 25 full, JDK 21 smoke).
@@ -849,7 +848,6 @@ tests.
 - Snapshot publishing works from `main` and from a labelled same-repo PR without the signing key reaching any build
   job; nothing is published for fork PRs; it skips cleanly without secrets.
 - The Antora site builds in CI with a generated property table.
-- The v1 CircleCI config on `develop` no longer has a workflow filtered on `main`.
 
 ### P1: Core, REST, gRPC, Postgres (2.0.0-M1)
 **Scope:** `synapse-core` (sections 5.1–5.10), `synapse-test` (P1 rows), `synapse-logging-log4j2`, `synapse-api-rest`
