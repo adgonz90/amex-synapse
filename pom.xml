@@ -68,6 +68,8 @@
         <!-- Java: built with JDK 25, bytecode and API level 21 (see specs/v2/BUILD.md) -->
         <java.release>21</java.release>
         <build.java.version>[25,)</build.java.version>
+        <!-- Set to true only by synapse-test, the one module allowed to export test libraries in compile scope. -->
+        <synapse.enforcer.allowTestLibraries>false</synapse.enforcer.allowTestLibraries>
         <maven.compiler.release>${java.release}</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
@@ -356,7 +358,27 @@
                                         <exclude>log4j:log4j</exclude>
                                         <!-- JUnit 4 -->
                                         <exclude>junit:junit</exclude>
-                                        <!-- Test libraries must stay in test scope -->
+                                        <!-- Synapse jars must not choose a logging backend -->
+                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:compile</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:runtime</exclude>
+                                    </excludes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <!-- Test libraries stay out of compile/runtime scope. synapse-test exists to export them and sets
+                         synapse.enforcer.allowTestLibraries=true in its POM. -->
+                    <execution>
+                        <id>enforce-test-scope</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${synapse.enforcer.allowTestLibraries}</skip>
+                            <rules>
+                                <bannedDependencies>
+                                    <message>Test libraries must stay in test scope (only synapse-test may export them): see the Quality gates section of specs/v2/BUILD.md.</message>
+                                    <excludes>
                                         <exclude>org.junit.jupiter:*:*:*:compile</exclude>
                                         <exclude>org.junit.jupiter:*:*:*:runtime</exclude>
                                         <exclude>org.mockito:*:*:*:compile</exclude>
@@ -365,9 +387,6 @@
                                         <exclude>org.assertj:*:*:*:runtime</exclude>
                                         <exclude>org.springframework.boot:spring-boot-starter-test:*:*:compile</exclude>
                                         <exclude>org.springframework.boot:spring-boot-starter-test:*:*:runtime</exclude>
-                                        <!-- Synapse jars must not choose a logging backend -->
-                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:compile</exclude>
-                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:runtime</exclude>
                                     </excludes>
                                 </bannedDependencies>
                             </rules>
