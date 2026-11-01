@@ -24,3 +24,9 @@ updates:
     groups:
       docs:
         patterns: ["*"]
+
+  # Hash-locked tools used by CI (diff-cover); Dependabot updates the .in file's pins and the hashes in the lock.
+  - package-ecosystem: "pip"
+    directory: "/.github/requirements"
+    schedule:
+      interval: "weekly"

@@ -61,6 +61,18 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # Python 3.12 matches the interpreter the diff-cover lock was compiled for (pip-compile output is version-specific).
+      - name: Set up Python (changed-lines coverage)
+        if: github.event_name == 'pull_request' && matrix.test-jdk == '25'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      # Hash-locked install: any package whose hash differs from .github/requirements/diff-cover.txt is rejected.
+      - name: Install diff-cover
+        if: github.event_name == 'pull_request' && matrix.test-jdk == '25'
+        run: python -m pip install --require-hashes --no-deps -r .github/requirements/diff-cover.txt
+
       # At least 90% of the lines changed by a pull request must be covered by tests (unit + integration).
       - name: Changed-lines coverage (>= 90%)
         if: github.event_name == 'pull_request' && matrix.test-jdk == '25'
@@ -77,7 +89,7 @@ jobs:
             echo "::error::No JaCoCo reports found for modules with main sources."
             exit 1
           fi
-          pipx run diff-cover==11.0.0 "${reports[@]}" \
+          diff-cover "${reports[@]}" \
             --compare-branch="origin/${BASE_REF}" \
             --fail-under=90 \
             --src-roots "${roots[@]}"
