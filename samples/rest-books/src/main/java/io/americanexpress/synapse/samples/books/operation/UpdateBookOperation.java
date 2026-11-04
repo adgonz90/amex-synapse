@@ -39,7 +39,7 @@ public class UpdateBookOperation implements CommandOperation<UpdateBookRequest, 
     @Override
     public Book execute(UpdateBookRequest request) {
         BookRevision revision = new BookRevision(request.id(), request.isbn(), request.title(), request.author(),
-                request.year());
+                request.year(), request.version());
         return BookMapping.toBook(reviseBook.execute(revision));
     }
 }

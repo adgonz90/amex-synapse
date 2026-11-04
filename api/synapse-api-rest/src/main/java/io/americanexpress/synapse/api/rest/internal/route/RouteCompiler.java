@@ -34,7 +34,9 @@ import io.americanexpress.synapse.api.rest.RestConventions;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 
 /**
  * Compiles the REST bindings into functional routes at startup. It resolves and checks every route (including the
@@ -44,7 +46,8 @@ import io.americanexpress.synapse.core.SynapseConfigurationException;
  * the same order, a {@code HEAD} route for each {@code GET} route, served by the same handler, so a declared
  * {@code HEAD} route wins. No route matches the servlet container's error dispatch, which belongs to the error
  * controller. Any binding mistake fails startup. The 405 and {@code OPTIONS} fallback is not part of the routes: it
- * is the {@link MethodNotAllowedMapping}, after the other handler mappings.
+ * is the {@link MethodNotAllowedMapping}, after the other handler mappings. Once the routes are checked, it reports a
+ * cursor key generated at startup when a route returns {@code PageResult} ({@link PageCursors#reportGeneratedKey}).
  */
 public final class RouteCompiler {
 
@@ -59,17 +62,26 @@ public final class RouteCompiler {
 
     private final ResponseWriter writer;
 
+    private final PageCursors cursors;
+
+    private final SynapseEnvironment environment;
+
     /**
      * Creates the compiler.
      *
      * @param validator resolves and checks the routes
      * @param binder checks and binds the inputs
      * @param writer writes the responses
+     * @param cursors unwraps the cursor tokens, and reports a generated cursor key
+     * @param environment tells whether this is production, for the level of that report
      */
-    public RouteCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer) {
+    public RouteCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer, PageCursors cursors,
+            SynapseEnvironment environment) {
         this.validator = validator;
         this.binder = binder;
         this.writer = writer;
+        this.cursors = cursors;
+        this.environment = environment;
     }
 
     /**
@@ -87,7 +99,7 @@ public final class RouteCompiler {
         Map<RouteDefinition, OperationHandler> getRoutes = new LinkedHashMap<>();
         for (RouteDefinition route : routes) {
             binder.checkBindable(route);
-            OperationHandler handler = new OperationHandler(route, binder, writer);
+            OperationHandler handler = new OperationHandler(route, binder, writer, cursors);
             builder.route(predicate(route.method(), route), handler);
             if (HttpMethod.GET.equals(route.method())) {
                 getRoutes.put(route, handler);
@@ -95,6 +107,8 @@ public final class RouteCompiler {
         }
         // HEAD is served by each GET route's handler, after every declared route so a declared HEAD route wins.
         getRoutes.forEach((route, handler) -> builder.route(predicate(HttpMethod.HEAD, route), handler));
+        // Every route is checked: a startup that fails on a binding mistake reports nothing.
+        cursors.reportGeneratedKey(routes, environment);
         return builder.build();
     }
 

@@ -13,31 +13,68 @@
  */
 package io.americanexpress.synapse.api.rest.internal.route;
 
+import java.security.SecureRandom;
+import java.time.Clock;
+import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.jspecify.annotations.Nullable;
+import org.springframework.format.support.DefaultFormattingConversionService;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
+import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestProperties;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
+import io.americanexpress.synapse.api.rest.internal.paging.AesGcmCursorCodec;
+import io.americanexpress.synapse.api.rest.internal.paging.CursorKeys;
+import io.americanexpress.synapse.api.rest.internal.paging.InputDigest;
+import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 /** Records and operations of the route tests. */
 final class RouteFixtures {
 
     static final Book BOOK = new Book(7, "Dune");
 
+    /** A configured cursor key (32 zero bytes), so tokens stay valid across the cursors of one test. */
+    static final String CURSOR_KEY = Base64.getEncoder().encodeToString(new byte[32]);
+
     private RouteFixtures() {
+    }
+
+    /** The cursors of an AES-GCM codec with the key, or with a key generated at startup when it is null. */
+    static PageCursors cursors(@Nullable String key) {
+        SecureRandom random = new SecureRandom();
+        SynapseRestProperties.Paging.Cursor cursor = new SynapseRestProperties.Paging.Cursor(key, List.of(), null);
+        return new PageCursors(new AesGcmCursorCodec(CursorKeys.from(cursor, random), Clock.systemUTC(), null, random),
+                new InputDigest(), PagingSettings.defaults());
+    }
+
+    /** The cursors of an AES-GCM codec with {@link #CURSOR_KEY}. */
+    static PageCursors cursors() {
+        return cursors(CURSOR_KEY);
+    }
+
+    /** The entity tag values, formatted with a default conversion service. */
+    static ETagValues etags() {
+        return new ETagValues(new DefaultFormattingConversionService());
     }
 
     /** Resolves the first route of the bindings, as the routes bean does. */
     static RouteDefinition route(RestBindings bindings, RestConventions... conventions) {
-        return new BindingValidator().validate(bindings.routes(), List.of(conventions)).getFirst();
+        return new BindingValidator(PagingSettings.defaults())
+                .validate(bindings.routes(), List.of(conventions))
+                .getFirst();
     }
 
     record BookId(long id) {
@@ -62,6 +99,39 @@ final class RouteFixtures {
     }
 
     record Quota(Book book, int rateRemaining) {
+    }
+
+    record PagedBooksRequest(@Nullable String author, PageQuery page) {
+    }
+
+    /** A book with the version its {@code ETag} is made from. */
+    record VersionedBook(long id, String title, @Nullable Long version) {
+    }
+
+    static class GetVersionedBookOperation implements QueryOperation<BookId, VersionedBook> {
+        @Override
+        public VersionedBook execute(BookId input) {
+            return new VersionedBook(input.id(), "Dune", 7L);
+        }
+    }
+
+    static class CreateVersionedBookOperation implements CommandOperation<VersionedBook, VersionedBook> {
+        @Override
+        public VersionedBook execute(VersionedBook input) {
+            return input;
+        }
+    }
+
+    /** Revises a book and counts its calls; the version is bound from {@code If-Match}. */
+    static class ReviseVersionedBookOperation implements CommandOperation<VersionedBook, VersionedBook> {
+
+        final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public VersionedBook execute(VersionedBook input) {
+            calls.incrementAndGet();
+            return input;
+        }
     }
 
     static class GetLabelsOperation implements QueryOperation<BookId, Labels> {
@@ -156,6 +226,20 @@ final class RouteFixtures {
         @Override
         public Job execute(Book input) {
             return new Job(9, true);
+        }
+    }
+
+    /** Answers with its {@code result}, and records the inputs it receives. */
+    static class PagedBooksOperation implements QueryOperation<PagedBooksRequest, PageResult<Book>> {
+
+        final List<PagedBooksRequest> inputs = new CopyOnWriteArrayList<>();
+
+        volatile PageResult<Book> result = PageResult.of(List.of(BOOK), false);
+
+        @Override
+        public PageResult<Book> execute(PagedBooksRequest input) {
+            inputs.add(input);
+            return result;
         }
     }
 }

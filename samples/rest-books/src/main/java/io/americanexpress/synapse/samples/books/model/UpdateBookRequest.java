@@ -27,7 +27,10 @@ import org.jspecify.annotations.Nullable;
  * @param title the title
  * @param author the author
  * @param year the year of publication, if known
+ * @param version the version this change is based on, or {@code null}. The REST binding fills it from
+ *        {@code If-Match}; without one (or with {@code If-Match: *}) the update applies to the version it reads, and a
+ *        concurrent change between that read and the write still fails
  */
 public record UpdateBookRequest(UUID id, @NotBlank String isbn, @NotBlank String title, @NotBlank String author,
-        @Positive @Nullable Integer year) {
+        @Positive @Nullable Integer year, @Nullable Long version) {
 }

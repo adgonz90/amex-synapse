@@ -141,12 +141,17 @@ The framework's own `SynapseErrors`:
 |`UNAUTHENTICATED` |`UNAUTHENTICATED` |Authentication is required
 |`FORBIDDEN` |`FORBIDDEN` |Access is denied
 |`CONFLICT` |`CONFLICT` |The request conflicts with the current state of the resource
+|`STALE_VERSION` |`CONFLICT` |The resource was changed by another request
 |`PRECONDITION_FAILED` |`PRECONDITION_FAILED` |A precondition failed
 |`RATE_LIMITED` |`RATE_LIMITED` |Too many requests
 |`UNAVAILABLE` |`UNAVAILABLE` |The service is unavailable
 |`DEADLINE_EXCEEDED` |`TIMEOUT` |The deadline expired
 |`INTERNAL` |`INTERNAL` |An internal error occurred
 |===
+
+Throw `STALE_VERSION` when a write finds the resource at another version than the one it expects: a version check
+or a compare-and-set failed. Over REST it is 409, or 412 `PRECONDITION_FAILED` when the request sent a bound
+`If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]).
 
 Register `ExceptionTranslator` beans to map exceptions of libraries you use. Modules contribute their own; core has
 no data or security dependency. `ConstraintViolationException` is translated to `VALIDATION_FAILED`.
@@ -160,6 +165,12 @@ and an optional total. With Spring Data on the classpath, `SpringDataPages.from(
 `pageable(PageQuery)` convert (the `Pageable` is offset-based with an exact offset; a cursor query is rejected).
 
 Defaults: `synapse.paging.default-size` 20, `synapse.paging.max-size` 100.
+
+The REST plugin checks paging at the edge, before the pipeline runs: the page size against `synapse.paging.max-size`,
+the offset against `synapse.api.rest.paging.max-offset`, a cursor combined with an offset, and the sort keys against
+the route's `.sortable` allow-list. It reports violations under the query parameter names (`size`, `offset`,
+`cursor`, `sort`), so core's check never reports them a second time. The edge also encrypts the operation's cursor
+into an opaque token bound to the operation, the sort and the other inputs. See xref:rest.adoc#paging[REST paging].
 
 == Masking
 

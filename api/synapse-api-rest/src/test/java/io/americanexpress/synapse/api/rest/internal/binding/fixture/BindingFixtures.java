@@ -15,8 +15,10 @@ package io.americanexpress.synapse.api.rest.internal.binding.fixture;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -36,6 +38,8 @@ import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
 import io.americanexpress.synapse.data.restfixture.DataCapability;
 import io.americanexpress.synapse.data.restfixture.DataRow;
 
@@ -466,10 +470,399 @@ public final class BindingFixtures {
         }
     }
 
+    /** Sort keys: the wire names are {@code title}, {@code year} and {@code authorName}. */
+    public enum SortKey {
+        TITLE,
+        @JsonProperty("year")
+        PUBLISHED_YEAR,
+        AUTHOR_NAME
+    }
+
+    /** A filter and the paging parameters. */
+    public record PagedBooksRequest(@Nullable String author, PageQuery page) {
+    }
+
+    public static class PagedBooksOperation implements QueryOperation<PagedBooksRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(PagedBooksRequest input) {
+            return new PageResult<>(List.of(BOOK), null, false, null);
+        }
+    }
+
+    /** Pages through everything: the paging parameters are the whole input. */
+    public static class SearchAllOperation implements QueryOperation<PageQuery, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(PageQuery input) {
+            return new PageResult<>(List.of(BOOK), null, false, null);
+        }
+    }
+
+    public record TwoPagesRequest(PageQuery a, PageQuery b) {
+    }
+
+    public static class TwoPagesOperation implements QueryOperation<TwoPagesRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(TwoPagesRequest input) {
+            return new PageResult<>(List.of(BOOK), null, false, null);
+        }
+    }
+
+    /** A filter named like a paging parameter. */
+    public record SizeFilterRequest(@Nullable String size, PageQuery page) {
+    }
+
+    public static class SizeFilterOperation implements QueryOperation<SizeFilterRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(SizeFilterRequest input) {
+            return new PageResult<>(List.of(BOOK), null, false, null);
+        }
+    }
+
+    /** The same filter on a route that doesn't page. */
+    public record SizeOnlyRequest(@Nullable String size) {
+    }
+
+    public static class SizeOnlyOperation implements QueryOperation<SizeOnlyRequest, List<BookResult>> {
+        @Override
+        public List<BookResult> execute(SizeOnlyRequest input) {
+            return List.of(BOOK);
+        }
+    }
+
+    /** A filter that a renamed paging parameter may clash with. */
+    public record PageSizeRequest(@Nullable Integer pageSize, PageQuery page) {
+    }
+
+    public static class PageSizeOperation implements QueryOperation<PageSizeRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(PageSizeRequest input) {
+            return new PageResult<>(List.of(BOOK), null, false, null);
+        }
+    }
+
+    /** A query filter before the paging parameters, so its violations come first. */
+    public record LimitedPageRequest(@Nullable Integer limit, PageQuery page) {
+    }
+
+    public static class LimitedPageOperation implements QueryOperation<LimitedPageRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(LimitedPageRequest input) {
+            return new PageResult<>(List.of(BOOK), null, false, null);
+        }
+    }
+
+    /** Filters built from the query string, one of them named like a paging parameter. */
+    public record OffsetFilter(@Nullable String offset, @Nullable String genre) {
+    }
+
+    public record FilteredPageRequest(@Nullable OffsetFilter filter, PageQuery page) {
+    }
+
+    public static class FilteredPageOperation implements QueryOperation<FilteredPageRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(FilteredPageRequest input) {
+            return new PageResult<>(List.of(BOOK), null, false, null);
+        }
+    }
+
+    public static class OptionalPageOperation
+            implements
+            QueryOperation<PagedBooksRequest, Optional<PageResult<BookResult>>> {
+        @Override
+        public Optional<PageResult<BookResult>> execute(PagedBooksRequest input) {
+            return Optional.empty();
+        }
+    }
+
+    public static class ListOfPagesOperation
+            implements
+            QueryOperation<PagedBooksRequest, List<PageResult<BookResult>>> {
+        @Override
+        public List<PageResult<BookResult>> execute(PagedBooksRequest input) {
+            return List.of();
+        }
+    }
+
+    public record Author(String name) {
+    }
+
+    /** An output with a version an ETag can carry, and components of types it can't. */
+    public record VersionedBook(UUID id, String title, long version, Author author, Optional<String> edition) {
+    }
+
+    private static final VersionedBook VERSIONED = new VersionedBook(new UUID(0, 1), "T", 1, new Author("A"),
+            Optional.empty());
+
+    public static class GetVersionedBookOperation implements QueryOperation<GetBookRequest, Optional<VersionedBook>> {
+        @Override
+        public Optional<VersionedBook> execute(GetBookRequest input) {
+            return Optional.of(VERSIONED);
+        }
+    }
+
+    public static class CreateVersionedBookOperation implements CommandOperation<CreateBookRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(CreateBookRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    public static class ListVersionedBooksOperation implements QueryOperation<GetBookRequest, List<VersionedBook>> {
+        @Override
+        public List<VersionedBook> execute(GetBookRequest input) {
+            return List.of(VERSIONED);
+        }
+    }
+
+    public static class PageVersionedBooksOperation
+            implements
+            QueryOperation<PagedBooksRequest, PageResult<VersionedBook>> {
+        @Override
+        public PageResult<VersionedBook> execute(PagedBooksRequest input) {
+            return new PageResult<>(List.of(VERSIONED), null, false, null);
+        }
+    }
+
+    /** A write whose version comes from {@code If-Match}. */
+    public record ReviseBookRequest(UUID id, @Nullable Long version, String title) {
+    }
+
+    public static class ReviseBookOperation implements CommandOperation<ReviseBookRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(ReviseBookRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** Like {@link ReviseBookRequest}, with a version that can't be null. */
+    public record StrictReviseRequest(UUID id, long version, String title) {
+    }
+
+    public static class StrictReviseOperation implements CommandOperation<StrictReviseRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(StrictReviseRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    public record RemoveBookRequest(UUID id, @Nullable Long version) {
+    }
+
+    public static class RemoveBookOperation implements CommandOperation<RemoveBookRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(RemoveBookRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A write whose tag components are strings, bound from {@code If-None-Match} or another header. */
+    public record TaggedBookRequest(UUID id, @Nullable String etag, @Nullable String other) {
+    }
+
+    public static class TaggedBookOperation implements CommandOperation<TaggedBookRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(TaggedBookRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** No constructor or factory method takes a String, so no conversion service can make one from a string. */
+    public record PairFilter(int a, int b) {
+    }
+
+    /** One String component: its canonical constructor takes a String. */
+    public record Isbn(String value) {
+    }
+
+    public record PairQuery(@Nullable PairFilter pair) {
+    }
+
+    public record ConvertRequest(@Nullable PairFilter filter, @Nullable Isbn isbn, @Nullable PairQuery nested) {
+    }
+
+    public static class ConvertOperation implements QueryOperation<ConvertRequest, BookResult> {
+        @Override
+        public BookResult execute(ConvertRequest input) {
+            return BOOK;
+        }
+    }
+
+    public record PathFilterRequest(PairFilter filter) {
+    }
+
+    public static class PathFilterOperation implements QueryOperation<PathFilterRequest, BookResult> {
+        @Override
+        public BookResult execute(PathFilterRequest input) {
+            return BOOK;
+        }
+    }
+
+    public record SimpleSourcesRequest(UUID id, @Nullable List<String> tags, @Nullable Long version,
+            @Nullable LocalDate since) {
+    }
+
+    public static class SimpleSourcesOperation implements QueryOperation<SimpleSourcesRequest, BookResult> {
+        @Override
+        public BookResult execute(SimpleSourcesRequest input) {
+            return BOOK;
+        }
+    }
+
     public static class PingOperation implements QueryOperation<Void, String> {
         @Override
         public String execute(Void input) {
             return "pong";
+        }
+    }
+
+    /** An output with a page among its components. */
+    public record BookShelf(String name, PageResult<BookResult> books) {
+    }
+
+    public static class GetBookShelfOperation implements QueryOperation<Void, BookShelf> {
+        @Override
+        public BookShelf execute(Void input) {
+            return new BookShelf("s", PageResult.of(List.of(BOOK), false));
+        }
+    }
+
+    public static class ListBookShelvesOperation implements QueryOperation<Void, List<Optional<BookShelf>>> {
+        @Override
+        public List<Optional<BookShelf>> execute(Void input) {
+            return List.of();
+        }
+    }
+
+    public static class PageOfBookShelvesOperation implements QueryOperation<PagedBooksRequest, PageResult<BookShelf>> {
+        @Override
+        public PageResult<BookShelf> execute(PagedBooksRequest input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** A class, not a record, that a request can't put into a cursor digest. */
+    public static final class Principal {
+
+        private final String name;
+
+        public Principal(String name) {
+            this.name = name;
+        }
+
+        public String name() {
+            return name;
+        }
+    }
+
+    public record PrincipalPageRequest(@Nullable Principal principal, PageQuery page) {
+    }
+
+    public static class PrincipalPageOperation
+            implements
+            QueryOperation<PrincipalPageRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(PrincipalPageRequest input) {
+            return PageResult.of(List.of(BOOK), false);
+        }
+    }
+
+    public static class PrincipalBookOperation implements QueryOperation<PrincipalPageRequest, BookResult> {
+        @Override
+        public BookResult execute(PrincipalPageRequest input) {
+            return BOOK;
+        }
+    }
+
+    public record PrincipalRequest(@Nullable Principal principal) {
+    }
+
+    public static class PrincipalOnlyOperation implements QueryOperation<PrincipalRequest, BookResult> {
+        @Override
+        public BookResult execute(PrincipalRequest input) {
+            return BOOK;
+        }
+    }
+
+    public record Tagged(String tag, @Nullable List<Isbn> isbns) {
+    }
+
+    /** Every kind of component a cursor digest accepts. */
+    public record DigestiblePageRequest(@Nullable Isbn isbn, @Nullable SortKey key, @Nullable List<String> tags,
+            @Nullable Set<UUID> ids, @Nullable Map<String, LocalDate> dates, @Nullable Optional<Tagged> tagged,
+            PageQuery page) {
+    }
+
+    public static class DigestiblePageOperation
+            implements
+            CommandOperation<DigestiblePageRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(DigestiblePageRequest input) {
+            return PageResult.of(List.of(BOOK), false);
+        }
+    }
+
+    /** A generic wrapper: {@code Holder<String>} and {@code Holder<Principal>} are different types. */
+    public record Holder<T>(T value) {
+    }
+
+    /** A digestible holder, then one of a class the digest can't write. */
+    public record HolderContext(Holder<String> region, Holder<Principal> who) {
+    }
+
+    public record HolderPageRequest(@Nullable HolderContext context, PageQuery page) {
+    }
+
+    public static class HolderPageOperation implements CommandOperation<HolderPageRequest, PageResult<BookResult>> {
+        @Override
+        public PageResult<BookResult> execute(HolderPageRequest input) {
+            return PageResult.of(List.of(BOOK), false);
+        }
+    }
+
+    /** A plain holder, then one of a page. */
+    public record HolderOutput(Holder<String> label, Holder<PageResult<String>> page) {
+    }
+
+    public static class GetHolderOutputOperation implements QueryOperation<Void, HolderOutput> {
+        @Override
+        public HolderOutput execute(Void input) {
+            return new HolderOutput(new Holder<>("l"), new Holder<>(PageResult.of(List.of(), false)));
+        }
+    }
+
+    /** A genuinely recursive record. */
+    public record TreeNode(String value, List<TreeNode> children) {
+    }
+
+    public record TreePageRequest(@Nullable TreeNode root, PageQuery page) {
+    }
+
+    public static class TreePageOperation implements CommandOperation<TreePageRequest, PageResult<TreeNode>> {
+        @Override
+        public PageResult<TreeNode> execute(TreePageRequest input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /**
+     * A generic record that branches and grows: every level doubles the parameterizations to walk
+     * ({@code Grow<List<T>>} and {@code Grow<Set<T>>}), and none repeats.
+     */
+    public record Grow<T>(T value, Optional<Grow<List<T>>> listed, Optional<Grow<Set<T>>> collected) {
+    }
+
+    public static class GetGrowOperation implements QueryOperation<Void, Grow<String>> {
+        @Override
+        public Grow<String> execute(Void input) {
+            return new Grow<>("a", Optional.empty(), Optional.empty());
+        }
+    }
+
+    /** A page of pages: the inner page would be written with its raw cursor. */
+    public static class PageOfPagesOperation implements QueryOperation<PageQuery, PageResult<PageResult<String>>> {
+        @Override
+        public PageResult<PageResult<String>> execute(PageQuery input) {
+            return PageResult.of(List.of(), false);
         }
     }
 }

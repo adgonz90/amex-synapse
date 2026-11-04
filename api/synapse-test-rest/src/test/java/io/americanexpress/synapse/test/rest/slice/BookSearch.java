@@ -15,10 +15,13 @@ package io.americanexpress.synapse.test.rest.slice;
 
 import org.jspecify.annotations.Nullable;
 
+import io.americanexpress.synapse.core.paging.PageQuery;
+
 /**
  * Searches books.
  *
  * @param title the title to look for, or {@code null} for every book
+ * @param page the page to return
  */
-record BookSearch(@Nullable String title) {
+record BookSearch(@Nullable String title, PageQuery page) {
 }

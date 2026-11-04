@@ -31,7 +31,9 @@ class RestErrorsTest {
         assertError(RestErrors.PAYLOAD_TOO_LARGE, "The request body is too large", ErrorCategory.INVALID_INPUT, 413);
         assertError(RestErrors.UNSUPPORTED_MEDIA_TYPE, "The request media type is not supported",
                 ErrorCategory.INVALID_INPUT, 415);
-        assertThat(RestErrors.values()).hasSize(5);
+        assertError(RestErrors.PRECONDITION_REQUIRED, "The request must be conditional",
+                ErrorCategory.PRECONDITION_FAILED, 428);
+        assertThat(RestErrors.values()).hasSize(6);
     }
 
     private static void assertError(RestErrors error, String message, ErrorCategory category, int status) {

@@ -27,6 +27,7 @@ class BooksRestConfiguration {
         return RestBindings
                 .builder()
                 .get("/books/{id}", getBook)
+                .etag(Book::title)
                 .notFound(BookErrors.BOOK_NOT_FOUND)
                 .get("/books", searchBooks)
                 .build();

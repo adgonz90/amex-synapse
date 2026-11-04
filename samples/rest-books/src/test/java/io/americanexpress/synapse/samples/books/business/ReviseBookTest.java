@@ -18,6 +18,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
+import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.samples.books.business.model.BookRemoval;
 import io.americanexpress.synapse.samples.books.business.model.BookRevision;
 import io.americanexpress.synapse.samples.books.business.model.CatalogBook;
 import io.americanexpress.synapse.samples.books.business.model.NewBook;
@@ -30,6 +32,7 @@ import io.americanexpress.synapse.test.operation.SynapseOperations;
 import static io.americanexpress.synapse.test.assertj.SynapseAssertions.assertThatSynapseException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
@@ -39,33 +42,64 @@ import static org.mockito.Mockito.mock;
  */
 class ReviseBookTest {
 
+    private static final StoredBook DUNE = new StoredBook(InMemoryBookStore.DUNE, "978-0441172719", "Dune",
+            "Frank Herbert", 1965, null, 1);
+
     private final InMemoryBookStore store = new InMemoryBookStore();
 
     @Test
     void revisesABookAndKeepsTheChannelItWasAddedThrough() {
         CatalogBook added = SynapseOperations
                 .invoke(new AddBook(store), new NewBook("isbn-1", "Title", "Author", null, "mobile"));
+        assertThat(added.version()).isEqualTo(1);
 
         CatalogBook revised = SynapseOperations
-                .invoke(new ReviseBook(store), new BookRevision(added.id(), "isbn-1", "New title", "Author", 2001));
+                .invoke(new ReviseBook(store),
+                        new BookRevision(added.id(), "isbn-1", "New title", "Author", 2001, 1L));
 
-        assertThat(revised).isEqualTo(new CatalogBook(added.id(), "isbn-1", "New title", "Author", 2001, "mobile"));
+        assertThat(revised).isEqualTo(new CatalogBook(added.id(), "isbn-1", "New title", "Author", 2001, "mobile", 2));
         assertThat(store.find(added.id())).map(StoredBook::title).contains("New title");
     }
 
     @Test
-    void removesABookAndReturnsIt() {
-        CatalogBook removed = SynapseOperations.invoke(new RemoveBook(store), InMemoryBookStore.DUNE);
+    void withoutAVersionTheRevisionChecksTheVersionItRead() {
+        CatalogBook revised = SynapseOperations
+                .invoke(new ReviseBook(store),
+                        new BookRevision(InMemoryBookStore.DUNE, "978-0441172719", "Dune", "Frank Herbert", 1966,
+                                null));
 
-        assertThat(removed.title()).isEqualTo("Dune");
-        assertThat(store.find(InMemoryBookStore.DUNE)).isEmpty();
+        assertThat(revised.version()).isEqualTo(2);
+        assertThat(store.find(InMemoryBookStore.DUNE)).map(StoredBook::year).contains(1966);
+    }
+
+    @Test
+    void aVersionThatIsNotTheCurrentOneIsStaleVersion() {
+        assertThatSynapseException(() -> SynapseOperations
+                .invoke(new ReviseBook(store),
+                        new BookRevision(InMemoryBookStore.DUNE, "978-0441172719", "Changed", "Frank Herbert", 1965,
+                                5L)))
+                .hasCode(SynapseErrors.STALE_VERSION);
+        assertThat(store.find(InMemoryBookStore.DUNE)).contains(DUNE);
+    }
+
+    @Test
+    void aWriteThatWinsAfterTheReadIsStaleVersion() {
+        InMemoryBookStore racing = mock();
+        given(racing.find(InMemoryBookStore.DUNE)).willReturn(Optional.of(DUNE));
+        given(racing.replace(any(), anyLong())).willReturn(WriteOutcome.STALE);
+
+        assertThatSynapseException(() -> SynapseOperations
+                .invoke(new ReviseBook(racing),
+                        new BookRevision(InMemoryBookStore.DUNE, "978-0441172719", "Dune", "Frank Herbert", 1965,
+                                1L)))
+                .hasCode(SynapseErrors.STALE_VERSION);
     }
 
     @Test
     void anUnknownBookIsBookNotFound() {
         assertThatSynapseException(() -> SynapseOperations
                 .invoke(new ReviseBook(store),
-                        new BookRevision(UUID.randomUUID(), "isbn-1", "Title", "Author", null)))
+                        new BookRevision(UUID.randomUUID(), "isbn-1", "Title", "Author", null, null)))
                 .hasCode(BookErrors.BOOK_NOT_FOUND);
     }
 
@@ -73,20 +107,68 @@ class ReviseBookTest {
     void anotherBooksIsbnIsDuplicateIsbn() {
         assertThatSynapseException(() -> SynapseOperations
                 .invoke(new ReviseBook(store),
-                        new BookRevision(InMemoryBookStore.DUNE, "978-0441478125", "Dune", "Frank Herbert", 1965)))
+                        new BookRevision(InMemoryBookStore.DUNE, "978-0441478125", "Dune", "Frank Herbert", 1965,
+                                null)))
                 .hasCode(BookErrors.DUPLICATE_ISBN);
     }
 
     @Test
     void aBookRemovedWhileBeingRevisedIsBookNotFound() {
         InMemoryBookStore racing = mock();
-        StoredBook dune = new StoredBook(InMemoryBookStore.DUNE, "978-0441172719", "Dune", "Frank Herbert", 1965, null);
-        given(racing.find(InMemoryBookStore.DUNE)).willReturn(Optional.of(dune));
-        given(racing.replace(any())).willReturn(WriteOutcome.NOT_FOUND);
+        given(racing.find(InMemoryBookStore.DUNE)).willReturn(Optional.of(DUNE));
+        given(racing.replace(any(), anyLong())).willReturn(WriteOutcome.NOT_FOUND);
 
         assertThatSynapseException(() -> SynapseOperations
                 .invoke(new ReviseBook(racing),
-                        new BookRevision(InMemoryBookStore.DUNE, "978-0441172719", "Dune", "Frank Herbert", 1965)))
+                        new BookRevision(InMemoryBookStore.DUNE, "978-0441172719", "Dune", "Frank Herbert", 1965,
+                                null)))
+                .hasCode(BookErrors.BOOK_NOT_FOUND);
+    }
+
+    @Test
+    void removesABookAndReturnsIt() {
+        CatalogBook removed = SynapseOperations
+                .invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, 1L));
+
+        assertThat(removed.title()).isEqualTo("Dune");
+        assertThat(store.find(InMemoryBookStore.DUNE)).isEmpty();
+    }
+
+    @Test
+    void removingWithoutAVersionChecksTheVersionItRead() {
+        SynapseOperations.invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, null));
+
+        assertThat(store.find(InMemoryBookStore.DUNE)).isEmpty();
+    }
+
+    @Test
+    void removingWithAStaleVersionIsStaleVersionAndKeepsTheBook() {
+        assertThatSynapseException(() -> SynapseOperations
+                .invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, 5L)))
+                .hasCode(SynapseErrors.STALE_VERSION);
+        assertThat(store.find(InMemoryBookStore.DUNE)).contains(DUNE);
+    }
+
+    @Test
+    void removingAnUnknownBookIsBookNotFound() {
+        assertThatSynapseException(
+                () -> SynapseOperations.invoke(new RemoveBook(store), new BookRemoval(UUID.randomUUID(), null)))
+                .hasCode(BookErrors.BOOK_NOT_FOUND);
+    }
+
+    @Test
+    void aRemovalThatLosesARaceIsStaleVersionOrBookNotFound() {
+        InMemoryBookStore racing = mock();
+        given(racing.find(InMemoryBookStore.DUNE)).willReturn(Optional.of(DUNE));
+        given(racing.remove(InMemoryBookStore.DUNE, 1L)).willReturn(WriteOutcome.STALE, WriteOutcome.NOT_FOUND);
+        RemoveBook removeBook = new RemoveBook(racing);
+        BookRemoval removal = new BookRemoval(InMemoryBookStore.DUNE, 1L);
+
+        // Changed by a concurrent request since it was read...
+        assertThatSynapseException(() -> SynapseOperations.invoke(removeBook, removal))
+                .hasCode(SynapseErrors.STALE_VERSION);
+        // ...or removed by one.
+        assertThatSynapseException(() -> SynapseOperations.invoke(removeBook, removal))
                 .hasCode(BookErrors.BOOK_NOT_FOUND);
     }
 }

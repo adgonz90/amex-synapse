@@ -50,8 +50,9 @@ public class AddBook implements BusinessOperation<NewBook, CatalogBook> {
      */
     @Override
     public CatalogBook execute(NewBook book) {
+        // A new book is at version 1; every change adds 1.
         StoredBook stored = new StoredBook(UUID.randomUUID(), book.isbn(), book.title(), book.author(), book.year(),
-                book.addedVia());
+                book.addedVia(), 1);
         if (store.insert(stored) == WriteOutcome.ISBN_TAKEN) {
             throw new SynapseException(BookErrors.DUPLICATE_ISBN, book.isbn());
         }

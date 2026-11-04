@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.api.rest.internal.binding;
 
+import java.util.List;
 import java.util.function.Function;
 
 import org.jspecify.annotations.Nullable;
@@ -99,5 +100,38 @@ public sealed interface RouteDeclaration {
      * {@code .alsoInBody()}: the output header declared just before stays in the body.
      */
     record AlsoInBody() implements RouteDeclaration {
+    }
+
+    /**
+     * {@code .sortable(keys)} or {@code .sortable(names...)}: the route's sort allow-list.
+     *
+     * @param keys the enum of sort keys, or {@code null} when the keys are given as names
+     * @param names the key names, empty when the keys are an enum
+     */
+    record Sortable(@Nullable Class<? extends Enum<?>> keys, List<String> names) implements RouteDeclaration {
+
+        /**
+         * Creates the declaration.
+         *
+         * @param keys the enum of sort keys, or {@code null}
+         * @param names the key names
+         */
+        public Sortable {
+            names = List.copyOf(names);
+        }
+    }
+
+    /**
+     * {@code .etag(component)}: the output component sent as the strong {@code ETag}.
+     *
+     * @param component the output component
+     */
+    record ETag(ComponentRef<?, ?> component) implements RouteDeclaration {
+    }
+
+    /**
+     * {@code .requireIfMatch()}: a request without {@code If-Match} is answered 428.
+     */
+    record RequireIfMatch() implements RouteDeclaration {
     }
 }

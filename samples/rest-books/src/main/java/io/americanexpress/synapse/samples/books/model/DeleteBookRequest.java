@@ -15,10 +15,15 @@ package io.americanexpress.synapse.samples.books.model;
 
 import java.util.UUID;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Removes a book from the catalog.
  *
  * @param id the id of the book
+ * @param version the version the caller expects the book to have, or {@code null} to check against the version the
+ *        business operation reads. The REST binding fills it from {@code If-Match}, which the route requires;
+ *        {@code If-Match: *} binds {@code null}
  */
-public record DeleteBookRequest(UUID id) {
+public record DeleteBookRequest(UUID id, @Nullable Long version) {
 }

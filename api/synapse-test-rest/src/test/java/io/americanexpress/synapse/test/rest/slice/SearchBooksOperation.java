@@ -18,13 +18,14 @@ import java.util.List;
 import org.springframework.stereotype.Component;
 
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageResult;
 
-/** Searches books. The slice leaves this class out: the tests mock it. */
+/** Searches books, a page at a time. The slice leaves this class out: the tests mock it. */
 @Component
-class SearchBooksOperation implements QueryOperation<BookSearch, List<Book>> {
+class SearchBooksOperation implements QueryOperation<BookSearch, PageResult<Book>> {
 
     @Override
-    public List<Book> execute(BookSearch input) {
-        return List.of();
+    public PageResult<Book> execute(BookSearch input) {
+        return PageResult.of(List.of(), false);
     }
 }

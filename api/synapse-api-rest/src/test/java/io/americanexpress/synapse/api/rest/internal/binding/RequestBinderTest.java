@@ -29,6 +29,8 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.autoconfigure.web.format.DateTimeFormatters;
+import org.springframework.boot.autoconfigure.web.format.WebConversionService;
 import org.springframework.format.support.DefaultFormattingConversionService;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.DelegatingServletInputStream;
@@ -54,6 +56,8 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CheckedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ClashOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CodedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConvertOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConvertRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CountedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateBookRequest;
@@ -67,20 +71,35 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HeaderRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HeadersOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HiddenOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Isbn;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PairFilter;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PatchBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PatchBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathDatedOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathDatedRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathFilterOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PingOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeQuery;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ScheduleBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ScheduleBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SearchAllOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SimpleSourcesOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SimpleSourcesRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SortKey;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StockBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StockBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TenantId;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ThrowingRecordOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.UpdateBookOperation;
@@ -88,12 +107,16 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WriteOptions;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.api.rest.internal.edge.SizeLimitedRequest;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.SortOrder;
+import io.americanexpress.synapse.core.paging.SortOrder.Direction;
 import io.americanexpress.synapse.test.operation.RequestContexts;
 
 import static io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.BLANK_TITLE;
@@ -107,7 +130,7 @@ class RequestBinderTest {
     private static final UUID TWO = new UUID(0, 2);
 
     private final RequestBinder binder = new RequestBinder(JsonMapper.builder().build(),
-            new DefaultFormattingConversionService());
+            new DefaultFormattingConversionService(), PagingSettings.defaults());
 
     private final RestConventions writeOptionsFromQuery = RestConventions.builder().query(WriteOptions.class).build();
 
@@ -790,6 +813,69 @@ class RequestBinderTest {
     }
 
     @Test
+    void checkBindableRejectsUnconvertibleSources() {
+        ConvertOperation convert = new ConvertOperation();
+        assertNotConvertible(RestBindings.builder().get("/x", convert).query("filter", ConvertRequest::filter).build(),
+                "REST route GET /x (convert): the component ConvertRequest.filter (type " + PairFilter.class.getName()
+                        + ") can't be converted from a string");
+        assertNotConvertible(
+                RestBindings.builder().get("/x", convert).header("X-Filter", ConvertRequest::filter).build(),
+                "REST route GET /x (convert): the component ConvertRequest.filter (type " + PairFilter.class.getName()
+                        + ") can't be converted from a string");
+        assertNotConvertible(RestBindings.builder().get("/x", convert).cookie("f", ConvertRequest::filter).build(),
+                "REST route GET /x (convert): the component ConvertRequest.filter (type " + PairFilter.class.getName()
+                        + ") can't be converted from a string");
+        // A record bound from the query string is built from its own components, each converted on its own.
+        assertNotConvertible(RestBindings.builder().get("/x", convert).query(ConvertRequest::nested).build(),
+                "REST route GET /x (convert): the component PairQuery.pair (type " + PairFilter.class.getName()
+                        + ") can't be converted from a string");
+        assertNotConvertible(RestBindings.builder().get("/x/{filter}", new PathFilterOperation()).build(),
+                "REST route GET /x/{filter} (path-filter): the component PathFilterRequest.filter (type "
+                        + PairFilter.class.getName() + ") can't be converted from a string");
+        assertNotConvertible(RestBindings.builder().get("/x", convert).build(),
+                List.of(RestConventions.builder().header("X-Filter", PairFilter.class).build()),
+                "the component ConvertRequest.filter (type " + PairFilter.class.getName() + ")");
+
+        // Observed with spring-core 7.0.x: canConvert(String, Isbn) is true, both for the binder's
+        // DefaultFormattingConversionService and for Boot's WebConversionService (the class of mvcConversionService),
+        // because ObjectToObjectConverter uses the record's canonical Isbn(String) constructor. PairFilter has no
+        // String constructor or valueOf/of/from(String) method, so canConvert is false.
+        WebConversionService mvcConversionService = new WebConversionService(new DateTimeFormatters());
+        assertThat(mvcConversionService.canConvert(String.class, Isbn.class)).isTrue();
+        assertThat(new DefaultFormattingConversionService().canConvert(String.class, Isbn.class)).isTrue();
+        assertThat(mvcConversionService.canConvert(String.class, PairFilter.class)).isFalse();
+        RouteDefinition isbn = route(
+                RestBindings.builder().get("/x", convert).query("isbn", ConvertRequest::isbn).build());
+        new RequestBinder(JsonMapper.builder().build(), mvcConversionService, PagingSettings.defaults())
+                .checkBindable(isbn);
+        binder.checkBindable(isbn);
+        assertThat(bind(isbn, MockMvcRequestBuilders.get(URI.create("/x?isbn=978-0")), Map.of()))
+                .isEqualTo(new ConvertRequest(null, new Isbn("978-0"), null));
+    }
+
+    @Test
+    void checkBindableAcceptsSimpleAndListTypes() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .get("/items/{id}", new SimpleSourcesOperation())
+                .query("tag", SimpleSourcesRequest::tags)
+                .header("X-Version", SimpleSourcesRequest::version)
+                .cookie("since", SimpleSourcesRequest::since)
+                .build());
+
+        binder.checkBindable(route);
+
+        Object input = bind(route,
+                MockMvcRequestBuilders
+                        .get(URI.create("/items/" + ONE + "?tag=a&tag=b"))
+                        .header("X-Version", "7")
+                        .cookie(new Cookie("since", "2026-11-04")),
+                Map.of("id", ONE.toString()));
+        assertThat(input)
+                .isEqualTo(new SimpleSourcesRequest(ONE, List.of("a", "b"), 7L, LocalDate.of(2026, 11, 4)));
+    }
+
+    @Test
     void queryEscapesMustBeUtf8() {
         MockHttpServletRequest servletRequest = new MockHttpServletRequest("GET", "/books");
         servletRequest.setQueryString("author=%FF");
@@ -818,6 +904,97 @@ class RequestBinderTest {
         assertThat(annotated).isEqualTo(new AnnotateBookRequest(ONE, "web", "s-1", "c-1", "eu", "", "hello"));
     }
 
+    @Test
+    void bindsPageQueryComponentOnGetAndPost() {
+        RouteDefinition get = route(
+                RestBindings.builder().get("/books", new PagedBooksOperation()).sortable(SortKey.class).build());
+        RouteDefinition post = route(
+                RestBindings.builder().post("/books", new PagedBooksOperation()).sortable(SortKey.class).build());
+        binder.checkBindable(get);
+        binder.checkBindable(post);
+
+        Object fromGet = bind(get, MockMvcRequestBuilders.get(URI.create("/books?size=5&author=a&sort=-year")),
+                Map.of());
+        Object fromPost = bind(post,
+                json(MockMvcRequestBuilders.post(URI.create("/books?size=5&sort=-year")), "{\"author\":\"a\"}"),
+                Map.of());
+
+        PagedBooksRequest expected = new PagedBooksRequest("a",
+                new PageQuery(null, null, 5, List.of(new SortOrder("PUBLISHED_YEAR", Direction.DESC))));
+        assertThat(fromGet).isEqualTo(expected);
+        assertThat(fromPost).isEqualTo(expected);
+        assertThat(bind(get, MockMvcRequestBuilders.get(URI.create("/books")), Map.of()))
+                .isEqualTo(new PagedBooksRequest(null, PageQuery.first(20)));
+    }
+
+    @Test
+    void bindsPageQueryAsWholeInput() {
+        RouteDefinition get = route(
+                RestBindings.builder().get("/books", new SearchAllOperation()).sortable(SortKey.class).build());
+        RouteDefinition post = route(RestBindings.builder().post("/books/search", new SearchAllOperation()).build());
+
+        assertThat(bind(get, MockMvcRequestBuilders.get(URI.create("/books?offset=40&size=10&sort=title")), Map.of()))
+                .isEqualTo(new PageQuery(null, 40L, 10, List.of(new SortOrder("TITLE", Direction.ASC))));
+        assertThat(bind(post, MockMvcRequestBuilders.post(URI.create("/books/search?cursor=c")), Map.of()))
+                .isEqualTo(new PageQuery("c", null, 20, List.of()));
+        assertViolations(() -> bind(get, MockMvcRequestBuilders.get(URI.create("/books?size=101&sort=price")),
+                Map.of()), new Violation("size", "must be less than or equal to 100"),
+                new Violation("sort", "has a key that is not allowed (allowed: title, year, authorName)"));
+        assertViolations(() -> bind(post, MockMvcRequestBuilders.post(URI.create("/books/search?sort=title")),
+                Map.of()), new Violation("sort", "is not supported by this route"));
+    }
+
+    @Test
+    void pagingViolationsJoinOtherViolations() {
+        RouteDefinition limited = route(RestBindings.builder().get("/books", new LimitedPageOperation()).build());
+
+        assertViolations(() -> bind(limited, MockMvcRequestBuilders.get(URI.create("/books?limit=abc&size=0")),
+                Map.of()), new Violation("limit", "is not a valid value"),
+                new Violation("size", "must be greater than or equal to 1"));
+        assertThat(bind(limited, MockMvcRequestBuilders.get(URI.create("/books?limit=3&size=7")), Map.of()))
+                .isEqualTo(new LimitedPageRequest(3, PageQuery.first(7)));
+    }
+
+    @Test
+    void pagingParametersNeverComeFromTheBody() {
+        RouteDefinition post = route(RestBindings.builder().post("/books", new PagedBooksOperation()).build());
+        RouteDefinition whole = route(RestBindings.builder().post("/books/search", new SearchAllOperation()).build());
+
+        assertThat(bind(post,
+                json(MockMvcRequestBuilders.post(URI.create("/books")),
+                        "{\"author\":\"a\",\"size\":5,\"offset\":2000,\"cursor\":\"c\"}"),
+                Map.of())).isEqualTo(new PagedBooksRequest("a", PageQuery.first(20)));
+        assertThat(bind(whole, json(MockMvcRequestBuilders.post(URI.create("/books/search")), "{\"size\":5}"),
+                Map.of())).isEqualTo(PageQuery.first(20));
+    }
+
+    @Test
+    void bodyPropertyNamedLikeThePageQueryComponentIsIgnored() {
+        RouteDefinition post = route(RestBindings.builder().post("/books", new PagedBooksOperation()).build());
+
+        assertThat(bind(post, json(MockMvcRequestBuilders.post(URI.create("/books?size=2")),
+                "{\"author\":\"a\",\"page\":{\"size\":5}}"), Map.of()))
+                .isEqualTo(new PagedBooksRequest("a", PageQuery.first(2)));
+        assertThat(bind(post,
+                json(MockMvcRequestBuilders.post(URI.create("/books")), "{\"author\":\"a\",\"page\":\"not a page\"}"),
+                Map.of())).isEqualTo(new PagedBooksRequest("a", PageQuery.first(20)));
+    }
+
+    @Test
+    void malformedEscapeInAPagingParameterIsMalformed() {
+        RouteDefinition whole = route(RestBindings.builder().get("/books", new SearchAllOperation()).build());
+        RouteDefinition component = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+
+        for (RouteDefinition route : List.of(whole, component)) {
+            for (String query : List.of("offset=%G1", "offset=1%", "size=%FF", "%6=1")) {
+                MockHttpServletRequest servletRequest = new MockHttpServletRequest("GET", "/books");
+                servletRequest.setQueryString(query);
+                assertError(() -> binder.bind(route, ServerRequest.create(servletRequest, List.of())),
+                        SynapseErrors.MALFORMED_REQUEST);
+            }
+        }
+    }
+
     private RouteDefinition annotateRoute() {
         return route(RestBindings
                 .builder()
@@ -836,6 +1013,99 @@ class RequestBinderTest {
                 .cookie(new Cookie("session", "s-1"));
     }
 
+    private static RouteDefinition ifMatchRoute() {
+        return route(RestBindings
+                .builder()
+                .put("/books/{id}", new ReviseBookOperation())
+                .header("If-Match", ReviseBookRequest::version)
+                .build());
+    }
+
+    private @Nullable ReviseBookRequest bindIfMatch(RouteDefinition route, String... lines) {
+        MockHttpServletRequestBuilder request = json(MockMvcRequestBuilders.put("/books/{id}", ONE),
+                "{\"title\":\"T\"}");
+        for (String line : lines) {
+            request.header("If-Match", line);
+        }
+        return (ReviseBookRequest) bind(route, request, Map.of("id", ONE.toString()));
+    }
+
+    @Test
+    void strongTagBindsUnquotedAndConverted() {
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "\"5\"")).version()).isEqualTo(5L);
+    }
+
+    @Test
+    void wildcardBindsNull() {
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "*")).version()).isNull();
+    }
+
+    @Test
+    void absentHeaderBindsNull() {
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute())).version()).isNull();
+    }
+
+    @Test
+    void weakTagBindsItsValue() {
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "W/\"5\"")).version()).isEqualTo(5L);
+    }
+
+    @Test
+    void listIsAViolation() {
+        RouteDefinition route = ifMatchRoute();
+        Violation single = new Violation("version", "must be a single entity tag");
+        assertViolations(() -> bindIfMatch(route, "\"5\", \"6\""), single);
+        assertViolations(() -> bindIfMatch(route, "\"5\"", "\"6\""), single);
+    }
+
+    @Test
+    void unquotedOrMalformedIsAViolation() {
+        RouteDefinition route = ifMatchRoute();
+        for (String bad : List.of("5", "\"5", "*, \"5\"", "\"5\",,", "", "\"5\" \"6\"")) {
+            assertViolations(() -> bindIfMatch(route, bad), new Violation("version", "must be an entity tag"));
+        }
+    }
+
+    @Test
+    void unconvertibleTagIsAViolation() {
+        assertViolations(() -> bindIfMatch(ifMatchRoute(), "\"abc\""),
+                new Violation("version", "is not a valid value"));
+    }
+
+    @Test
+    void ifNoneMatchBindsTheSameWay() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .put("/books/{id}", new TaggedBookOperation())
+                .header("If-None-Match", TaggedBookRequest::etag)
+                .build());
+        assertThat(tagged(route, "\"x\"").etag()).isEqualTo("x");
+        assertThat(tagged(route, "*").etag()).isNull();
+        assertThat(tagged(route, "W/\"x\"").etag()).isEqualTo("x");
+        assertViolations(() -> tagged(route, "x"), new Violation("etag", "must be an entity tag"));
+    }
+
+    @Test
+    void otherHeadersAreNotParsedAsTags() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .put("/books/{id}", new TaggedBookOperation())
+                .header("X-Version", TaggedBookRequest::other)
+                .build());
+        MockHttpServletRequestBuilder request = MockMvcRequestBuilders
+                .put("/books/{id}", ONE)
+                .header("X-Version", "\"5\"");
+        TaggedBookRequest input = (TaggedBookRequest) bind(route, request, Map.of("id", ONE.toString()));
+        assertThat(Objects.requireNonNull(input).other()).isEqualTo("\"5\"");
+    }
+
+    private TaggedBookRequest tagged(RouteDefinition route, String value) {
+        MockHttpServletRequestBuilder request = MockMvcRequestBuilders
+                .put("/books/{id}", ONE)
+                .header("If-None-Match", value);
+        return Objects.requireNonNull((TaggedBookRequest) bind(route, request, Map.of("id", ONE.toString())));
+    }
+
     private static MockHttpServletRequestBuilder json(MockHttpServletRequestBuilder builder, String body) {
         return builder.contentType(MediaType.APPLICATION_JSON).content(body);
     }
@@ -848,7 +1118,23 @@ class RequestBinderTest {
     }
 
     private static RouteDefinition route(RestBindings bindings, RestConventions... conventions) {
-        return new BindingValidator().validate(bindings.routes(), List.of(conventions)).getFirst();
+        return new BindingValidator(PagingSettings.defaults())
+                .validate(bindings.routes(), List.of(conventions))
+                .getFirst();
+    }
+
+    private void assertNotConvertible(RestBindings bindings, String description) {
+        assertNotConvertible(bindings, List.of(), description);
+    }
+
+    private void assertNotConvertible(RestBindings bindings, List<RestConventions> conventions, String description) {
+        RouteDefinition route = route(bindings, conventions.toArray(RestConventions[]::new));
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> binder.checkBindable(route))
+                .satisfies(e -> {
+                    assertThat(e.description()).contains(description).endsWith("can't be converted from a string");
+                    assertThat(e.action()).contains("String", "Converter");
+                });
     }
 
     private static void assertViolations(Runnable call, Violation... violations) {

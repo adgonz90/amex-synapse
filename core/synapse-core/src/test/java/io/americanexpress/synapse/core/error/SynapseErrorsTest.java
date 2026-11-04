@@ -29,6 +29,7 @@ class SynapseErrorsTest {
                     Map.entry("UNAUTHENTICATED", ErrorCategory.UNAUTHENTICATED),
                     Map.entry("FORBIDDEN", ErrorCategory.FORBIDDEN),
                     Map.entry("CONFLICT", ErrorCategory.CONFLICT),
+                    Map.entry("STALE_VERSION", ErrorCategory.CONFLICT),
                     Map.entry("PRECONDITION_FAILED", ErrorCategory.PRECONDITION_FAILED),
                     Map.entry("RATE_LIMITED", ErrorCategory.RATE_LIMITED),
                     Map.entry("UNAVAILABLE", ErrorCategory.UNAVAILABLE),
@@ -37,7 +38,7 @@ class SynapseErrorsTest {
 
     @Test
     void everyCodeHasItsCategory() {
-        assertThat(SynapseErrors.values()).hasSize(EXPECTED.size());
+        assertThat(SynapseErrors.values()).hasSize(EXPECTED.size()).hasSize(12);
         for (SynapseErrors error : SynapseErrors.values()) {
             assertThat(error.code()).isEqualTo(error.name());
             assertThat(error.category()).as(error.name()).isEqualTo(EXPECTED.get(error.name()));
@@ -60,6 +61,8 @@ class SynapseErrorsTest {
         assertThat(SynapseErrors.FORBIDDEN.messageTemplate()).isEqualTo("Access is denied");
         assertThat(SynapseErrors.CONFLICT.messageTemplate())
                 .isEqualTo("The request conflicts with the current state of the resource");
+        assertThat(SynapseErrors.STALE_VERSION.messageTemplate())
+                .isEqualTo("The resource was changed by another request");
         assertThat(SynapseErrors.PRECONDITION_FAILED.messageTemplate()).isEqualTo("A precondition failed");
         assertThat(SynapseErrors.RATE_LIMITED.messageTemplate()).isEqualTo("Too many requests");
         assertThat(SynapseErrors.UNAVAILABLE.messageTemplate()).isEqualTo("The service is unavailable");

@@ -31,12 +31,15 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SearchBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SortKey;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.UpdateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.UpdateBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WriteOptions;
 import io.americanexpress.synapse.api.rest.internal.error.BookErrors;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -252,5 +255,39 @@ class RestBindingsTest {
 
         assertThat(route.outputType()).isEqualTo(List.class);
         assertThat(route.outputValueType()).isEqualTo(BookResult.class);
+    }
+
+    @Test
+    void sortableIsRecordedAsADeclaration() {
+        List<RouteDeclaration> declarations = RestBindings
+                .builder()
+                .get("/books", new PagedBooksOperation())
+                .sortable(SortKey.class)
+                .get("/all", new PagedBooksOperation())
+                .sortable("title", "year")
+                .build()
+                .routes()
+                .stream()
+                .flatMap(route -> route.declarations().stream())
+                .toList();
+
+        assertThat(declarations)
+                .containsExactly(new RouteDeclaration.Sortable(SortKey.class, List.of()),
+                        new RouteDeclaration.Sortable(null, List.of("title", "year")));
+    }
+
+    @Test
+    void pagedRouteIsDeclaredWithoutPagingRules() {
+        RouteDefinition route = RestBindings
+                .builder()
+                .get("/books", new PagedBooksOperation())
+                .build()
+                .routes()
+                .getFirst();
+
+        assertThat(route.outputType()).isEqualTo(PageResult.class);
+        assertThat(route.outputValueType()).isEqualTo(BookResult.class);
+        assertThat(route.pagedOutput()).isTrue();
+        assertThat(route.paging()).isNull();
     }
 }

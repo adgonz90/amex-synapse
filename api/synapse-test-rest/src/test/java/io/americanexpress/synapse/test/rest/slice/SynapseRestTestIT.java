@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.test.rest.slice;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Tag;
@@ -29,6 +30,7 @@ import org.springframework.test.web.servlet.client.RestTestClient;
 
 import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.paging.PageResult;
 import io.americanexpress.synapse.test.rest.SynapseRestTest;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,7 +73,7 @@ class SynapseRestTestIT {
     @Test
     void servesBindingsThroughRestTestClient() {
         given(getBook.execute(any())).willReturn(Optional.of(new Book(1, "Dune")));
-        given(searchBooks.execute(new BookSearch("Dune"))).willReturn(List.of(new Book(1, "Dune")));
+        given(searchBooks.execute(any())).willReturn(PageResult.of(List.of(new Book(1, "Dune")), false));
 
         client
                 .get()
@@ -93,7 +95,7 @@ class SynapseRestTestIT {
                 .expectStatus()
                 .isOk()
                 .expectBody()
-                .jsonPath("$[0].title")
+                .jsonPath("$.items[0].title")
                 .isEqualTo("Dune");
 
         then(getBook).should().execute(new BookId(1));
@@ -166,5 +168,39 @@ class SynapseRestTestIT {
                 .expectBody()
                 .jsonPath("$.detail")
                 .isEqualTo("Book 1 was not found");
+    }
+
+    @Test
+    void pagedRouteWorksInTheSlice() {
+        given(searchBooks.execute(any())).willReturn(PageResult.ofCursor(List.of(new Book(1, "Dune")), "raw"));
+
+        client
+                .get()
+                .uri("/books?size=1")
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectHeader()
+                .exists("Link")
+                .expectBody()
+                .jsonPath("$.items[0].title")
+                .isEqualTo("Dune")
+                .jsonPath("$.nextCursor")
+                .value(cursor -> assertThat(cursor).asString().isNotBlank().isNotEqualTo("raw"));
+    }
+
+    @Test
+    void conditionalRouteWorksInTheSlice() {
+        given(getBook.execute(any())).willReturn(Optional.of(new Book(1, "Dune")));
+        String etag = client.get().uri("/books/1").exchange().returnResult(String.class).getResponseHeaders().getETag();
+        assertThat(etag).isNotBlank();
+
+        client
+                .get()
+                .uri("/books/1")
+                .header("If-None-Match", Objects.requireNonNull(etag))
+                .exchange()
+                .expectStatus()
+                .isNotModified();
     }
 }

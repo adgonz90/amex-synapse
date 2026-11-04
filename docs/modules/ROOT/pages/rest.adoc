@@ -37,9 +37,12 @@ The plugin is active in servlet web applications. As with every operation, traci
 xref:core.adoc#tracing[Tracing is required]). An operation bean and a `RestBindings` bean are all the configuration an
 endpoint needs.
 
-NOTE: Paging (`PageQuery` binding, sort allow-lists, signed cursors), conditional requests (`ETag`, `If-Match`), API
-versioning, CORS and OpenAPI are not available yet. Until paging lands, a route whose input has a non-nullable
-`PageQuery` component fails startup because the component has no source.
+NOTE: API versioning, CORS and OpenAPI are not available yet (plan 2c).
+
+The sample `samples/rest-books` in the repository is a runnable service that uses most of this page, paging and
+conditional requests included; its
+https://github.com/americanexpress/synapse/blob/main/samples/rest-books/README.md[README] walks through each feature
+with `curl`.
 
 == Bindings
 
@@ -79,7 +82,8 @@ fails startup with a `SynapseConfigurationException` whose message starts with t
 * `.body(...)` binds an input component on a method other than `POST` or `PUT`;
 * a non-nullable component that would be read from the body is one Jackson never reads (`@JsonIgnore`,
   `@JsonIgnoreProperties` or `READ_ONLY` access), or Jackson cannot describe the input type;
-* a response option is invalid (see <<responses>>).
+* a response option is invalid (see <<responses>>);
+* a paging or conditional-request rule is broken (see <<paging>> and <<conditional-requests>>).
 
 The operation must be the Synapse bean, so that its calls run through the pipeline (validation, deadline,
 observation, translation and failure logging).
@@ -120,6 +124,9 @@ component.
 |Request context |None. |`.context(UpdateBookRequest::tenant, ctx -> ctx.attribute("tenant").orElse(null))`
 |Custom |None. |`.from(UpdateBookRequest::region, request -> ...)` with the Spring `ServerRequest`; it may use protocol
 types, so it lives in `api..`.
+|Paging parameters
+|A `PageQuery` component, or a `PageQuery` input, on every method (see <<paging>>).
+|None: it can't be declared or bound by a convention.
 |===
 
 A `DELETE` route has no query or body defaults: its components come from path variables or declarations, or are
@@ -202,6 +209,8 @@ Several `RestConventions` beans are merged. Two rules that bind the same compone
 |Empty `Optional` (or `null` for an `Optional` output) |404 problem, code `NOT_FOUND`
 |`.notFound(BookErrors.BOOK_NOT_FOUND)`; `.emptyAs(204)` answers that status with no body
 |Empty list |200 with `[]` |
+|`PageResult` |200 with the page object `{"items":[...],"nextCursor":"...","hasNext":true,"total":42}`; on `GET` and
+`HEAD` also `Link: <...>; rel="next"` (see <<paging>>) |None: output `.header`, `.body` and `.etag` fail startup
 |===
 
 The error of an empty `Optional` (`.notFound(...)` or the default `NOT_FOUND`) gets the values of the route's path
@@ -222,11 +231,13 @@ Output headers and the body component:
 * `.body(BookResult::book)` makes one output component the whole body. A `null` body component answers 204 with no
   body.
 * Output headers and `.body` apply only to outputs that are a single record or an `Optional` of one. Declaring them
-  on a route whose output is a `List` fails startup.
+  on a route whose output is a `List` or a `PageResult` fails startup, and `RestConventions` output header rules
+  skip those routes.
 * A header component must be a string, number, boolean, enum or `java.time` value, or a `List` or `Optional` of one.
   It is formatted with Spring MVC's conversion service; a `List` writes one header value per element, and `null` or
   an empty `Optional` writes no header. Other types fail startup.
-* `Location`, `Link`, `Content-Type` and `Content-Length` are reserved and can't be output header names. A header
+* `Location`, `Link`, `Content-Type`, `Content-Length` and `ETag` are reserved and can't be output header names. On a
+  route with `.etag`, so are `Cache-Control`, `Vary` and `Last-Modified` (see <<conditional-requests>>). A header
   name mapped twice (ignoring case), or an output component mapped twice, fails startup.
 * A header value computed from the output that contains a control character fails the request with `INTERNAL`.
 
@@ -234,11 +245,414 @@ Startup also fails when `.status(...)` is combined with `.created(...)` or `.acc
 when `.status(int)` or `.emptyAs(int)` is given a number outside 100 to 599, and when `.notFound` or `.emptyAs` is
 declared on a route whose output is not an `Optional`.
 
+[#paging]
+== Paging
+
+A route pages when its operation takes a `PageQuery` and returns a `PageResult` (core's paging types, see
+xref:core.adoc#paging[Paging]):
+
+[source,java]
+----
+public record SearchBooksRequest(@Nullable String author, PageQuery page) {
+
+    public enum SortKey { TITLE, PUBLISHED_AT }
+}
+
+@Bean
+RestBindings books(SearchBooksOperation searchBooks) {
+    return RestBindings.builder()
+        .get("/books", searchBooks).sortable(SearchBooksRequest.SortKey.class)
+        .post("/books/search", searchBooks).sortable(SearchBooksRequest.SortKey.class)
+        .build();
+}
+----
+
+=== Parameters
+
+`PageQuery` is filled from four query-string parameters, on every method:
+
+[cols="1,3,4",options="header"]
+|===
+|Parameter |Name property |Value
+|`cursor` |`synapse.api.rest.paging.parameters.cursor` |A token from a previous page (its `nextCursor` or `Link`).
+|`offset` |`synapse.api.rest.paging.parameters.offset` |Items to skip: 0 to `synapse.api.rest.paging.max-offset`
+(1000), inclusive.
+|`size` |`synapse.api.rest.paging.parameters.size` |Page size: 1 to `synapse.paging.max-size` (100). Without it,
+`synapse.paging.default-size` (20).
+|`sort` |`synapse.api.rest.paging.parameters.sort` |Keys allowed by `.sortable`, separated by commas; a leading `-`
+sorts descending: `sort=title,-publishedAt`.
+|===
+
+Renamed parameters must be non-blank, distinct and made of RFC 3986 unreserved characters (letters, digits, `-`,
+`.`, `_`, `~`); otherwise startup fails.
+
+* `PageQuery` may be a component of the input or the whole input (`QueryOperation<PageQuery, PageResult<Author>>`).
+  An input has at most one.
+* Its source is always the paging parameters. Declaring a source for it (`.query`, `.header`, `.body`, `.from`, ...)
+  or a `RestConventions` rule for its type fails startup. On a route that binds `PageQuery`, another query source
+  (implicit, declared, or a component of a query record) that uses a paging parameter name also fails startup:
+  rename one of them.
+* Paging never comes from the body, also on `POST`: a body property named like a `PageQuery` component is ignored. A
+  `POST` search pages by sending the same body again to `/books/search?cursor=<token>`.
+* `cursor`, `offset` and `size` take one value. `sort` may repeat, and its values are joined in order:
+  `sort=title&sort=-year` is `sort=title,-year`. Without `sort`, the operation gets an empty sort list and applies its
+  default order.
+* Numbers are ASCII digits with an optional sign (`+5` is 5); nothing is trimmed.
+
+The edge checks the parameters before the operation runs. Each problem is a violation of the `VALIDATION_FAILED`
+(400), next to any other binding violation, named after the parameter as the caller sent it (the configured name),
+and the operation is not called:
+
+[cols="2,3",options="header"]
+|===
+|Problem |Violation
+|`size` or `offset` not an integer (or beyond a `long`), or an empty `cursor`, `offset` or `size`
+|`is not a valid value`
+|`size` below 1, `offset` below 0 |`must be greater than or equal to 1` (or `0`)
+|`size` above `synapse.paging.max-size`, `offset` above `max-offset` |`must be less than or equal to 100` (the cap)
+|`cursor`, `offset` or `size` repeated |`must have a single value`
+|`cursor` together with `offset` |`{cursor, must not be combined with offset}`
+|A cursor the codec rejects |`{cursor, is not valid for this request}`
+|`sort` on a route without `.sortable` |`{sort, is not supported by this route}`
+|A key `.sortable` doesn't allow |`{sort, has a key that is not allowed (allowed: title, publishedAt)}`
+|An empty key (`sort=title,,year`) or a lone `-` |`{sort, is not a valid value}`
+|A key named twice (`sort=title,-title`) |`{sort, names a key more than once}`
+|===
+
+No violation repeats the caller's value. Core's pipeline also checks a `PageQuery`, but the edge rejects first, so a
+violation is reported once.
+
+=== Sorting
+
+`.sortable(...)` is the route's allow-list of sort keys:
+
+* `.sortable(SortKey.class)`: a constant's wire name is the value of its `@JsonProperty` when it has one, otherwise its
+  name in lowerCamel (`PUBLISHED_AT` is `publishedAt`; an underscore-separated part that has a lower-case letter keeps
+  its case, so `publishedAt` stays `publishedAt` and `Title` is `title`). The operation receives the constant's
+  `name()` as `SortOrder.property()`, so `SortKey.valueOf(order.property())` reads it back.
+* `.sortable("title", "year")`: each key is both the wire name and the `SortOrder.property()`.
+
+Keys are case-sensitive and made of letters, digits, `_` and `.`. Startup fails when `.sortable` is declared on a
+route that doesn't bind `PageQuery`, is declared twice, names no key, or gives two keys the same wire name. It is a
+per-route declaration; `RestConventions` has none.
+
+[source,java]
+----
+for (SortOrder order : request.page().sort()) {
+    switch (SortKey.valueOf(order.property())) { ... }
+}
+----
+
+=== The page
+
+A `PageResult` is written as a page object, with the application's `JsonMapper` (member names follow its naming
+strategy):
+
+[source,json]
+----
+{
+  "items": [ { "id": "1", "title": "Dune" }, { "id": "2", "title": "Solaris" } ],
+  "nextCursor": "AdBO4qUFIR4mf5sIkyAQ6cjvMVBF",
+  "hasNext": true,
+  "total": 42
+}
+----
+
+`items` and `hasNext` are always written (an empty page is `"items":[]`); `nextCursor` and `total` are left out when
+they are `null`. `nextCursor` is a token that wraps the operation's own cursor (see <<cursors>>).
+
+On `GET` and `HEAD`, a page with `hasNext` also gets a relative `Link` to the next page:
+
+----
+Link: </books?sort=title&size=2&cursor=AdBO4qUFIR4mf5sIkyAQ6cjvMVBF>; rel="next"
+----
+
+* The target is the request path and its query string as the caller sent it, without its `cursor` and `offset`
+  parameters (the others keep their order and encoding), then the next cursor token or the next offset. It never
+  depends on forwarded headers.
+* With a next cursor, the link carries it. When the operation returns no cursor (`PageResult.of(items, hasNext)`) and
+  the request had none, the link carries the next offset: `GET /books?offset=40&size=20` gets
+  `Link: </books?size=20&offset=60>; rel="next"`.
+* When the request had a cursor and the operation returns no next cursor, there is no link, even with `hasNext`: a
+  cursor page can't continue by offset.
+* When the next offset would be over `max-offset`, there is no link, although `hasNext` is `true`: past the cap,
+  callers page by cursor.
+* Other methods (a `POST` search) get no `Link`; they page with `nextCursor`. A route whose input has no `PageQuery`
+  gets no `Link` either.
+
+`PageResult` must be the operation's direct output. `Optional<PageResult<...>>`, `List<PageResult<...>>`, a page of
+pages (`PageResult<PageResult<...>>`), or a `PageResult` inside a component, collection, map or `Optional` of the
+output fails startup. A `PageResult` that the startup check can't see (in a `Map<String, Object>`, say, or in an output
+type too large for it to walk: more than 32 nested records or 10,000 type visits, counting each place a type is
+reused) fails the request with `INTERNAL` (500) instead of being written, so the operation's raw cursor never reaches the client.
+
+[#cursors]
+=== Cursors
+
+The operation returns its own cursor in `PageResult.nextCursor()`, such as the key of the last item. The edge never
+sends it to the client: it encrypts it into an opaque token, and when the client sends the token back, the operation
+receives its own cursor again in `PageQuery.cursor()`.
+
+A token is bound to:
+
+* the operation, not the route: a token from `GET /books` works on `POST /books/search` when both call the same
+  operation with the same filters and sort;
+* the sort;
+* a digest of the other input components (the filters), so a token works only with the filters it was issued for.
+
+The page size is not bound, so a client may change it between pages. The `Link` repeats the sort and filters; a client
+that follows `nextCursor` must send them again itself, and a `POST` search must send the same body.
+
+The digest is a SHA-256 of a canonical form of the input:
+
+* The `PageQuery` component and the components bound from `If-Match` or `If-None-Match` are left out.
+* The canonical form is Synapse's own: it ignores the application's Jackson annotations, mix-ins and modules, so
+  `@JsonIgnore` or a custom serializer can't hide a component or make two values look alike. Maps are sorted by key
+  and set elements are sorted, so their order doesn't matter.
+* `.context(...)` and `.from(...)` components are included. A cursor therefore binds to the caller when the caller is
+  part of the input, such as a tenant bound with `.context(...)`: a token issued to one tenant is rejected for
+  another. If the operation reads the caller only from `RequestContext`, cursors are not bound to it.
+* A component whose value changes on every request (a correlation id, a timestamp) breaks cursors: every next page is
+  rejected. Leave such values out of the input of paged routes.
+
+On every route that binds `PageQuery` or returns `PageResult`, every other input component must be one the digest
+can write: a string, number, boolean, enum, `java.time` value or `UUID`, a record of these, or a `List`, `Set`,
+`Optional` or `Map` with `String` keys of them. Any other type fails startup ("can't be bound into a paging cursor"),
+as does a type too large to check (more than 32 nested records or 10,000 type visits, counting each place a type is
+reused), so a garbage cursor is always a 400.
+A value the digest still can't write fails the request with `INTERNAL` (500); it is never left out.
+
+A token that is malformed, changed, issued by an instance with another key, issued for another operation, sort or
+filters, or expired is the one violation `{cursor, is not valid for this request}`, whatever the reason, and the
+operation is not called. The reason is logged at DEBUG on `io.americanexpress.synapse.api.rest`; the token and its
+contents never are. With payload logging on (`synapse.operations.<name>.logging.payloads`), `PageQuery.cursor` and
+`PageResult.nextCursor` are masked (`"***"`) in the logged input and output; the page body is not affected. Tokens
+longer than 1024 characters are rejected. A raw cursor longer than 512 UTF-8 bytes is an operation bug and fails the
+request with `INTERNAL` (500).
+
+To put the raw cursor into the input, the edge rebuilds the input record with its canonical constructor. So when a
+request carries a cursor, a compact constructor runs twice: on the bound input (with the token) and on the rebuilt one
+(with the operation's cursor). Don't validate the cursor in it. A constructor that rejects the rebuilt input answers
+`VALIDATION_FAILED` without violations, and nothing is logged; a `SynapseException` it throws reaches the caller
+unchanged.
+
+=== Cursor keys
+
+The default codec encrypts tokens with AES-256-GCM. Set the key, the same on every instance:
+
+[source,properties]
+----
+# openssl rand -base64 32
+synapse.api.rest.paging.cursor.key=${CURSOR_KEY}
+----
+
+* The key is base64 (standard or URL-safe alphabet, padding optional) of exactly 32 bytes, a 256-bit AES key.
+  Whitespace around it is ignored, such as the newline at the end of a key read from a file. Any other value fails
+  startup with a message that names the property, never the value.
+* An unset or blank key (`${CURSOR_KEY:}` without the variable) makes the plugin generate a key at startup. Cursors
+  then fail with 400 after a restart and on another instance. When at least one route returns `PageResult`, startup
+  logs once on `io.americanexpress.synapse.api.rest`, at WARN in production and at INFO otherwise:
++
+----
+synapse.api.rest.paging.cursor.key is not set, so paging cursors are encrypted with a key generated at startup: a
+cursor fails with 400 after a restart or on another instance. Set the same base64 256-bit key on every instance (for
+example: openssl rand -base64 32).
+----
+* `synapse.api.rest.paging.cursor.previous-keys` lists earlier keys, which only decrypt. Blank entries are ignored; a
+  key listed twice, or the current key listed again, fails startup.
+* `synapse.api.rest.paging.cursor.max-age` (a `Duration`, unset by default) rejects tokens older than that. Unset,
+  tokens don't expire. When set, it must be positive: zero or a negative duration fails startup. The issue time comes
+  from the application's `Clock` bean.
+* Use one key per service. A token is bound to the operation name, not to the application, so two services that share
+  a key and both have an operation of the same name (`list-books`, say) accept each other's tokens for it.
+
+To rotate the key without failing the cursors in use:
+
+. Add the new key to `previous-keys` on every instance, and deploy. Every instance now reads tokens of both keys.
+. Make the new key `cursor.key`, move the old one to `previous-keys`, and deploy. New tokens use the new key.
+. When tokens of the old key are no longer needed (after `max-age`, or as long as clients keep a page open), remove
+  it.
+
+Rotate on a schedule. NIST SP 800-38D (section 8.3) allows at most 2^32^ encryptions with random nonces under one
+key, counted across every instance that shares it, and every page that returns a next cursor is one encryption. At
+1,000 such pages a second across the fleet, 2^32^ is reached in about 50 days. Rotate well before that.
+
+=== Replacing the codec
+
+`CursorCodec` (in `io.americanexpress.synapse.api.rest.paging`, incubating) turns raw cursors into tokens and back.
+Define a bean of that type to replace the default `synapseCursorCodec`, for example for approved or KMS-backed
+cryptography:
+
+* `encode(cursor, scope)` returns a non-empty token made only of `A-Z`, `a-z`, `0-9`, `-` and `_` (it is put in the
+  `Link` as it is). Base64url without padding qualifies; standard base64, with `+`, `/` or `=`, doesn't. Synapse
+  checks every token: one that breaks the rule fails the request with `INTERNAL` (500), and the logged
+  `IllegalStateException` names the codec class and the rule, never the token;
+* `decode(token, scope)` returns the raw cursor only for the `CursorScope` (operation, sort and input digest) the token
+  was issued for, and throws `InvalidCursorException` for every token it rejects, which is answered with the cursor
+  violation; any other exception is `INTERNAL` (500);
+* neither may log or return a token's contents, a raw cursor or key material.
+
+The `cursor.*` properties and the generated-key log line belong to the default codec. Synapse uses no HMAC for
+cursors: the default codec is JDK AES-GCM, and the digest a plain SHA-256.
+
+WARNING: An escape-hatch `@RestController` (see <<escape-hatch>>) that returns a `PageResult` is not wrapped. Spring
+MVC writes it with its own converters, so the client receives the operation's raw cursor as `nextCursor`, and the
+paging parameters, caps and sort allow-list don't apply. Serve paged results through `RestBindings`.
+
+[#conditional-requests]
+== Conditional requests
+
+Synapse implements the entity-tag preconditions of RFC 9110. A resource's version is its `ETag` on reads, and a write
+binds it back from `If-Match`.
+
+=== ETags on reads
+
+[source,java]
+----
+.get("/books/{id}", getBook).etag(Book::version)
+.post("/books", createBook).created(book -> "/books/" + book.id()).etag(Book::version)
+----
+
+* `.etag(component)` names a string, number, boolean, enum or `java.time` component of the output record (not a
+  `UUID`). It is formatted with Spring MVC's conversion service, sent as a strong tag (`ETag: "7"`), and stays in the
+  body.
+* A 200 to `GET` or `HEAD` (the implicit `HEAD` included) carries `ETag`, `Cache-Control: no-cache` and `Vary: Accept`.
+  A 201 to `POST` carries `ETag` only.
+* `If-None-Match` on `GET` and `HEAD` is evaluated after the operation, only when the answer would be 200 with an
+  `ETag` (a 404 stays a 404). When it is `*`, or lists a tag that matches by weak comparison (`W/"7"` matches `"7"`),
+  the answer is 304 with `ETag`, `Cache-Control`, `Vary` and the correlation id, and no body, `Content-Type`,
+  `Content-Length` or output headers. The operation still runs: a 304 saves the transfer, not the work.
+* A malformed `If-None-Match` is ignored (the answer is the 200). Synapse parses the header strictly itself; Spring
+  MVC's own, lenient not-modified check never decides for a Synapse route.
+* A `null` component sends no `ETag`, no caching headers and no 304.
+* An empty value, or one with a character an entity tag can't carry (a double quote, a space, a control character,
+  DEL, or anything above U+00FF), is an operation bug: `INTERNAL` (500).
+
+`.etag` is allowed on `GET`, on a declared `HEAD`, and on a `POST` with `.created(...)`. Startup fails when it is
+declared on `PUT` or `DELETE` (RFC 9110 section 9.3.4: a write's response carries no validator; clients take the new
+version from the body), on a `POST` without `.created`, twice, on a `List` or `PageResult` output, or with a
+component that isn't a simple component of the output record. `ETag` is reserved on every route; `Cache-Control`,
+`Vary` and `Last-Modified` are reserved on a route with `.etag`, so no date-based 304 can bypass the tag.
+
+=== `If-Match` on writes
+
+The write's precondition is checked by the operation itself, at write time, so it can't race the write. Bind
+`If-Match` to the version component of the input:
+
+[source,java]
+----
+public record UpdateBookRequest(UUID id, String title, @Nullable Long version) {
+}
+
+.put("/books/{id}", updateBook).header("If-Match", UpdateBookRequest::version)
+----
+
+The component must be `@Nullable`, and one component at most is bound from `If-Match` (a `RestConventions` header
+rule works too); otherwise startup fails. The header is parsed strictly as RFC 9110 entity tags:
+
+[cols="2,2,4",options="header"]
+|===
+|`If-Match` |`version` |Answer
+|Absent |`null` |The operation runs (an unconditional write), or 428 with `.requireIfMatch()`.
+|`"5"` |`5`, converted to the component type |The operation runs and checks version 5.
+|`*` |`null` |The operation runs; `*` counts as present for `.requireIfMatch()`. A missing resource is the
+operation's 404.
+|`W/"5"` (weak) | |412 `PRECONDITION_FAILED`: a weak tag never matches a write. The operation is not called.
+|`"5", "6"`, or two header lines | |400, violation `{version, must be a single entity tag}`
+|`5` (unquoted), malformed, empty, an empty list element (`"5",,`), `*` with tags | |400, violation
+`{version, must be an entity tag}`
+|`"abc"` for a `Long` | |400, violation `{version, is not a valid value}`
+|===
+
+The operation compares the bound version with the one it reads, then writes with a compare-and-set, and throws
+`SynapseErrors.STALE_VERSION` when either fails:
+
+[source,java]
+----
+@Component
+public class UpdateBookOperation implements CommandOperation<UpdateBookRequest, Book> {
+
+    @Override
+    public Book execute(UpdateBookRequest request) {
+        StoredBook current = store.find(request.id())
+                .orElseThrow(() -> new SynapseException(BookErrors.BOOK_NOT_FOUND, request.id()));
+        // The caller's version (If-Match), or the one just read when the caller sent none or *.
+        long expected = request.version() == null ? current.version() : request.version();
+        if (expected != current.version()) {
+            throw new SynapseException(SynapseErrors.STALE_VERSION); // fast path: nothing is written
+        }
+        // UPDATE books SET title = ?, version = version + 1 WHERE id = ? AND version = ?
+        if (!store.replace(request.id(), request.title(), expected)) {
+            throw new SynapseException(SynapseErrors.STALE_VERSION); // a concurrent write won after the read
+        }
+        return new Book(request.id(), request.title(), expected + 1);
+    }
+}
+----
+
+`STALE_VERSION` is answered:
+
+* 412 `PRECONDITION_FAILED` when the route binds `If-Match` and the request sent it (`*` included): the precondition
+  failed, and nothing was written;
+* 409 `STALE_VERSION` otherwise: the write was unconditional and lost a race.
+
+Both can be overridden like any code: `synapse.api.rest.errors.status.[STALE_VERSION]` for the 409, and
+`[PRECONDITION_FAILED]` for the 412. The pipeline logs the failure as `STALE_VERSION` in both cases.
+
+WARNING: The edge never compares versions. An operation that ignores the bound version turns `If-Match` into a no-op:
+a stale `If-Match` then overwrites the newer state with a 200.
+
+With JPA, the translation of an `@Version` conflict to `STALE_VERSION` comes with the data modules. Until then, an
+operation on JPA throws `STALE_VERSION` itself (or an `ExceptionTranslator` bean maps the optimistic-lock exception to
+it).
+
+=== `If-None-Match` on writes
+
+The edge doesn't evaluate `If-None-Match` on a write either: the operation does. Bind it with `.header(...)`; it is
+parsed like `If-Match`, except that a weak tag binds its value (RFC 9110 compares `If-None-Match` weakly), and `*`
+binds `null`. The `STALE_VERSION` to 412 rule applies to `If-Match` only, so an operation that finds the precondition
+false throws `SynapseErrors.PRECONDITION_FAILED` (412).
+
+IMPORTANT: `*` binds `null`, exactly like no header, so with `.header(...)` alone the operation can't see it: on a
+write, `If-None-Match: *` is then a no-op, and a "create only if absent" request overwrites an existing resource. The
+same holds for `If-Match: *` on an upsert (a `PUT` that creates a missing resource): it binds `null`, so the operation
+creates the resource although `*` asked for an existing one. A route that must honour either wildcard reads it a second
+time with `.from(...)`, and the operation checks that component.
+
+For a create-only `PUT`, bind the header with `.header(...)` and also read the wildcard into another component with
+`.from(...)`:
+
+[source,java]
+----
+.put("/books/{id}", putBook)
+    .header("If-None-Match", PutBookRequest::unlessVersion)
+    .from(PutBookRequest::createOnly, request -> request.headers().header("If-None-Match").contains("*"))
+----
+
+An upsert does the same for `If-Match: *` (`.header("If-Match", ...)`, plus a `.from(...)` component that is `true`
+when the header is `*`), and fails with `PRECONDITION_FAILED` when that component is `true` and the resource is
+missing. `.from(...)` alone doesn't count as binding the header, so the request would get 412 (see below).
+
+=== Unbound and required preconditions
+
+* An `If-Match` or `If-None-Match` sent to a `POST`, `PUT` or `DELETE` route that doesn't bind it is 412
+  `PRECONDITION_FAILED`, and the operation is not called: the precondition can't be verified, and ignoring it would
+  turn a conditional write into an unconditional one. On `GET` and `HEAD`, an `If-Match` is ignored.
+* `.requireIfMatch()` answers 428 `PRECONDITION_REQUIRED` to a request without `If-Match`. The problem carries the
+  violation `{If-Match, is required; send the ETag from a GET of this resource}`, so it says how to retry also in
+  production, where `detail` is hidden. `If-Match: *` satisfies it. It is allowed only on `POST`, `PUT` and `DELETE`
+  routes that bind `If-Match`; otherwise startup fails.
+* `If-Unmodified-Since` and `If-Modified-Since` are ignored: Synapse sends no `Last-Modified`.
+
+The checks run in this order: `Accept` (406), binding (400), the cursor (400), an unbound or weak precondition (412),
+`.requireIfMatch()` (428), the operation, then the `STALE_VERSION` translation.
+
 [#head-options]
 == HEAD and OPTIONS
 
-* Every `GET` route also serves `HEAD`, with the same handling, status and headers (`Content-Length` included) and no
-  body. A route declared with `.head(...)` for the same path wins.
+* Every `GET` route also serves `HEAD`, with the same handling, status and headers (`Content-Length`, `Link` and
+  `ETag` included, and the 304 of a matching `If-None-Match`) and no body. A route declared with `.head(...)` for the
+  same path wins.
 * `OPTIONS` on a path that matches a Synapse route answers 200 with `Allow` and no body. CORS pre-flight requests are
   answered by Spring MVC before that.
 * A method no route serves on a matching path is `METHOD_NOT_ALLOWED` (405) with `Allow`. For Synapse routes, `Allow`
@@ -303,6 +717,10 @@ The status comes from the error's category:
 |`INTERNAL` |500
 |===
 
+Core's `STALE_VERSION` (category `CONFLICT`) is therefore 409. On a route that binds `If-Match`, a request that sent
+`If-Match` gets `PRECONDITION_FAILED` (412) for it instead (see <<conditional-requests>>). The 412s the edge raises
+itself, for an unbound precondition or a weak `If-Match`, are `PRECONDITION_FAILED` too.
+
 Requests that never reach an operation get the `RestErrors` codes, each with a fixed status:
 
 [cols="2,1,3",options="header"]
@@ -313,6 +731,8 @@ Requests that never reach an operation get the `RestErrors` codes, each with a f
 |`NOT_ACCEPTABLE` |406 |`Accept` does not admit `application/json`.
 |`PAYLOAD_TOO_LARGE` |413 |The body is over the limit.
 |`UNSUPPORTED_MEDIA_TYPE` |415 |The body is not JSON.
+|`PRECONDITION_REQUIRED` |428 |The route declares `.requireIfMatch()` and the request has no `If-Match`; the problem
+carries the violation `{If-Match, is required; send the ETag from a GET of this resource}`.
 |===
 
 A body or query string that can't be read is `MALFORMED_REQUEST` (400).
@@ -355,8 +775,9 @@ MVC exceptions are (the same code, status and log level). A `SynapseException` i
 when its status is 5xx; a form body that Boot's form content filter can't decode is `MALFORMED_REQUEST`; an unknown
 exception is `INTERNAL`.
 
-Logging: failures of operations are logged by the pipeline (see xref:core.adoc#logging[Logging]). Requests rejected
-before an operation runs (protocol failures, binding violations, the concurrency limit) are logged at DEBUG at most,
+Logging: failures of operations are logged by the pipeline (see xref:core.adoc#logging[Logging]); a `STALE_VERSION`
+answered 412 is logged as `STALE_VERSION`. Requests rejected before an operation runs (protocol failures, binding
+violations, rejected cursors, the edge's 412 and 428, the concurrency limit) are logged at DEBUG at most,
 except Spring MVC exceptions that map to `UNAVAILABLE` or `TIMEOUT`, which are WARN. Any other exception is `INTERNAL`
 and is logged at ERROR with its stack trace. Every line carries the correlation id, also on the error and async
 dispatches that run after the request context closed. The edge logs on `io.americanexpress.synapse.api.rest`.
@@ -562,6 +983,9 @@ class LegacyBooksController {
   cookie is a violation `must not be null`; an unreadable body is `MALFORMED_REQUEST`. Other `ErrorResponse`
   exceptions follow the status table above.
 * A `SynapseException` the controller throws outside an operation is written but not logged.
+* Paging and conditional requests are features of the bindings: a controller gets no paging parameters, no cursor
+  encryption and no `ETag` handling. A controller that returns a `PageResult` sends the operation's raw cursor (see
+  the warning in <<paging>>).
 * A controller can serve a path that a Synapse route also serves, for example `+@PatchMapping("/books/{id}")+` next to
   `+.get("/books/{id}", ...)+`. Spring MVC tries the Synapse routes first, then the controllers, then the Synapse 405
   and `OPTIONS` fallback. On such a path, each method goes to whichever declares it, the Synapse route first when both
@@ -580,12 +1004,17 @@ covering every method reference created in that class. So:
 * `RestBindings` and `RestConventions` beans not created by a `@Bean` factory method (registered with an instance
   supplier, `@Component`, a `FactoryBean`) get no hints.
 
-The types of operation inputs and outputs are registered by core. Spring's AOT processing of a REST service is tested
-on the JVM; whether a native image also needs metadata for the lambdas' `writeReplace` method is not verified yet, and
-will be checked by the native build of the reference application.
+The types of operation inputs and outputs are registered by core, and the plugin registers the page body it writes
+for a `PageResult`. Spring's AOT processing of a REST service is tested on the JVM; whether a native image also needs
+metadata for the lambdas' `writeReplace` method is not verified yet, and will be checked by the native build of the
+reference application. That build will also verify AES-GCM cursors and the `@JsonProperty` names of sort-key enums
+in a native image.
 
 == Configuration
 
 The REST properties are `synapse.api.rest.*`; all are in the
-xref:reference/configuration-properties.adoc[property reference]. The plugin also reads core's `synapse.correlation.*`,
-`synapse.context.inbound.*` and `synapse.errors.*`.
+xref:reference/configuration-properties.adoc[property reference]. The paging settings are under
+`synapse.api.rest.paging.*`: the parameter names (`parameters.cursor`, `.offset`, `.size`, `.sort`), `max-offset`, and
+the cursor `key`, `previous-keys` and `max-age` (see <<paging>>). The plugin also reads core's
+`synapse.correlation.*`, `synapse.context.inbound.*`, `synapse.errors.*` and `synapse.paging.*` (the default and
+largest page size).

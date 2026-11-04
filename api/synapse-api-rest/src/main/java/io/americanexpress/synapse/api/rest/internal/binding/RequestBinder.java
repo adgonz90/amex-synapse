@@ -61,13 +61,18 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import io.americanexpress.synapse.api.rest.RestErrors;
+import io.americanexpress.synapse.api.rest.internal.conditional.EntityTags;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
+import io.americanexpress.synapse.api.rest.internal.paging.PageQueryReader;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
+import io.americanexpress.synapse.api.rest.internal.paging.SortKeys;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.paging.PageQuery;
 
 /**
  * Turns a request into the operation's input record, reading only the sources of a resolved {@link RouteDefinition}.
@@ -84,6 +89,9 @@ import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
  * never taken from the body. Unknown properties are ignored. A record with its own deserializer is read whole by
  * Jackson instead, and the other sources then replace their components.</li>
  * <li>A component bound elsewhere whose JSON property is in the body with a different value is a conflict.</li>
+ * <li>A {@code PageQuery} component, or a {@code PageQuery} input, is read by {@link PageQueryReader} from the paging
+ * parameters of the query string, on every method; a {@code PageQuery} input reads nothing else, and a body property
+ * named like a {@code PageQuery} component is ignored.</li>
  * </ul>
  *
  * Every component problem is collected, in component order, into one {@link SynapseErrors#VALIDATION_FAILED}. The
@@ -99,6 +107,10 @@ public final class RequestBinder {
 
     private static final String MISSING = "must not be null";
 
+    private static final String NOT_A_TAG = "must be an entity tag";
+
+    private static final String NOT_A_SINGLE_TAG = "must be a single entity tag";
+
     private static final String CONFLICT = "conflicts with the value from the ";
 
     private static final TypeDescriptor STRING = TypeDescriptor.valueOf(String.class);
@@ -113,6 +125,8 @@ public final class RequestBinder {
 
     private final ConversionService conversionService;
 
+    private final PageQueryReader pageReader;
+
     private final Map<Class<?>, BodyModel> models = new ConcurrentHashMap<>();
 
     private final Map<Class<?>, Constructor<?>> constructors = new ConcurrentHashMap<>();
@@ -123,20 +137,71 @@ public final class RequestBinder {
      * @param mapper reads the request body
      * @param conversionService converts path, query, header and cookie values (in an application, Spring MVC's
      *        conversion service bean)
+     * @param paging the paging parameter names and caps, for {@code PageQuery} inputs
      */
-    public RequestBinder(JsonMapper mapper, ConversionService conversionService) {
+    public RequestBinder(JsonMapper mapper, ConversionService conversionService, PagingSettings paging) {
         this.bodyMapper = mapper.rebuild().disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
         this.conversionService = conversionService;
+        this.pageReader = new PageQueryReader(paging);
     }
 
     /**
-     * Checks at startup that the route's input can be bound: Jackson can describe the input type, and every
-     * non-nullable component filled from the body is one Jackson reads from JSON.
+     * Checks at startup that the route's input can be bound: the conversion service can convert a string (a list of
+     * strings for a collection or array component) to every component bound from a path variable, a query parameter
+     * (including the components of a record bound from the query string), a header or a cookie; Jackson can describe
+     * the input type; and every non-nullable component filled from the body is one Jackson reads from JSON.
      *
      * @param route the resolved route
      * @throws SynapseConfigurationException when the route can never be bound
      */
     public void checkBindable(RouteDefinition route) {
+        for (InputSource source : route.sources()) {
+            switch (source) {
+                case InputSource.Path path -> checkConvertible(route, path.component());
+                case InputSource.Query query -> checkConvertible(route, query.component());
+                case InputSource.QueryRecord query -> query.components().forEach(c -> checkConvertible(route, c));
+                case InputSource.Header header -> checkConvertible(route, header.component());
+                case InputSource.Cookie cookie -> checkConvertible(route, cookie.component());
+                case InputSource.Body body -> {
+                    // Read by Jackson; checked below.
+                }
+                case InputSource.BodyComponent body -> {
+                    // Read by Jackson.
+                }
+                case InputSource.Context context -> {
+                    // Application code supplies the value.
+                }
+                case InputSource.Custom custom -> {
+                    // Application code supplies the value.
+                }
+                case InputSource.Page page -> {
+                    // Read from the paging parameters.
+                }
+            }
+        }
+        checkBodyBindable(route);
+    }
+
+    /**
+     * Fails when the conversion service can't convert request text to the component. Headers bound from
+     * {@code If-Match} or {@code If-None-Match} are checked the same way: the entity tag's value is converted to the
+     * component type.
+     */
+    private void checkConvertible(RouteDefinition route, ResolvedComponent component) {
+        TypeDescriptor target = new TypeDescriptor(ResolvableType.forType(component.genericType()), null, null);
+        TypeDescriptor source = target.isCollection() || target.isArray() ? STRINGS : STRING;
+        if (!conversionService.canConvert(source, target)) {
+            throw failure(route,
+                    "the component " + component.recordType().getSimpleName() + "." + component.name() + " (type "
+                            + component.genericType().getTypeName() + ") can't be converted from a string",
+                    "Give " + component.type().getSimpleName() + " a constructor or a static valueOf, of or from "
+                            + "method taking a String, register a Converter from String to it, or bind the component "
+                            + "from the body, .context or .from.",
+                    null);
+        }
+    }
+
+    private void checkBodyBindable(RouteDefinition route) {
         Class<?> inputType = route.inputType();
         if (!inputType.isRecord() || route.sources().stream().noneMatch(InputSource.Body.class::isInstance)) {
             return;
@@ -197,6 +262,18 @@ public final class RequestBinder {
             // The startup checks admit only records and Void.
             return null;
         }
+        PagingRules paging = route.paging();
+        SortKeys sortKeys = paging == null ? null : paging.sortKeys();
+        if (inputType == PageQuery.class) {
+            // The whole input is read from the paging parameters; nothing else, not even the body, is read.
+            List<Violation> violations = new ArrayList<>();
+            PageQuery page = pageReader
+                    .read(parseQuery(request.servletRequest().getQueryString()), sortKeys, violations);
+            if (!violations.isEmpty()) {
+                throw SynapseException.ofViolations(SynapseErrors.VALIDATION_FAILED, violations);
+            }
+            return page;
+        }
         JsonNode body = readsBody(route) ? readBody(request) : null;
         ObjectNode properties = null;
         BodyModel model = BodyModel.NONE;
@@ -208,7 +285,7 @@ public final class RequestBinder {
             properties = object;
             model = model(inputType);
         }
-        return new Binding(request, body, properties, model).bind(inputType, route.sources());
+        return new Binding(request, body, properties, model, sortKeys).bind(inputType, route.sources());
     }
 
     private BodyModel model(Class<?> inputType) {
@@ -423,6 +500,7 @@ public final class RequestBinder {
             case InputSource.Cookie cookie -> "cookie";
             case InputSource.Context context -> "request context";
             case InputSource.Custom custom -> "request";
+            case InputSource.Page page -> "paging parameters";
             case InputSource.Body body -> "body";
             case InputSource.BodyComponent body -> "body";
         };
@@ -456,15 +534,20 @@ public final class RequestBinder {
 
         private final BodyModel model;
 
+        /** The route's sort allow-list, or {@code null} when it takes no sort parameter. */
+        private final @Nullable SortKeys sortKeys;
+
         private final List<Violation> violations = new ArrayList<>();
 
         private @Nullable MultiValueMap<String, String> query;
 
-        Binding(ServerRequest request, @Nullable JsonNode body, @Nullable ObjectNode properties, BodyModel model) {
+        Binding(ServerRequest request, @Nullable JsonNode body, @Nullable ObjectNode properties, BodyModel model,
+                @Nullable SortKeys sortKeys) {
             this.request = request;
             this.body = body;
             this.properties = properties;
             this.model = model;
+            this.sortKeys = sortKeys;
         }
 
         Object bind(Class<?> inputType, List<InputSource> sources) {
@@ -562,7 +645,8 @@ public final class RequestBinder {
                 violations.add(new Violation(component.name(), MISSING));
                 return null;
             }
-            if (conflicts(component, value)) {
+            // Paging never comes from the body, so a body property named like the PageQuery component is ignored.
+            if (!(source instanceof InputSource.Page) && conflicts(component, value)) {
                 violations.add(new Violation(component.name(), CONFLICT + location(source)));
                 return null;
             }
@@ -575,13 +659,42 @@ public final class RequestBinder {
                 case InputSource.Path path -> convert(component, single(request.pathVariables().get(path.variable())));
                 case InputSource.Query query -> convert(component, parameter(query.parameter()));
                 case InputSource.QueryRecord query -> queryRecord(query);
-                case InputSource.Header header -> convert(component, request.headers().header(header.name()));
+                case InputSource.Header header -> header(header);
                 case InputSource.Cookie cookie -> convert(component, single(cookie(cookie.name())));
                 case InputSource.Context context -> context.value().apply(RequestContext.current());
                 case InputSource.Custom custom -> custom.value().apply(request);
                 case InputSource.BodyComponent whole -> read(component, body);
                 case InputSource.Body property -> throw new IllegalStateException("Read by property");
+                case InputSource.Page page -> pageReader.read(query(), sortKeys, violations);
             };
+        }
+
+        /**
+         * Reads a header. {@code If-Match} and {@code If-None-Match} are entity tag lists: {@code *} binds
+         * {@code null} and one tag binds its opaque value, strong or weak (the preconditions judge weakness).
+         */
+        private @Nullable Object header(InputSource.Header source) {
+            List<String> values = request.headers().header(source.name());
+            String name = source.name();
+            if (values.isEmpty() || !(HttpHeaders.IF_MATCH.equalsIgnoreCase(name)
+                    || HttpHeaders.IF_NONE_MATCH.equalsIgnoreCase(name))) {
+                return convert(source.component(), values);
+            }
+            EntityTags.Parsed parsed;
+            try {
+                parsed = EntityTags.parse(values);
+            } catch (IllegalArgumentException e) {
+                violations.add(new Violation(source.component().name(), NOT_A_TAG));
+                return FAILED;
+            }
+            if (parsed.wildcard()) {
+                return null;
+            }
+            if (parsed.tags().size() > 1) {
+                violations.add(new Violation(source.component().name(), NOT_A_SINGLE_TAG));
+                return FAILED;
+            }
+            return convert(source.component(), List.of(parsed.tags().getFirst().tag()));
         }
 
         private MultiValueMap<String, String> query() {

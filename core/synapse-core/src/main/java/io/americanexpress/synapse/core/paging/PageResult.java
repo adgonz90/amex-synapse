@@ -17,16 +17,20 @@ import java.util.List;
 
 import org.jspecify.annotations.Nullable;
 
+import io.americanexpress.synapse.core.masking.MaskType;
+import io.americanexpress.synapse.core.masking.Masked;
+
 /**
  * One page of results.
  *
  * @param <T> the item type
  * @param items the items on this page; an immutable copy
- * @param nextCursor the cursor of the next page, or {@code null}
+ * @param nextCursor the cursor of the next page, or {@code null}. Masked in payload logs ({@link Masked})
  * @param hasNext whether another page follows
  * @param total the total number of items across all pages, or {@code null} when not counted
  */
-public record PageResult<T>(List<T> items, @Nullable String nextCursor, boolean hasNext, @Nullable Long total) {
+public record PageResult<T>(List<T> items, @Masked(MaskType.FIXED_LENGTH) @Nullable String nextCursor, boolean hasNext,
+        @Nullable Long total) {
 
     /**
      * Creates a page result.

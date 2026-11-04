@@ -15,6 +15,7 @@ package io.americanexpress.synapse.api.rest.internal.aot;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import jakarta.servlet.Filter;
 
 import org.jspecify.annotations.Nullable;
@@ -59,10 +60,13 @@ import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestAutoConfigur
 import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestErrorAutoConfiguration;
 import io.americanexpress.synapse.api.rest.internal.edge.ManagementPaths;
 import io.americanexpress.synapse.api.rest.internal.error.SynapseErrorController;
+import io.americanexpress.synapse.api.rest.internal.paging.PageBody;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -133,6 +137,78 @@ class RestAotProcessingTest {
         });
     }
 
+    @Test
+    void generatedContextServesPagedAndConditionalRoutes() {
+        runner.prepare(context -> {
+            TestGenerationContext generationContext = new TestGenerationContext();
+            ClassName initializerName = new ApplicationContextAotGenerator()
+                    .processAheadOfTime((GenericApplicationContext) context.getSourceApplicationContext(),
+                            generationContext);
+            generationContext.writeGeneratedContent();
+
+            RuntimeHints hints = generationContext.getRuntimeHints();
+            // Jackson writes the page body reflectively.
+            assertThat(REFLECTION.onType(PageBody.class)).accepts(hints);
+            assertThat(REFLECTION.onMethodInvocation(PageBody.class, "nextCursor")).accepts(hints);
+            // The cursor and digest code reflects on the input record: the core's hints reach its accessors and its
+            // canonical constructor, and the page's item type.
+            assertThat(REFLECTION.onMethodInvocation(ShelfSearch.class, "author")).accepts(hints);
+            assertThat(REFLECTION.onMethodInvocation(ShelfSearch.class, "page")).accepts(hints);
+            assertThat(REFLECTION
+                    .onConstructorInvocation(ShelfSearch.class.getDeclaredConstructor(String.class, PageQuery.class)))
+                    .accepts(hints);
+            assertThat(REFLECTION.onMethodInvocation(Shelved.class, "title")).accepts(hints);
+            assertThat(REFLECTION.onMethodInvocation(Versioned.class, "version")).accepts(hints);
+
+            TestCompiler.forSystem().with(generationContext).compile(compiled -> {
+                try (GenericWebApplicationContext aotContext = new GenericWebApplicationContext(
+                        new MockServletContext())) {
+                    @SuppressWarnings("unchecked")
+                    ApplicationContextInitializer<GenericApplicationContext> initializer = compiled
+                            .getInstance(ApplicationContextInitializer.class, initializerName.toString());
+                    initializer.initialize(aotContext);
+                    aotContext.refresh();
+                    MockMvc mvc = MockMvcBuilders
+                            .webAppContextSetup(aotContext)
+                            .addFilters(filters(aotContext))
+                            .build();
+                    JsonMapper json = JsonMapper.builder().build();
+
+                    MockHttpServletResponse first = mvc
+                            .perform(get("/shelf?size=1"))
+                            .andReturn()
+                            .getResponse();
+                    assertThat(first.getStatus()).isEqualTo(200);
+                    JsonNode page = json.readTree(first.getContentAsByteArray());
+                    String token = page.get("nextCursor").asString();
+                    assertThat(token).isNotBlank().isNotEqualTo("raw-1");
+                    assertThat(page.get("items").get(0).get("title").asString()).isEqualTo("Dune");
+                    assertThat(page.get("hasNext").asBoolean()).isTrue();
+
+                    MockHttpServletResponse second = mvc
+                            .perform(get("/shelf?size=1&cursor={token}", token))
+                            .andReturn()
+                            .getResponse();
+                    assertThat(second.getStatus()).isEqualTo(200);
+                    JsonNode last = json.readTree(second.getContentAsByteArray());
+                    assertThat(last.get("items").get(0).get("title").asString()).isEqualTo("Emma");
+
+                    MockHttpServletResponse versioned = mvc.perform(get("/versioned/1")).andReturn().getResponse();
+                    assertThat(versioned.getStatus()).isEqualTo(200);
+                    String etag = versioned.getHeader("ETag");
+                    assertThat(etag).isNotBlank();
+                    MockHttpServletResponse notModified = mvc
+                            .perform(get("/versioned/1").header("If-None-Match", Objects.requireNonNull(etag)))
+                            .andReturn()
+                            .getResponse();
+                    assertThat(notModified.getStatus()).isEqualTo(304);
+                } catch (Exception ex) {
+                    throw new AssertionError("serving the paged and conditional routes failed", ex);
+                }
+            });
+        });
+    }
+
     /** Sends {@code GET /books/1} through the context's filters and dispatcher. */
     private static MockHttpServletResponse getBook(GenericWebApplicationContext context) {
         MockMvc mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(filters(context)).build();
@@ -163,6 +239,35 @@ class RestAotProcessingTest {
     record BookView(String version, Book book) {
     }
 
+    record ShelfSearch(@Nullable String author, PageQuery page) {
+    }
+
+    record Shelved(String title) {
+    }
+
+    record VersionedId(String id) {
+    }
+
+    record Versioned(String id, long version) {
+    }
+
+    static class ShelfOperation implements QueryOperation<ShelfSearch, PageResult<Shelved>> {
+
+        @Override
+        public PageResult<Shelved> execute(ShelfSearch input) {
+            boolean first = input.page().cursor() == null;
+            return PageResult.ofCursor(List.of(new Shelved(first ? "Dune" : "Emma")), first ? "raw-1" : null);
+        }
+    }
+
+    static class VersionedOperation implements QueryOperation<VersionedId, Versioned> {
+
+        @Override
+        public Versioned execute(VersionedId input) {
+            return new Versioned(input.id(), 3);
+        }
+    }
+
     static class GetBookOperation implements QueryOperation<GetBookRequest, BookView> {
 
         @Override
@@ -177,6 +282,26 @@ class RestAotProcessingTest {
         @Bean
         GetBookOperation getBookOperation() {
             return new GetBookOperation();
+        }
+
+        @Bean
+        ShelfOperation shelfOperation() {
+            return new ShelfOperation();
+        }
+
+        @Bean
+        VersionedOperation versionedOperation() {
+            return new VersionedOperation();
+        }
+
+        @Bean
+        RestBindings pagedAndConditional(ShelfOperation shelf, VersionedOperation versioned) {
+            return RestBindings
+                    .builder()
+                    .get("/shelf", shelf)
+                    .get("/versioned/{id}", versioned)
+                    .etag(Versioned::version)
+                    .build();
         }
 
         @Bean

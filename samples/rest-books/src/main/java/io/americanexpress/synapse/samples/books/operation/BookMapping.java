@@ -27,10 +27,12 @@ final class BookMapping {
     }
 
     static Book toBook(CatalogBook book) {
-        return new Book(book.id(), book.isbn(), book.title(), book.author(), book.year(), book.addedVia());
+        return new Book(book.id(), book.isbn(), book.title(), book.author(), book.year(), book.addedVia(),
+                book.version());
     }
 
     static Book toBook(StoredBook book) {
-        return new Book(book.id(), book.isbn(), book.title(), book.author(), book.year(), book.addedVia());
+        return new Book(book.id(), book.isbn(), book.title(), book.author(), book.year(), book.addedVia(),
+                book.version());
     }
 }

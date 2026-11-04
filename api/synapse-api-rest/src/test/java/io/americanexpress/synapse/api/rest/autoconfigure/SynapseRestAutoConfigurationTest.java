@@ -13,9 +13,12 @@
  */
 package io.americanexpress.synapse.api.rest.autoconfigure;
 
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +57,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.support.StaticMessageSource;
 import org.springframework.core.Ordered;
 import org.springframework.core.ResolvableType;
+import org.springframework.format.FormatterRegistry;
 import org.springframework.format.support.DefaultFormattingConversionService;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -63,6 +67,7 @@ import org.springframework.web.context.ConfigurableWebApplicationContext;
 import org.springframework.web.filter.CharacterEncodingFilter;
 import org.springframework.web.servlet.HandlerExecutionChain;
 import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.function.HandlerFunction;
 import org.springframework.web.servlet.function.RouterFunction;
 import org.springframework.web.servlet.function.RouterFunctions;
@@ -77,6 +82,9 @@ import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetPlainBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HiddenOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksRequest;
+import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
 import io.americanexpress.synapse.api.rest.internal.edge.ConcurrencyLimitFilter;
 import io.americanexpress.synapse.api.rest.internal.edge.DeadlinePolicy;
 import io.americanexpress.synapse.api.rest.internal.edge.InboundBaggage;
@@ -88,12 +96,20 @@ import io.americanexpress.synapse.api.rest.internal.error.ClientErrorFilter;
 import io.americanexpress.synapse.api.rest.internal.error.ProblemTitles;
 import io.americanexpress.synapse.api.rest.internal.error.ProblemWriter;
 import io.americanexpress.synapse.api.rest.internal.error.RestErrorStatuses;
+import io.americanexpress.synapse.api.rest.internal.paging.AesGcmCursorCodec;
+import io.americanexpress.synapse.api.rest.internal.paging.CursorKeys;
+import io.americanexpress.synapse.api.rest.internal.paging.InputDigest;
+import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.ExposureInventory;
 import io.americanexpress.synapse.api.rest.internal.route.MethodNotAllowedHandler;
 import io.americanexpress.synapse.api.rest.internal.route.MethodNotAllowedMapping;
 import io.americanexpress.synapse.api.rest.internal.route.OperationHandler;
 import io.americanexpress.synapse.api.rest.internal.route.ResponseWriter;
 import io.americanexpress.synapse.api.rest.internal.route.RouteCompiler;
+import io.americanexpress.synapse.api.rest.paging.CursorCodec;
+import io.americanexpress.synapse.api.rest.paging.CursorScope;
+import io.americanexpress.synapse.api.rest.paging.InvalidCursorException;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
@@ -101,7 +117,10 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorMessages;
+import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.test.time.MutableClock;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -173,6 +192,22 @@ class SynapseRestAutoConfigurationTest {
                     assertThat(properties.errors().status()).isEqualTo(Map.of("BOOK_NOT_FOUND", 423));
                     assertThat(Objects.requireNonNull(properties.operations().get("get-book")).errors().status())
                             .isEqualTo(Map.of("BOOK_NOT_FOUND", 410));
+                });
+    }
+
+    @Test
+    void bindsPagingProperties() {
+        webRunner
+                .withPropertyValues("synapse.api.rest.paging.parameters.size=page_size",
+                        "synapse.api.rest.paging.max-offset=500", "synapse.api.rest.paging.cursor.max-age=1d",
+                        "synapse.api.rest.paging.cursor.previous-keys[0]=b2xkb2xkb2xk")
+                .run(context -> {
+                    SynapseRestProperties.Paging paging = context.getBean(SynapseRestProperties.class).paging();
+                    assertThat(paging.parameters().size()).isEqualTo("page_size");
+                    assertThat(paging.parameters().cursor()).isEqualTo("cursor");
+                    assertThat(paging.maxOffset()).isEqualTo(500);
+                    assertThat(paging.cursor().maxAge()).isEqualTo(Duration.ofDays(1));
+                    assertThat(paging.cursor().previousKeys()).containsExactly("b2xkb2xkb2xk");
                 });
     }
 
@@ -409,10 +444,15 @@ class SynapseRestAutoConfigurationTest {
             assertThat(context)
                     .hasSingleBean(RouteCompiler.class)
                     .hasSingleBean(BindingValidator.class)
+                    .hasSingleBean(PagingSettings.class)
                     .hasSingleBean(RequestBinder.class)
                     .hasSingleBean(ResponseWriter.class)
+                    .hasSingleBean(InputDigest.class)
+                    .hasSingleBean(ETagValues.class)
+                    .hasSingleBean(PageCursors.class)
                     .hasSingleBean(ExposureInventory.class)
                     .hasBean("synapseRestRoutes");
+            assertThat(context.getBean(PagingSettings.class)).isEqualTo(PagingSettings.defaults());
             HandlerFunction<?> handler = Objects.requireNonNull(handlerFor(context, "GET", "/books/" + new UUID(0, 1)));
             assertThat(handler).isInstanceOf(OperationHandler.class);
             assertThat(((OperationHandler) handler).route().operationName()).isEqualTo("get-plain-book");
@@ -446,8 +486,12 @@ class SynapseRestAutoConfigurationTest {
                     .doesNotHaveBean("synapseRestMethodNotAllowedMapping")
                     .doesNotHaveBean(RouteCompiler.class)
                     .doesNotHaveBean(BindingValidator.class)
+                    .doesNotHaveBean(PagingSettings.class)
                     .doesNotHaveBean(RequestBinder.class)
                     .doesNotHaveBean(ResponseWriter.class)
+                    .doesNotHaveBean(InputDigest.class)
+                    .doesNotHaveBean(ETagValues.class)
+                    .doesNotHaveBean(PageCursors.class)
                     .doesNotHaveBean(ExposureInventory.class);
         });
     }
@@ -489,27 +533,113 @@ class SynapseRestAutoConfigurationTest {
     void routeBeansBackOffToUserBeans() {
         JsonMapper mapper = JsonMapper.builder().build();
         DefaultFormattingConversionService conversions = new DefaultFormattingConversionService();
-        ResponseWriter writer = new ResponseWriter(mapper, conversions);
-        BindingValidator validator = new BindingValidator();
-        RequestBinder binder = new RequestBinder(mapper, conversions);
-        RouteCompiler compiler = new RouteCompiler(validator, binder, writer);
+        InputDigest digest = new InputDigest();
+        PageCursors cursors = new PageCursors(new AesGcmCursorCodec(CursorKeys
+                .from(
+                        new SynapseRestProperties.Paging.Cursor(null, List.of(), null), new SecureRandom()),
+                Clock.systemUTC(),
+                null, new SecureRandom()), digest, PagingSettings.defaults());
+        ETagValues etags = new ETagValues(conversions);
+        ResponseWriter writer = new ResponseWriter(mapper, conversions, cursors, etags);
+        BindingValidator validator = new BindingValidator(PagingSettings.defaults());
+        RequestBinder binder = new RequestBinder(mapper, conversions, PagingSettings.defaults());
+        RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors, () -> true);
         ExposureInventory inventory = new ExposureInventory(new StaticListableBeanFactory()
                 .getBeanProvider(
                         ResolvableType.forClassWithGenerics(RouterFunction.class, ServerResponse.class)));
         routesRunner
                 .withUserConfiguration(Books.class)
                 .withBean(ResponseWriter.class, () -> writer)
+                .withBean(InputDigest.class, () -> digest)
+                .withBean(ETagValues.class, () -> etags)
+                .withBean(PageCursors.class, () -> cursors)
                 .withBean(BindingValidator.class, () -> validator)
                 .withBean(RequestBinder.class, () -> binder)
                 .withBean(RouteCompiler.class, () -> compiler)
                 .withBean(ExposureInventory.class, () -> inventory)
                 .run(context -> {
                     assertThat(context.getBean(ResponseWriter.class)).isSameAs(writer);
+                    assertThat(context.getBean(InputDigest.class)).isSameAs(digest);
+                    assertThat(context.getBean(ETagValues.class)).isSameAs(etags);
+                    assertThat(context.getBean(PageCursors.class)).isSameAs(cursors);
                     assertThat(context.getBean(BindingValidator.class)).isSameAs(validator);
                     assertThat(context.getBean(RequestBinder.class)).isSameAs(binder);
                     assertThat(context.getBean(RouteCompiler.class)).isSameAs(compiler);
                     assertThat(context.getBean(ExposureInventory.class)).isSameAs(inventory);
                     assertThat(context).hasBean("synapseRestRoutes");
+                });
+    }
+
+    @Test
+    void etagValuesFormatWithTheMvcConversionService() {
+        routesRunner.withUserConfiguration(VersionedBooks.class).run(context -> {
+            MockMvc mvc = MockMvcBuilders
+                    .webAppContextSetup(context.getSourceApplicationContext(ConfigurableWebApplicationContext.class))
+                    .build();
+
+            MockHttpServletResponse response = mvc.perform(get("/versioned/b1")).andReturn().getResponse();
+
+            assertThat(response.getStatus()).isEqualTo(200);
+            assertThat(response.getHeader("ETag")).isEqualTo("\"v3\"");
+            assertThat(mvc
+                    .perform(get("/versioned/b1").header("If-None-Match", "\"v3\""))
+                    .andReturn()
+                    .getResponse()
+                    .getStatus()).isEqualTo(304);
+        });
+    }
+
+    @Test
+    void pagingSettingsBindTheRestAndCorePagingProperties() {
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withPropertyValues("synapse.api.rest.paging.parameters.size=page_size",
+                        "synapse.api.rest.paging.parameters.cursor=after", "synapse.api.rest.paging.max-offset=500",
+                        "synapse.paging.default-size=10", "synapse.paging.max-size=50")
+                .run(context -> assertThat(context.getBean(PagingSettings.class))
+                        .isEqualTo(new PagingSettings("after", "offset", "page_size", "sort", 500, 10, 50)));
+    }
+
+    @Test
+    void requestBinderReadsThePagingParametersOfTheSettingsBean() {
+        routesRunner
+                .withUserConfiguration(PagedBooks.class)
+                .withPropertyValues("synapse.api.rest.paging.parameters.size=page_size", "synapse.paging.max-size=50")
+                .run(context -> {
+                    OperationHandler handler = (OperationHandler) Objects
+                            .requireNonNull(handlerFor(context, "GET", "/books"));
+                    MockHttpServletRequest request = new MockHttpServletRequest("GET", "/books");
+                    request.setQueryString("page_size=51&size=500");
+                    request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Map.of());
+                    RequestBinder binder = context.getBean(RequestBinder.class);
+                    assertThatExceptionOfType(SynapseException.class)
+                            .isThrownBy(() -> binder.bind(handler.route(), ServerRequest.create(request, List.of())))
+                            .satisfies(e -> assertThat(e.violations())
+                                    .containsExactly(new Violation("page_size", "must be less than or equal to 50")));
+                });
+    }
+
+    @Test
+    void pagingSettingsBackOffToAUserBeanThatTheValidatorUses() {
+        PagingSettings user = new PagingSettings("cursor", "offset", "author", "sort", 1000, 20, 100);
+        routesRunner
+                .withUserConfiguration(PagedBooks.class)
+                .run(context -> assertThat(context).hasNotFailed().hasSingleBean(PagingSettings.class));
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withBean(PagingSettings.class, () -> user)
+                .run(context -> assertThat(context.getBean(PagingSettings.class)).isSameAs(user));
+        // The validator checks query names against the user's names: author is now a paging parameter.
+        routesRunner
+                .withUserConfiguration(PagedBooks.class)
+                .withBean(PagingSettings.class, () -> user)
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .rootCause()
+                            .isInstanceOf(SynapseConfigurationException.class)
+                            .hasMessageContaining("query parameter author")
+                            .hasMessageContaining("paging parameter");
                 });
     }
 
@@ -585,6 +715,147 @@ class SynapseRestAutoConfigurationTest {
         assertThat(restLines.list).noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN));
     }
 
+    @Test
+    void cursorCodecActivatesWithBindings() {
+        routesRunner.withUserConfiguration(Books.class).run(context -> {
+            assertThat(context).hasSingleBean(CursorCodec.class).hasBean("synapseCursorCodec");
+            CursorCodec codec = context.getBean(CursorCodec.class);
+            assertThat(codec).isInstanceOf(AesGcmCursorCodec.class);
+            assertThat(((AesGcmCursorCodec) codec).keyGenerated()).isTrue();
+            CursorScope scope = new CursorScope("get-plain-book", List.of(), "digest");
+            assertThat(codec.decode(codec.encode("raw-7", scope), scope)).isEqualTo("raw-7");
+        });
+        routesRunner.run(context -> assertThat(context).hasNotFailed().doesNotHaveBean(CursorCodec.class));
+    }
+
+    @Test
+    void cursorCodecBindsTheCursorProperties() {
+        String oldKey = Base64.getEncoder().encodeToString(new byte[32]);
+        byte[] newBytes = new byte[32];
+        Arrays.fill(newBytes, (byte) 5);
+        String newKey = Base64.getUrlEncoder().withoutPadding().encodeToString(newBytes);
+        MutableClock clock = MutableClock.at("2026-11-04T00:00:00Z");
+        CursorScope scope = new CursorScope("get-plain-book", List.of(), "digest");
+        AtomicReference<String> token = new AtomicReference<>();
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withBean(Clock.class, () -> clock)
+                .withPropertyValues("synapse.api.rest.paging.cursor.key=" + oldKey)
+                .run(context -> {
+                    AesGcmCursorCodec codec = context.getBean(AesGcmCursorCodec.class);
+                    assertThat(codec.keyGenerated()).isFalse();
+                    token.set(codec.encode("raw-7", scope));
+                });
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withBean(Clock.class, () -> clock)
+                .withPropertyValues("synapse.api.rest.paging.cursor.key=" + newKey,
+                        "synapse.api.rest.paging.cursor.previous-keys[0]=" + oldKey,
+                        "synapse.api.rest.paging.cursor.max-age=1h")
+                .run(context -> {
+                    CursorCodec codec = context.getBean(CursorCodec.class);
+                    // The previous key still reads the token, until it is older than the maximum age.
+                    assertThat(codec.decode(Objects.requireNonNull(token.get()), scope)).isEqualTo("raw-7");
+                    clock.advance(Duration.ofHours(2));
+                    assertThatExceptionOfType(InvalidCursorException.class)
+                            .isThrownBy(() -> codec.decode(Objects.requireNonNull(token.get()), scope));
+                });
+    }
+
+    @Test
+    void cursorCodecBacksOffToUserBean() {
+        CursorCodec user = new CursorCodec() {
+            @Override
+            public String encode(String cursor, CursorScope scope) {
+                return cursor;
+            }
+
+            @Override
+            public String decode(String token, CursorScope scope) {
+                return token;
+            }
+        };
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withBean(CursorCodec.class, () -> user)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(CursorCodec.class).doesNotHaveBean("synapseCursorCodec");
+                    assertThat(context.getBean(CursorCodec.class)).isSameAs(user);
+                });
+    }
+
+    @Test
+    void pageCursorsUseTheCodecBeanAndTheCursorParameterName() {
+        CursorCodec rejecting = new CursorCodec() {
+            @Override
+            public String encode(String cursor, CursorScope scope) {
+                return "token-for-" + scope.operation();
+            }
+
+            @Override
+            public String decode(String token, CursorScope scope) {
+                throw new InvalidCursorException("test");
+            }
+        };
+        routesRunner
+                .withUserConfiguration(PagedBooks.class)
+                .withBean(CursorCodec.class, () -> rejecting)
+                .withPropertyValues("synapse.api.rest.paging.parameters.cursor=after")
+                .run(context -> {
+                    PageCursors cursors = context.getBean(PageCursors.class);
+                    OperationHandler handler = (OperationHandler) Objects
+                            .requireNonNull(handlerFor(context, "GET", "/books"));
+                    PagedBooksRequest first = new PagedBooksRequest(null, PageQuery.first(20));
+                    assertThat(cursors.wrap(handler.route(), first, "raw")).isEqualTo("token-for-paged-books");
+                    PagedBooksRequest next = new PagedBooksRequest(null, PageQuery.ofCursor("t", 20, List.of()));
+                    assertThatExceptionOfType(SynapseException.class)
+                            .isThrownBy(() -> cursors.unwrap(handler.route(), next))
+                            .satisfies(e -> assertThat(e.violations())
+                                    .containsExactly(new Violation("after", "is not valid for this request")));
+                });
+    }
+
+    @Test
+    void generatedCursorKeyIsWarnedAtStartupOnlyWithPagedRoutes() {
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+        ListAppender<ILoggingEvent> lines = new ListAppender<>();
+        lines.start();
+        logger.addAppender(lines);
+        try {
+            routesRunner.withUserConfiguration(Books.class).run(context -> assertThat(context).hasNotFailed());
+            assertThat(lines.list).noneMatch(line -> line.getFormattedMessage().contains("cursor.key is not set"));
+
+            routesRunner.withUserConfiguration(PagedBooks.class).run(context -> assertThat(context).hasNotFailed());
+            assertThat(lines.list)
+                    .filteredOn(line -> line.getFormattedMessage().contains("cursor.key is not set"))
+                    .singleElement()
+                    .satisfies(line -> assertThat(line.getLevel()).isEqualTo(Level.WARN));
+        } finally {
+            logger.detachAppender(lines);
+        }
+    }
+
+    @Test
+    void invalidCursorKeyFailsStartup() {
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withPropertyValues("synapse.api.rest.paging.cursor.key=short")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .rootCause()
+                            .isInstanceOfSatisfying(SynapseConfigurationException.class, failure -> {
+                                // The failure analyzer prints the description and the action.
+                                assertThat(failure.description())
+                                        .contains("synapse.api.rest.paging.cursor.key")
+                                        .doesNotContain("short");
+                                assertThat(failure.action())
+                                        .contains("synapse.api.rest.paging.cursor.key")
+                                        .doesNotContain("short");
+                            });
+                });
+    }
+
     private static @Nullable HandlerFunction<?> handlerFor(AssertableWebApplicationContext context, String method,
             String path) {
         @SuppressWarnings("unchecked")
@@ -651,6 +922,20 @@ class SynapseRestAutoConfigurationTest {
         @Bean
         RestBindings books(GetPlainBookOperation getBook) {
             return RestBindings.builder().get("/books/{id}", getBook).build();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class PagedBooks {
+
+        @Bean
+        PagedBooksOperation pagedBooksOperation() {
+            return new PagedBooksOperation();
+        }
+
+        @Bean
+        RestBindings pagedBooks(PagedBooksOperation pagedBooks) {
+            return RestBindings.builder().get("/books", pagedBooks).build();
         }
     }
 
@@ -765,6 +1050,39 @@ class SynapseRestAutoConfigurationTest {
         @Bean
         FilterRegistrationBean<CharacterEncodingFilter> synapseRequestSizeLimitFilter() {
             return new FilterRegistrationBean<>(new CharacterEncodingFilter());
+        }
+    }
+
+    /** A route with {@code .etag}, and a Spring MVC formatter that prints its version with a prefix. */
+    @Configuration(proxyBeanMethods = false)
+    static class VersionedBooks implements WebMvcConfigurer {
+
+        @Override
+        public void addFormatters(FormatterRegistry registry) {
+            registry.addConverter(Long.class, String.class, version -> "v" + version);
+        }
+
+        @Bean
+        GetVersionedBookOperation getVersionedBookOperation() {
+            return new GetVersionedBookOperation();
+        }
+
+        @Bean
+        RestBindings versionedBooks(GetVersionedBookOperation getBook) {
+            return RestBindings.builder().get("/versioned/{id}", getBook).etag(VersionedBook::version).build();
+        }
+    }
+
+    record VersionedBookId(String id) {
+    }
+
+    record VersionedBook(String id, long version) {
+    }
+
+    static class GetVersionedBookOperation implements QueryOperation<VersionedBookId, VersionedBook> {
+        @Override
+        public VersionedBook execute(VersionedBookId input) {
+            return new VersionedBook(input.id(), 3);
         }
     }
 

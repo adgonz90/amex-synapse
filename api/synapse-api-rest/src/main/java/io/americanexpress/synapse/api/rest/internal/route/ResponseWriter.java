@@ -21,32 +21,46 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.core.convert.ConversionService;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ETag;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
+import tools.jackson.core.JsonGenerator;
 import tools.jackson.databind.BeanDescription;
 import tools.jackson.databind.JavaType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.SerializationConfig;
+import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.introspect.BeanPropertyDefinition;
 import tools.jackson.databind.introspect.ClassIntrospector;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.module.SimpleModule;
 import tools.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.ser.std.StdSerializer;
 
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules.OutputHeader;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
+import io.americanexpress.synapse.api.rest.internal.conditional.EntityTags;
+import io.americanexpress.synapse.api.rest.internal.paging.PageBody;
+import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.paging.PageLinks;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 /**
  * Maps an operation's output to the response status, headers and JSON body, following the route's response rules.
@@ -64,15 +78,33 @@ import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
  * removed from the body unless {@code .alsoInBody()}. A {@code null} or empty {@code Optional} component writes no
  * header; a {@code List} writes one value per element. {@code .body(component)} makes that component the whole body,
  * and a {@code null} body component is 204 with no body.</li>
- * <li>The body is serialized with the application's {@link JsonMapper} as {@code application/json}. A 204 or 304
+ * <li>A {@code PageResult} is written as a page object ({@link PageBody}): its items, its next cursor wrapped in a
+ * token bound to the request ({@link PageCursors}), {@code hasNext}, and its total. The {@code PageResult} itself is
+ * never written, so the operation's raw cursor never reaches the client.</li>
+ * <li>The body is written by a copy of the application's mapper that refuses a {@code PageResult} anywhere, so a page
+ * hidden where the startup checks can't see it (in a {@code Map<String, Object>}, say) is an
+ * {@link IllegalStateException}, never a raw cursor on the wire.</li>
+ * <li>A route with {@code .etag}: a 200 to {@code GET} or {@code HEAD} carries the strong {@code ETag} with
+ * {@code Cache-Control: no-cache} and {@code Vary: Accept}, and is a 304 with only those three headers when
+ * {@code If-None-Match} is {@code *} or lists a tag that matches by weak comparison; a malformed
+ * {@code If-None-Match} is ignored. A 201 to {@code POST} carries the {@code ETag} only. A {@code null} component
+ * sends none of them ({@link ETagValues}).</li>
+ * <li>The body is serialized as {@code application/json} by the guarded copy of the application's
+ * {@link JsonMapper} described above, which keeps every setting of the application's mapper. A 204 or 304
  * response has no body, and a {@code HEAD} request gets the headers of the {@code GET} response without the body.</li>
  * </ul>
  */
 public final class ResponseWriter {
 
+    private static final String NESTED_PAGE = "PageResult must be the operation's direct output";
+
     private final JsonMapper mapper;
 
     private final ConversionService conversionService;
+
+    private final PageCursors cursors;
+
+    private final ETagValues etags;
 
     /** For each output type, the JSON property name of each component the mapper writes. */
     private final Map<Class<?>, Map<String, String>> jsonNames = new ConcurrentHashMap<>();
@@ -80,13 +112,22 @@ public final class ResponseWriter {
     /**
      * Creates the writer.
      *
-     * @param mapper the application's mapper, which writes the body
+     * @param mapper the application's mapper; the body is written by a copy of it, built once, with every setting kept
+     *        and a guard that refuses to write a {@code PageResult} anywhere
      * @param conversionService formats output header values (in an application, Spring MVC's conversion service
      *        bean)
+     * @param cursors wraps the next cursor of a {@code PageResult}
+     * @param etags computes the {@code ETag} of a route with {@code .etag}
      */
-    public ResponseWriter(JsonMapper mapper, ConversionService conversionService) {
+    public ResponseWriter(JsonMapper mapper, ConversionService conversionService, PageCursors cursors,
+            ETagValues etags) {
         this.conversionService = conversionService;
-        this.mapper = mapper;
+        this.mapper = mapper
+                .rebuild()
+                .addModule(new SimpleModule("synapse-page-guard").addSerializer(new PageResultGuard()))
+                .build();
+        this.cursors = cursors;
+        this.etags = etags;
     }
 
     /**
@@ -95,11 +136,16 @@ public final class ResponseWriter {
      * @param route the resolved route
      * @param result the operation's output, exactly as {@code execute} returned it
      * @param request the request
+     * @param input the input the operation was called with, which a {@code PageResult}'s next cursor is bound to
      * @return the response
      * @throws SynapseException for an empty {@code Optional} without {@code .emptyAs}
-     * @throws IllegalStateException when a header value computed from the output has a control character
+     * @throws IllegalStateException when a header value computed from the output (a location, an output header or the
+     *         {@code Link}) has a control character; when the {@code ETag} value is empty or has a character an
+     *         entity tag can't carry; when the body holds a {@code PageResult} other than the output itself; or when
+     *         the cursor codec returns a token that is empty or not URL-safe
      */
-    public ServerResponse write(RouteDefinition route, @Nullable Object result, ServerRequest request) {
+    public ServerResponse write(RouteDefinition route, @Nullable Object result, ServerRequest request,
+            @Nullable Object input) {
         ResponseRules rules = route.response();
         Object value = result;
         if (result instanceof Optional<?> || route.outputType() == Optional.class) {
@@ -117,26 +163,134 @@ public final class ResponseWriter {
         Object output = value;
         HttpHeaders headers = headers(route, output, result);
         ResolvedComponent bodyComponent = rules.bodyComponent();
-        Object bodyValue = bodyComponent != null ? componentValue(bodyComponent, output) : body(rules, output);
+        Object bodyValue;
+        if (output instanceof PageResult<?> page) {
+            // The PageResult itself is never written: its next cursor is the operation's raw cursor.
+            String token = cursors.wrap(route, input, page.nextCursor());
+            bodyValue = new PageBody(page.items(), token, page.hasNext(), page.total());
+            addNextLink(headers, request, input, page, token);
+        } else {
+            bodyValue = bodyComponent != null
+                    ? componentValue(bodyComponent, output)
+                    : guarded(() -> body(rules, output));
+        }
         // A null body component means there is nothing to send.
         int status = bodyValue == null ? 204 : status(route, output, result);
+        ETag tag = status == 200 || status == 201 ? etags.of(route, output) : null;
+        // The ETag of a 200 to GET or HEAD, set on the servlet response when the body is written (see below).
+        @Nullable
+        String readTag = null;
+        if (tag != null) {
+            if (status == 200 && isRead(request)) {
+                if (notModified(request, tag)) {
+                    return notModifiedResponse(tag);
+                }
+                readTag = ETagValues.header(tag);
+                addCachingHeaders(headers);
+            } else if (status == 201 && HttpMethod.POST.equals(request.method())) {
+                headers.set(HttpHeaders.ETAG, ETagValues.header(tag));
+            }
+        }
         ServerResponse.BodyBuilder response = ServerResponse.status(status);
         response.headers(target -> target.addAll(headers));
         if (status == 204 || status == 304) {
             return response.build();
         }
-        byte[] body = mapper.writeValueAsBytes(bodyValue);
+        Object written = bodyValue;
+        byte[] body = guarded(() -> mapper.writeValueAsBytes(written));
         // HEAD gets the GET response's headers, Content-Length included, without the body.
         boolean head = HttpMethod.HEAD.equals(request.method());
+        @Nullable
+        String etag = readTag;
         return response
                 .contentType(MediaType.APPLICATION_JSON)
                 .contentLength(body.length)
                 .build((servletRequest, servletResponse) -> {
+                    // Spring evaluates If-None-Match itself, with its lenient parser, for a GET or HEAD response whose
+                    // headers carry an ETag. This writer has decided already (strictly, a malformed header ignored),
+                    // so the ETag is set here, after Spring's check.
+                    if (etag != null) {
+                        servletResponse.setHeader(HttpHeaders.ETAG, etag);
+                    }
                     if (!head) {
                         servletResponse.getOutputStream().write(body);
                     }
                     return null;
                 });
+    }
+
+    private static boolean isRead(ServerRequest request) {
+        return HttpMethod.GET.equals(request.method()) || HttpMethod.HEAD.equals(request.method());
+    }
+
+    /**
+     * Whether the request's {@code If-None-Match} matches the tag by weak comparison, or is {@code *}. An absent or
+     * malformed header doesn't match: the response is the 200.
+     */
+    private static boolean notModified(ServerRequest request, ETag tag) {
+        List<String> values = request.headers().header(HttpHeaders.IF_NONE_MATCH);
+        if (values.isEmpty()) {
+            return false;
+        }
+        EntityTags.Parsed parsed;
+        try {
+            parsed = EntityTags.parse(values);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+        return parsed.wildcard() || parsed.tags().stream().anyMatch(candidate -> candidate.compare(tag, false));
+    }
+
+    /**
+     * The 304: the validators, and nothing that describes a body (RFC 9110 §15.4.5), so no output header,
+     * {@code Content-Type} or {@code Content-Length}.
+     */
+    private static ServerResponse notModifiedResponse(ETag tag) {
+        String etag = ETagValues.header(tag);
+        return ServerResponse.status(304).headers(target -> {
+            target.set(HttpHeaders.ETAG, etag);
+            addCachingHeaders(target);
+        }).build();
+    }
+
+    /** Sets the caching headers that make clients revalidate the {@code ETag} before reusing a stored response. */
+    private static void addCachingHeaders(HttpHeaders headers) {
+        headers.set(HttpHeaders.CACHE_CONTROL, CacheControl.noCache().getHeaderValue());
+        headers.set(HttpHeaders.VARY, HttpHeaders.ACCEPT);
+    }
+
+    /**
+     * Adds {@code Link: <target>; rel="next"} to a page on GET and HEAD. Other methods get no link, and the link
+     * carries only the wrapped token or the next offset.
+     */
+    private void addNextLink(HttpHeaders headers, ServerRequest request, @Nullable Object input, PageResult<?> page,
+            @Nullable String token) {
+        PageQuery query = cursors.query(input);
+        if (query == null || !(HttpMethod.GET.equals(request.method()) || HttpMethod.HEAD.equals(request.method()))) {
+            return;
+        }
+        String link = PageLinks.next(request.servletRequest(), cursors.settings(), query, page, token);
+        if (link != null) {
+            headers.add(HttpHeaders.LINK, checked(HttpHeaders.LINK, link));
+        }
+    }
+
+    /**
+     * Runs a serialization with the body mapper. When the guard met a {@code PageResult}, the failure is replaced by a
+     * plain {@link IllegalStateException} with no cause, so neither the mapper's message nor the page's raw cursor
+     * reaches a log or the client.
+     */
+    private static <T> T guarded(Supplier<T> serialization) {
+        try {
+            return serialization.get();
+        } catch (RuntimeException e) {
+            for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+                if (cause instanceof NestedPageException) {
+                    throw new IllegalStateException(NESTED_PAGE);
+                }
+            }
+            throw e;
+        }
     }
 
     /**
@@ -269,5 +423,32 @@ public final class ResponseWriter {
         Method accessor = component.component().getAccessor();
         ReflectionUtils.makeAccessible(accessor);
         return ReflectionUtils.invokeMethod(accessor, record);
+    }
+
+    /**
+     * Refuses to write a {@code PageResult}: one can reach the client only as the {@link PageBody} this writer builds,
+     * whose cursor is wrapped. The startup checks reject the outputs that declare one elsewhere; this guards the
+     * values they can't see, such as a page inside a {@code Map<String, Object>}.
+     */
+    private static final class PageResultGuard extends StdSerializer<PageResult<?>> {
+
+        PageResultGuard() {
+            super(PageResult.class);
+        }
+
+        @Override
+        public void serialize(PageResult<?> value, JsonGenerator generator, SerializationContext context) {
+            throw new NestedPageException();
+        }
+    }
+
+    /** Raised by the guard; {@link #guarded} replaces it, and whatever wraps it, before it leaves the writer. */
+    private static final class NestedPageException extends IllegalStateException {
+
+        private static final long serialVersionUID = 1L;
+
+        NestedPageException() {
+            super(NESTED_PAGE);
+        }
     }
 }

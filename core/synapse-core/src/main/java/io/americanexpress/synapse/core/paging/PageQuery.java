@@ -19,17 +19,21 @@ import java.util.List;
 import org.jspecify.annotations.Nullable;
 
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.masking.MaskType;
+import io.americanexpress.synapse.core.masking.Masked;
 
 /**
  * A request for one page of results, by cursor or by offset. The edge fills in the default size; this type has no
  * default.
  *
- * @param cursor the opaque cursor to continue from, or {@code null}; not combinable with {@code offset}
+ * @param cursor the opaque cursor to continue from, or {@code null}; not combinable with {@code offset}. Masked in
+ *        payload logs ({@link Masked})
  * @param offset the number of items to skip, or {@code null}
  * @param size the page size
  * @param sort the sort criteria; {@code null} becomes empty, and the list is an immutable copy
  */
-public record PageQuery(@Nullable String cursor, @Nullable Long offset, int size, List<SortOrder> sort) {
+public record PageQuery(@Masked(MaskType.FIXED_LENGTH) @Nullable String cursor, @Nullable Long offset, int size,
+        List<SortOrder> sort) {
 
     /**
      * Creates a page query.

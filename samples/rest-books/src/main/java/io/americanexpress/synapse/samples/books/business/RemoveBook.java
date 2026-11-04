@@ -13,23 +13,25 @@
  */
 package io.americanexpress.synapse.samples.books.business;
 
-import java.util.UUID;
-
 import org.springframework.stereotype.Component;
 
+import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.BusinessOperation;
+import io.americanexpress.synapse.samples.books.business.model.BookRemoval;
 import io.americanexpress.synapse.samples.books.business.model.CatalogBook;
 import io.americanexpress.synapse.samples.books.contract.BookErrors;
 import io.americanexpress.synapse.samples.books.data.InMemoryBookStore;
+import io.americanexpress.synapse.samples.books.data.StoredBook;
+import io.americanexpress.synapse.samples.books.data.WriteOutcome;
 
 /**
- * Removes a book from the catalog. It returns the removed book, although its only caller doesn't use it: a {@code Void}
- * output would have to return {@code null}, which NullAway rejects without a suppression ({@code BusinessOperation}
- * has no {@code @Nullable} bound on its output).
+ * Removes a book from the catalog, only if it is still at the version the caller expects. It returns the removed book,
+ * although its only caller doesn't use it: a {@code Void} output would have to return {@code null}, which NullAway
+ * rejects without a suppression ({@code BusinessOperation} has no {@code @Nullable} bound on its output).
  */
 @Component
-public class RemoveBook implements BusinessOperation<UUID, CatalogBook> {
+public class RemoveBook implements BusinessOperation<BookRemoval, CatalogBook> {
 
     private final InMemoryBookStore store;
 
@@ -45,15 +47,32 @@ public class RemoveBook implements BusinessOperation<UUID, CatalogBook> {
     /**
      * Removes the book.
      *
-     * @param id the id of the book
+     * @param removal the id of the book, and the version the caller expects (or {@code null})
      * @return the removed book
-     * @throws SynapseException {@link BookErrors#BOOK_NOT_FOUND} when no book has the id
+     * @throws SynapseException {@link BookErrors#BOOK_NOT_FOUND} when no book has the id,
+     *         {@link SynapseErrors#STALE_VERSION} when the book isn't at the expected version (the removal's, or the
+     *         one read here when the removal has none)
      */
     @Override
-    public CatalogBook execute(UUID id) {
-        return store
-                .remove(id)
-                .map(CatalogBookMapping::toCatalogBook)
-                .orElseThrow(() -> new SynapseException(BookErrors.BOOK_NOT_FOUND, id));
+    public CatalogBook execute(BookRemoval removal) {
+        StoredBook current = store
+                .find(removal.id())
+                .orElseThrow(() -> new SynapseException(BookErrors.BOOK_NOT_FOUND, removal.id()));
+        // As in ReviseBook: the caller's version when it sent one, otherwise the version just read.
+        Long requested = removal.version();
+        long expected = requested == null ? current.version() : requested;
+        if (expected != current.version()) {
+            throw new SynapseException(SynapseErrors.STALE_VERSION);
+        }
+        WriteOutcome outcome = store.remove(removal.id(), expected);
+        if (outcome == WriteOutcome.NOT_FOUND) {
+            // Removed by a concurrent request since it was read.
+            throw new SynapseException(BookErrors.BOOK_NOT_FOUND, removal.id());
+        }
+        if (outcome == WriteOutcome.STALE) {
+            // Changed by a concurrent request since it was read.
+            throw new SynapseException(SynapseErrors.STALE_VERSION);
+        }
+        return CatalogBookMapping.toCatalogBook(current);
     }
 }

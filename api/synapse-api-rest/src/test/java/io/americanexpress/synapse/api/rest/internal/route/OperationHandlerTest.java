@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import jakarta.servlet.http.HttpServletRequest;
 
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -35,9 +36,20 @@ import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
 import io.americanexpress.synapse.api.rest.internal.edge.SizeLimitedRequest;
+import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.CreateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetBookOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksRequest;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.ReviseVersionedBookOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.VersionedBook;
+import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.operation.CommandOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 import static io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.route;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,12 +59,15 @@ class OperationHandlerTest {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
+    private static final PageCursors CURSORS = RouteFixtures.cursors();
+
     private final GetBookOperation getBook = new GetBookOperation();
 
     private final OperationHandler handler = new OperationHandler(
             route(RestBindings.builder().get("/books/{id}", getBook).build()),
-            new RequestBinder(MAPPER, new DefaultFormattingConversionService()),
-            new ResponseWriter(MAPPER, new DefaultFormattingConversionService()));
+            new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
+            new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS, RouteFixtures.etags()),
+            CURSORS);
 
     @ParameterizedTest
     @ValueSource(strings = {"", "application/json", "*/*", "application/*", "application/json;charset=UTF-8",
@@ -97,13 +112,15 @@ class OperationHandlerTest {
     @Test
     void routeRequestSizeLimitAppliesBeforeTheBodyIsRead() throws Exception {
         CreateBookOperation createBook = new CreateBookOperation();
-        RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService());
-        ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService());
+        RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(),
+                PagingSettings.defaults());
+        ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS,
+                RouteFixtures.etags());
         OperationHandler limited = new OperationHandler(
                 route(RestBindings.builder().post("/books", createBook).maxRequestSize(DataSize.ofBytes(16)).build()),
-                binder, writer);
+                binder, writer, CURSORS);
         OperationHandler unlimited = new OperationHandler(
-                route(RestBindings.builder().post("/books", createBook).build()), binder, writer);
+                route(RestBindings.builder().post("/books", createBook).build()), binder, writer, CURSORS);
 
         assertThatExceptionOfType(SynapseException.class)
                 .isThrownBy(() -> limited.handle(ServerRequest.create(postBook(), List.of())))
@@ -112,6 +129,149 @@ class OperationHandlerTest {
         // Without a route limit, the edge's default (here 1 MB) stays.
         ServerResponse response = unlimited.handle(ServerRequest.create(postBook(), List.of()));
         assertThat(response.statusCode().value()).isEqualTo(200);
+    }
+
+    @Test
+    void operationGetsTheRawCursorAndTheClientTheToken() throws Exception {
+        PagedBooksOperation paged = new PagedBooksOperation();
+        paged.result = new PageResult<>(List.of(RouteFixtures.BOOK), "RAW-2", true, null);
+        OperationHandler pages = pagedHandler(paged);
+
+        String token = MAPPER.readTree(body(pages, "author=herbert&size=1")).get("nextCursor").asString();
+        assertThat(token).doesNotContain("RAW");
+        paged.result = new PageResult<>(List.of(RouteFixtures.BOOK), "RAW-3", true, null);
+        String next = body(pages, "author=herbert&size=1&cursor=" + token);
+
+        assertThat(paged.inputs)
+                .extracting(PagedBooksRequest::page)
+                .extracting(PageQuery::cursor)
+                .containsExactly(null, "RAW-2");
+        assertThat(paged.inputs.get(1))
+                .isEqualTo(new PagedBooksRequest("herbert", PageQuery
+                        .ofCursor("RAW-2", 1,
+                                List.of())));
+        assertThat(next).doesNotContain("RAW");
+    }
+
+    @Test
+    void invalidCursorIs400BeforeTheOperationRuns() throws Exception {
+        PagedBooksOperation paged = new PagedBooksOperation();
+        paged.result = new PageResult<>(List.of(RouteFixtures.BOOK), "RAW-2", true, null);
+        OperationHandler pages = pagedHandler(paged);
+        String token = MAPPER.readTree(body(pages, "author=herbert")).get("nextCursor").asString();
+        paged.inputs.clear();
+
+        for (String query : List.of("cursor=garbage", "author=guin&cursor=" + token)) {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/books");
+            request.setQueryString(query);
+            assertThatExceptionOfType(SynapseException.class)
+                    .as(query)
+                    .isThrownBy(() -> pages.handle(ServerRequest.create(request, List.of())))
+                    .satisfies(e -> assertThat(e.violations())
+                            .containsExactly(new Violation("cursor", "is not valid for this request")));
+        }
+        assertThat(paged.inputs).isEmpty();
+    }
+
+    @Test
+    void preconditionsRunAfterBindingAndBeforeExecute() {
+        RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(),
+                PagingSettings.defaults());
+        ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS,
+                RouteFixtures.etags());
+        OperationHandler create = new OperationHandler(
+                route(RestBindings.builder().post("/books", new CreateBookOperation()).build()), binder, writer,
+                CURSORS);
+        ReviseVersionedBookOperation revise = new ReviseVersionedBookOperation();
+        OperationHandler revising = new OperationHandler(route(RestBindings
+                .builder()
+                .put("/books/{id}", revise)
+                .header("If-Match", VersionedBook::version)
+                .build()), binder, writer, CURSORS);
+
+        // A bad body is 400 even with an If-Match the route doesn't bind: binding comes first.
+        MockHttpServletRequest badBody = new MockHttpServletRequest("POST", "/books");
+        badBody.setContentType("application/json");
+        badBody.setContent("{\"id\":\"seven\",\"title\":\"Dune\"}".getBytes(StandardCharsets.UTF_8));
+        badBody.addHeader("If-Match", "\"1\"");
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> create.handle(ServerRequest.create(badBody, List.of())))
+                .satisfies(e -> assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED));
+
+        // A valid body with a weak If-Match is 412, and the operation never runs.
+        MockHttpServletRequest weak = new MockHttpServletRequest("PUT", "/books/7");
+        weak.setContentType("application/json");
+        weak.setContent("{\"title\":\"Dune\"}".getBytes(StandardCharsets.UTF_8));
+        weak.addHeader("If-Match", "W/\"1\"");
+        weak.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Map.of("id", "7"));
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> revising.handle(ServerRequest.create(weak, List.of())))
+                .satisfies(e -> assertThat(e.details()).isEqualTo(SynapseErrors.PRECONDITION_FAILED));
+        assertThat(revise.calls.get()).isZero();
+    }
+
+    @Test
+    void staleVersionFromTheOperationIs412OnlyWithIfMatch() {
+        RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(),
+                PagingSettings.defaults());
+        ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS,
+                RouteFixtures.etags());
+        OperationHandler stale = new OperationHandler(route(RestBindings
+                .builder()
+                .put("/books/{id}", new StaleBookOperation())
+                .header("If-Match", VersionedBook::version)
+                .build()), binder, writer, CURSORS);
+
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> stale.handle(ServerRequest.create(putBook("\"1\""), List.of())))
+                .satisfies(e -> {
+                    assertThat(e.details()).isEqualTo(SynapseErrors.PRECONDITION_FAILED);
+                    assertThat(e.getCause())
+                            .isInstanceOfSatisfying(SynapseException.class,
+                                    cause -> assertThat(cause.details()).isEqualTo(SynapseErrors.STALE_VERSION));
+                });
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> stale.handle(ServerRequest.create(putBook(null), List.of())))
+                .satisfies(e -> assertThat(e.details()).isEqualTo(SynapseErrors.STALE_VERSION));
+    }
+
+    /** Always loses the race: its compare-and-set fails. */
+    static class StaleBookOperation implements CommandOperation<VersionedBook, VersionedBook> {
+        @Override
+        public VersionedBook execute(VersionedBook input) {
+            throw new SynapseException(SynapseErrors.STALE_VERSION);
+        }
+    }
+
+    private static MockHttpServletRequest putBook(@Nullable String ifMatch) {
+        MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/books/7");
+        request.setContentType("application/json");
+        request.setContent("{\"title\":\"Dune\"}".getBytes(StandardCharsets.UTF_8));
+        if (ifMatch != null) {
+            request.addHeader("If-Match", ifMatch);
+        }
+        request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Map.of("id", "7"));
+        return request;
+    }
+
+    private static OperationHandler pagedHandler(PagedBooksOperation paged) {
+        RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(),
+                PagingSettings.defaults());
+        return new OperationHandler(route(RestBindings.builder().get("/books", paged).build()), binder,
+                new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS, RouteFixtures.etags()),
+                CURSORS);
+    }
+
+    /** The body of a GET {@code /books} with the query string. */
+    private static String body(OperationHandler handler, String query) throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/books");
+        request.setQueryString(query);
+        request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Map.of());
+        ServerResponse response = handler.handle(ServerRequest.create(request, List.of()));
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+        response.writeTo(request, servletResponse, List::of);
+        assertThat(servletResponse.getStatus()).isEqualTo(200);
+        return servletResponse.getContentAsString();
     }
 
     /** A JSON body of more than 16 bytes, behind the size limit the edge filter installs. */

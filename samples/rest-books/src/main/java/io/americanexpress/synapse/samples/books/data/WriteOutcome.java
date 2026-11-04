@@ -16,12 +16,18 @@ package io.americanexpress.synapse.samples.books.data;
 /** The outcome of a write to the {@link InMemoryBookStore}. */
 public enum WriteOutcome {
 
-    /** The book was written. */
+    /** The write happened: the book was added, replaced or removed. */
     WRITTEN,
 
-    /** No book has the id (replace only). */
+    /** No book has the id (replace and remove only). */
     NOT_FOUND,
 
     /** Another book already has the ISBN, so nothing was written (as a unique constraint would reject it). */
-    ISBN_TAKEN
+    ISBN_TAKEN,
+
+    /**
+     * The book's version isn't the expected one: another write changed it since it was read, so nothing was written
+     * (replace and remove only).
+     */
+    STALE
 }

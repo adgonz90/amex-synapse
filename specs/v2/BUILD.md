@@ -43,7 +43,8 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-test` | P1 | Test support: operation harness and slices, ArchUnit rules, Testcontainers definitions, fixtures, AOT hint assertions. |
 | `synapse-test-rest` | P1 | @SynapseRestTest: the REST slice. Depends on synapse-test and synapse-api-rest. (gRPC and data slices get their own synapse-test-<plugin> artifacts in their plans.) |
 | `synapse-logging-log4j2` | P1 | Log4j2 backend for consumers (synchronous by default), structured JSON (ECS), optional failure-log burst limit. |
-| `synapse-api-rest` | P1 (XML codec and `BinaryContent` in P4) | REST plugin: `RestBindings`, problem+json, OpenAPI via springdoc, versioning, CORS, limits. |
+| `synapse-api-rest` | P1 (XML codec and `BinaryContent` in P4) | REST plugin: `RestBindings`, problem+json, paging, conditional requests, versioning, CORS, limits. |
+| `synapse-api-rest-openapi` | P1 (plan 2c) | OpenAPI 3.1 for `RestBindings` routes, served by springdoc (3.x) at /v3/api-docs: a Synapse customizer built from the resolved routes, with Synapse's own schema generator on Jackson 3. Depends on synapse-api-rest. |
 | `synapse-api-grpc` | P1 | gRPC plugin on Boot's gRPC server support. |
 | `synapse-data-jpa`, `synapse-data-jdbc` | P1 | Shared data behaviour: named stores, auditing, ids, error translation, migrations per store. |
 | `synapse-data-postgres` | P1 | PostgreSQL vendor module. |
@@ -248,7 +249,7 @@ Business → `model` is allowed here and narrowed to `model.event` by the *Forbi
 | `ErrorDetails` | `String code(); String messageTemplate(); ErrorCategory category();` implemented by team enums. |
 | `ErrorCategory` | `INVALID_INPUT, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, RATE_LIMITED, UNAVAILABLE, TIMEOUT, INTERNAL`. Protocol-neutral, domain-only. |
 | `SynapseException` | `SynapseException(ErrorDetails, Object... args)` and `(ErrorDetails, Throwable, Object... args)`. Message formatted from the template with `MessageFormat`; a `MessageSource` entry keyed by `code()` overrides it. |
-| `SynapseErrors` | The framework's own `ErrorDetails` enum: `MALFORMED_REQUEST`, `VALIDATION_FAILED` (`INVALID_INPUT`), `NOT_FOUND`, `UNAUTHENTICATED`, `FORBIDDEN`, `CONFLICT`, `PRECONDITION_FAILED`, `RATE_LIMITED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED` (`TIMEOUT`), `INTERNAL`, each with its matching category. |
+| `SynapseErrors` | The framework's own `ErrorDetails` enum: `MALFORMED_REQUEST`, `VALIDATION_FAILED` (`INVALID_INPUT`), `NOT_FOUND`, `UNAUTHENTICATED`, `FORBIDDEN`, `CONFLICT`, `STALE_VERSION` (`CONFLICT`: a version check or optimistic lock failed), `PRECONDITION_FAILED`, `RATE_LIMITED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED` (`TIMEOUT`), `INTERNAL`, each with its matching category unless stated. |
 | `ExceptionTranslator` | SPI: turns a non-Synapse exception into a `SynapseException`. Modules contribute translators (data access, Spring Security, clients, Kafka); core has no data or security dependency. |
 | `@OperationName`, `@OperationGroup` | Operation classes are named `<UseCase>Operation` (inputs `<UseCase>Request`, outputs nouns such as `Book`). The operation name defaults to the class name without the `Operation` suffix, in kebab-case (`GetBookOperation` → `get-book`); `@OperationName("…")` overrides it; `@OperationGroup("books")` groups operations into a gRPC service/REST resource and drives docs. |
 | `@Incubating` | Marks evolving public API (see *API stability*). |
@@ -436,7 +437,7 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   the `correlationId` member is the lookup key. Full detail and cause are logged server-side.
 - **Protocol-only failures** never reach an operation; the plugin answers them in the same error shape with fixed
   codes: REST `ROUTE_NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405 (+ `Allow`), `NOT_ACCEPTABLE` 406,
-  `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400; gRPC `UNIMPLEMENTED` and
+  `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400, `PRECONDITION_FAILED` 412 (a weak `If-Match`, or an `If-Match`/`If-None-Match` that the route doesn't bind), `PRECONDITION_REQUIRED` 428 (`.requireIfMatch()` without `If-Match`); gRPC `UNIMPLEMENTED` and
   `RESOURCE_EXHAUSTED` (message too large).
 
 ### 6.2 REST (`synapse-api-rest`)
@@ -463,7 +464,7 @@ pipeline, error mapping and correlation handling.
 |---|---|---|
 | Path variable | `{id}` → component `id` (template name = component name) | `.path("bookId", GetBookRequest::id)`; a path variable that matches no component fails at startup |
 | Query parameter | simple components (string, number, boolean, enum, date/time, lists of these) by name, **GET/HEAD only** | `.query(SearchBooksRequest::author)`, `.query("sort_by", SearchBooksRequest::sort)` |
-| Framework types | `PageQuery` binds from `cursor`, `offset`, `size`, `sort` on any verb (names under `synapse.api.rest.paging.*`) | none |
+| Framework types | `PageQuery` binds from the query-string parameters `cursor`, `offset`, `size`, `sort` on any verb (names under `synapse.api.rest.paging.parameters.*`). It may be the whole input, and an input has at most one. A query component that reuses a paging parameter name fails startup. | none |
 | Body | POST/PUT/PATCH: the JSON body fills every component not bound elsewhere | `.body(UpdateBookRequest::changes)` binds the body to one component |
 | Header / cookie | never implicit | `.header("If-Match", UpdateBookRequest::version)`, `.cookie(...)` |
 | Request context | none | `.context(UpdateBookRequest::requestedBy, ctx -> ctx.principal())` |
@@ -474,10 +475,20 @@ record type (e.g. `.query(WriteOptions.class)` binds all of `WriteOptions` from 
 types. Values are converted with Spring's `ConversionService`; validation runs once on the assembled record.
 
 **Paging safety:** sort keys must be allow-listed per route (`.sortable(SearchBooksRequest.SortKey.class)` or a set of
-names); unknown keys are `INVALID_INPUT`. Offsets are capped (`synapse.api.rest.paging.max-offset`, default 1000); cursors are opaque
-and HMAC-signed (key from `synapse.api.rest.paging.cursor-secret`, generated per start if unset, with a startup WARN
-in production profiles). Page size defaults to `synapse.paging.default-size` (20) and is capped by
-`synapse.paging.max-size` (100).
+names). The syntax is `sort=title,-published` (a comma list; `-` means descending). An unknown key, or `sort` on a
+route without `.sortable`, is `INVALID_INPUT`. Offsets are capped (`synapse.api.rest.paging.max-offset`, default
+1000). Page size defaults to `synapse.paging.default-size` (20) and is capped by `synapse.paging.max-size` (100). The
+plugin checks size and offset before the pipeline and reports violations under the parameter names.
+
+Cursors are opaque. The edge wraps an operation's cursor with a `CursorCodec` bean, which an app can replace. By
+default it is AES-256-GCM authenticated encryption, bound to the route's operation, the sort and a digest of the other
+inputs (not the size), with a key id and an issue time. A tampered, foreign, mismatched or expired cursor is
+`INVALID_INPUT` on `cursor`.
+
+The key comes from `synapse.api.rest.paging.cursor.key` (base64, 256 bits). `cursor.previous-keys` are accepted for
+decryption during rotation. `cursor.max-age` is unset by default (no expiry). When no key is set, one is generated per
+start, with a startup WARN in production profiles that cursors then fail across restarts and instances. An operation's
+raw cursor never reaches the client.
 
 **Response mapping:**
 
@@ -485,7 +496,8 @@ in production profiles). Page size defaults to `synapse.paging.default-size` (20
 |---|---|---|
 | GET with a value | 200 | `.status(...)` |
 | `Optional` empty | 404 problem+json, code `NOT_FOUND` | `.notFound(BookErrors.BOOK_NOT_FOUND)`; `.emptyAs(204)` |
-| Empty list / `PageResult` | 200 with empty items | none |
+| Empty list | 200 with `[]` | none |
+| `PageResult` | 200 with `{"items":[…],"nextCursor":"…","hasNext":true,"total":42}` (`nextCursor` and `total` omitted when null); GET/HEAD also send `Link: <relative URL>; rel="next"` with the next cursor, or with the next offset while it is within `max-offset` | none (output `.header`, `.body` and `.etag` fail startup) |
 | POST | 201 + `Location` when `.created(fn)` is declared; otherwise 200 | `.status(...)` |
 | Accepted for async processing | none | `.accepted(fn)`: 202 + `Location` of the status resource, also linked in the body |
 | `void`/`null` | 204 | `.status(...)` |
@@ -495,19 +507,34 @@ in production profiles). Page size defaults to `synapse.paging.default-size` (20
 - `.header("X-RateLimit-Remaining", BookResult::remaining)` writes an output component to a response header; such a
   component is removed from the body unless `.alsoInBody()`. `.body(BookResult::book)` makes one component the body.
   App-wide header rules go in `RestConventions` by type.
-- **Conditional requests** (RFC 9110): `.etag(BookResult::version)` emits a strong `ETag` (the version, plus a
-  representation suffix when the route serves several media types). The plugin evaluates preconditions before
-  `execute`: `If-None-Match` on GET/HEAD returns 304 (with `ETag`, `Cache-Control` and `Vary`); `If-None-Match` on
-  other methods and a non-matching `If-Match` return 412 `PRECONDITION_FAILED`. An optimistic-lock failure without
-  `If-Match` is 409 `CONFLICT`. `If-Match` values are parsed as entity tags (including lists and `*`) before conversion
-  to the bound component.
+- **Conditional requests** (RFC 9110). `.etag(BookResult::version)` emits a strong `ETag` from a simple output
+  component: the version, plus a representation suffix when the route serves several media types. It is sent on
+  GET/HEAD and on a POST's 201, never on PUT or DELETE (§9.3.4). ETag'd GET/HEAD responses carry
+  `Cache-Control: no-cache` and `Vary: Accept`. `.etag` on a List or `PageResult` output fails startup.
+
+  On GET/HEAD the plugin evaluates `If-None-Match` after `execute` against the output's tag (weak comparison). On a
+  match it answers 304 with `ETag`, `Cache-Control` and `Vary` and no body.
+
+  On unsafe methods the operation's conditional write enforces the precondition. `If-Match` (and `If-None-Match`)
+  bound to a component are parsed as entity tags (`.header("If-Match", UpdateBookRequest::version)`):
+  - one strong tag is unquoted and converted;
+  - `*` binds `null` (the component must be `@Nullable`);
+  - a list or an unquoted value is `INVALID_INPUT`;
+  - a weak `If-Match` is 412 without calling the operation.
+
+  A `STALE_VERSION` failure is 412 `PRECONDITION_FAILED` when the request carried a bound `If-Match`, and 409
+  otherwise. Other failures map as usual, and a missing resource is 404. An `If-Match` or `If-None-Match` on an unsafe
+  route that doesn't bind it is 412: the precondition can't be verified. `If-Unmodified-Since` and
+  `If-Modified-Since` are ignored (Synapse emits no `Last-Modified`). `.requireIfMatch()` answers 428
+  `PRECONDITION_REQUIRED` when `If-Match` is absent (`*` counts as present).
 - Errors are RFC 9457 `application/problem+json` with extension members `code`, `correlationId` and `violations[]`
   (each `{field, message}`). With `synapse.errors.type-base-uri` unset, `type` is `about:blank` and `title` is the HTTP
   status phrase; when set, `type` is the base URI plus the code and `title` comes from the category. `status` always
   equals the real status. `violations` is omitted when empty. With `type-base-uri` set, `type` is the base URI, `/`
   and the code, and the category title can be overridden with the `MessageSource` key `synapse.category.<CATEGORY>`.
   A 401 without `synapse-security` carries `WWW-Authenticate: Bearer`.
-- No response envelope; metadata travels in headers (correlation id, paging `Link`, `ETag`).
+- No generic `{data, meta}` wrapper: a single resource is the body itself, and a `PageResult` is the page object above.
+  The correlation id, the paging `Link` and `ETag` travel in headers.
 
 **API versioning:** off unless a binding uses `.version("2")`. Then Synapse enables Spring Framework 7's API versioning
 with a path-segment strategy and a predicate so that only versioned routes are parsed; versioned routes require a
@@ -523,10 +550,12 @@ profiles.
 413 without reading the whole body. Header size uses Boot's `server.max-http-request-header-size`; Synapse sets its
 default to 16 KB at lowest precedence.
 
-**OpenAPI:** generated from `RestBindings`, `RestConventions` and the record types (Jakarta Validation constraints,
-statuses, mapped headers, problem+json responses, versions) as OpenAPI 3.1, contributed to springdoc (3.x), which
-serves `/v3/api-docs`. Toggles use springdoc's own properties; Synapse defaults Swagger UI to off and the API docs to
-on, at lowest precedence.
+**OpenAPI** (plan 2c, module `synapse-api-rest-openapi`): a Synapse customizer built from the resolved routes
+generates OpenAPI 3.1 from `RestBindings`, `RestConventions` and the record types: Jakarta Validation constraints,
+statuses, mapped headers, problem+json responses, paging parameters, `ETag`/`If-Match`, versions. It uses Synapse's own
+schema generator on Jackson 3, so property names match what the app's `JsonMapper` writes, and springdoc (3.x) serves
+the result at `/v3/api-docs`. Toggles use springdoc's own properties; Synapse defaults Swagger UI to off and the API
+docs to on, at lowest precedence.
 
 **Binary content (P4):** `BinaryContent` components map to multipart parts or a raw body on input and stream back as a
 download on output. Responses always carry `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment`
@@ -683,8 +712,7 @@ startup warns when one is set for a Synapse client name.
   and compare by id, proxy-safe.
 - **Auditing:** fills created/modified timestamps and user (`AuditorAware` from the security context, else
   `synapse.data.auditing.system-user`, default `system`).
-- **Error translation** (an `ExceptionTranslator`): optimistic-lock and unique-constraint failures → `CONFLICT`
-  (unique violations use a code that gRPC maps to ALREADY_EXISTS), query timeout → `TIMEOUT`, connection failure →
+- **Error translation** (an `ExceptionTranslator`): optimistic-lock failures → `STALE_VERSION` (`CONFLICT`); unique-constraint failures → `CONFLICT` (with a code that gRPC maps to ALREADY_EXISTS), query timeout → `TIMEOUT`, connection failure →
   `UNAVAILABLE`, others → `INTERNAL`.
 - JPA is the default in archetype and samples; JDBC is equally supported (same interfaces, auditing, stores,
   translation). Soft delete: documented use of Hibernate's `@SoftDelete`.
@@ -946,7 +974,7 @@ over REST and gRPC on Postgres with Flyway.
    transaction manager, repositories, health contributor and Flyway migrations (`db/migration/<store>`);
    `@Transactional("legacy")` targets the right one; an unqualified `@Transactional` without a primary fails at
    startup; `spring.datasource.url` set logs a warning. Auditing fills timestamps and user for `Auditable` entities
-   (base class or custom columns); `@Version` conflicts raise `CONFLICT`; UUIDv7 ids are generated before insert and
+   (base class or custom columns); `@Version` conflicts raise `STALE_VERSION` (`CONFLICT`); UUIDv7 ids are generated before insert and
    `Persistable.isNew` works; `ddl-auto=update` in a production profile fails startup.
 9. `@Masked` fields are masked in payload log output and appear unmasked in responses.
 10. Every auto-configuration passes the context-runner rules; every module passes its AOT hint tests.
@@ -961,10 +989,8 @@ over REST and gRPC on Postgres with Flyway.
     `business..` class importing `operation..`.
 12. Input binding and response mapping: `UpdateBookRequest` receives its id from the path, `version` from `If-Match`, a
     `WriteOptions` component from the query string via `RestConventions`, and the rest from the body; a mismatched
-    body id returns 400; `PageQuery` binds on GET and POST; an unknown sort key is 400; a cursor that was tampered
-    with is 400; `.created` yields 201 + `Location`; `.accepted` yields 202 + `Location`; an empty `Optional` yields the
-    route's `.notFound` code; a header-mapped output component is absent from the body; `If-None-Match` yields 304
-    with `ETag`; a stale `If-Match` yields 412; a version clash without `If-Match` yields 409; renaming a record
+    body id returns 400; `PageQuery` binds on GET and POST; an unknown sort key is 400; a cursor that was tampered with, or replayed for another operation or with another sort, is 400; `.created` yields 201 + `Location`; `.accepted` yields 202 + `Location`; an empty `Optional` yields the
+    route's `.notFound` code; a header-mapped output component is absent from the body; `If-None-Match` yields 304 with `ETag`, also on HEAD; a stale `If-Match` yields 412 without changing the resource, including when a concurrent write wins after the operation's read; a version clash without `If-Match` yields 409; a weak `If-Match` yields 412 without calling the operation; `.requireIfMatch()` without `If-Match` yields 428; renaming a record
     component breaks compilation of the binding, not startup.
 13. Context: an allow-listed header lands in `RequestContext`, survives `@Async` and virtual threads, appears in MDC;
     with `synapse.context.inbound.trusted=false` it is dropped; baggage over the limits is dropped and logged once.
@@ -992,8 +1018,16 @@ the `@SynapseRestTest` section of `testing.adoc`). They cover acceptance items 1
 GET failing startup), 12 (path, body and `RestConventions` query binding, a mismatched body id, `.created`,
 `.accepted`, `.notFound`, a header-mapped output component absent from the body, a renamed component breaking
 compilation), 13 (REST), 14 (REST), 16 (REST), 17 (REST) and 19 (`@SynapseRestTest` is provided; the reference app
-uses it in plan 5). Plan 2b covers 7 (OpenAPI) and the rest of 11 (page size over the cap via REST) and 12 (`PageQuery`, unknown
-sort key, tampered cursor, `version` from `If-Match`, 304, 412, 409).
+uses it in plan 5). Plan 2b covers the rest of 11 (page size over the cap via REST) and 12 (`PageQuery`, unknown sort key, tampered cursor, `version` from `If-Match`, 304, 412, 409); plan 2c covers 7 (OpenAPI).
+
+**Done (plan 2b, REST paging and conditional requests):** paging (`PageQuery` binding, `.sortable` allow-lists, the
+offset cap, the page object and `Link`, AES-256-GCM cursors through a replaceable `CursorCodec`) and conditional
+requests (`.etag`, 304, `If-Match` binding, `STALE_VERSION`, `.requireIfMatch()`) are built in `synapse-api-rest`,
+documented in `rest.adoc` (*Paging*, *Conditional requests*) and `core.adoc`, and shown in `samples/rest-books`. They
+cover acceptance items 11 (REST: a page size over the cap is `INVALID_INPUT`), 12 (`PageQuery` on GET and POST, an
+unknown sort key, tampered cursors and cursors replayed for another operation or with another sort, `version` from
+`If-Match`, 304 also on HEAD, 412 including a race lost after the read, 409, a weak `If-Match`, 428) and 10 (REST: the
+new beans' context-runner tests and AOT hint tests). Plan 2c covers 7 (OpenAPI), API versioning and CORS.
 
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
@@ -1009,7 +1043,8 @@ sort key, tampered cursor, `version` from `If-Match`, 304, 412, 409).
   - `inbound.trusted=false` and outbound stripping work at the header level under the OpenTelemetry starter.
   - Problem responses never carry a stack trace.
   - Verify the `INBOUND` shutdown phase against `WebServerGracefulShutdownLifecycle`.
-- Plan 2b (REST features): paging safety, conditional requests, API versioning, CORS, OpenAPI.
+- Plan 2b (REST paging and conditional requests): paging safety, conditional requests, and the `rest-books` sample extended with both. Done (see the *Done (plan 2b)* note above).
+- Plan 2c (REST versioning, CORS, OpenAPI): API versioning, CORS (including the 405/OPTIONS fallback mapping, which has no CORS configuration today), and OpenAPI in `synapse-api-rest-openapi`.
 - Plan 3 (gRPC edge):
   - The REST edge's Synapse fields include only REST attribute names; with both plugins, include
     `synapse.api.grpc.context.metadata` names so trusted-mode REST callers can't set gRPC attribute baggage

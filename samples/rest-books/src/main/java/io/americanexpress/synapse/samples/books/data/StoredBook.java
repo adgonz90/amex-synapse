@@ -26,7 +26,9 @@ import org.jspecify.annotations.Nullable;
  * @param author the author
  * @param year the year of publication, if known
  * @param addedVia the channel the book was added through, if known
+ * @param version the version: 1 when the book is added, plus 1 on every write (a database would keep it in a version
+ *        column, as JPA's {@code @Version} does)
  */
 public record StoredBook(UUID id, String isbn, String title, String author, @Nullable Integer year,
-        @Nullable String addedVia) {
+        @Nullable String addedVia, long version) {
 }

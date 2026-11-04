@@ -18,6 +18,7 @@ import io.americanexpress.synapse.core.error.ErrorDetails;
 
 import static io.americanexpress.synapse.core.error.ErrorCategory.INVALID_INPUT;
 import static io.americanexpress.synapse.core.error.ErrorCategory.NOT_FOUND;
+import static io.americanexpress.synapse.core.error.ErrorCategory.PRECONDITION_FAILED;
 
 /**
  * Errors the REST edge reports for requests that never reach an operation. Each has a fixed HTTP status because the
@@ -38,7 +39,10 @@ public enum RestErrors implements ErrorDetails {
     PAYLOAD_TOO_LARGE("The request body is too large", INVALID_INPUT, 413),
 
     /** The route does not consume the media type of the request body. */
-    UNSUPPORTED_MEDIA_TYPE("The request media type is not supported", INVALID_INPUT, 415);
+    UNSUPPORTED_MEDIA_TYPE("The request media type is not supported", INVALID_INPUT, 415),
+
+    /** The route requires a conditional request and the request has no precondition header. */
+    PRECONDITION_REQUIRED("The request must be conditional", PRECONDITION_FAILED, 428);
 
     private final String messageTemplate;
 

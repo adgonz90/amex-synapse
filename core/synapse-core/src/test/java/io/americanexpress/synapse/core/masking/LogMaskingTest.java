@@ -22,6 +22,9 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class LogMaskingTest {
@@ -112,6 +115,23 @@ class LogMaskingTest {
     @Test
     void neverThrows() {
         assertThat(LogMasking.standard().toJson(new Exploding())).isEqualTo("<unserializable Exploding>");
+    }
+
+    @Test
+    void pagingCursorsAreMaskedInLogsOnly() {
+        PageQuery query = new PageQuery("RAW-CURSOR", null, 2, List.of());
+        PageResult<String> result = PageResult.ofCursor(List.of("a"), "RAW-NEXT-CURSOR");
+
+        assertThat(LogMasking.standard().toJson(query))
+                .contains("\"cursor\":\"***\"", "\"size\":2")
+                .doesNotContain("RAW-CURSOR");
+        assertThat(LogMasking.standard().toJson(result))
+                .contains("\"nextCursor\":\"***\"", "\"items\":[\"a\"]")
+                .doesNotContain("RAW-NEXT-CURSOR");
+        // Any other mapper still writes the cursors: masking is for logs only.
+        JsonMapper plain = JsonMapper.builder().build();
+        assertThat(plain.writeValueAsString(query)).contains("\"cursor\":\"RAW-CURSOR\"");
+        assertThat(plain.writeValueAsString(result)).contains("\"nextCursor\":\"RAW-NEXT-CURSOR\"");
     }
 
     @Test

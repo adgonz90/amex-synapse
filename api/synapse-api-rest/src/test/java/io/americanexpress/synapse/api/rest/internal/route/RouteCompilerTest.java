@@ -16,8 +16,13 @@ package io.americanexpress.synapse.api.rest.internal.route;
 import java.util.List;
 import jakarta.servlet.DispatcherType;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.format.support.DefaultFormattingConversionService;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.servlet.function.HandlerFunction;
@@ -29,11 +34,16 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
+import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.ListBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -42,9 +52,11 @@ class RouteCompilerTest {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    private final RouteCompiler compiler = new RouteCompiler(new BindingValidator(),
-            new RequestBinder(MAPPER, new DefaultFormattingConversionService()),
-            new ResponseWriter(MAPPER, new DefaultFormattingConversionService()));
+    private final RouteCompiler compiler = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
+            new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
+            new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
+                    RouteFixtures.etags()),
+            RouteFixtures.cursors(), () -> true);
 
     @Test
     void mostSpecificTemplateWinsRegardlessOfDeclarationOrder() {
@@ -128,6 +140,72 @@ class RouteCompilerTest {
         assertThat(handlerFor(routes, "OPTIONS", "/books/7")).isNull();
     }
 
+    @Test
+    void generatedCursorKeyIsReportedOnceAfterValidation() {
+        PageCursors generated = RouteFixtures.cursors(null);
+        RouteCompiler production = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
+                new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
+                new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), generated, RouteFixtures.etags()),
+                generated,
+                () -> true);
+        RestBindings paged = RestBindings
+                .builder()
+                .get("/books", new PagedBooksOperation())
+                .get("/books/{id}", new GetBookOperation())
+                .build();
+        RestBindings broken = RestBindings
+                .builder()
+                .get("/books", new PagedBooksOperation())
+                .get("/books", new PagedBooksOperation())
+                .build();
+
+        List<ILoggingEvent> compiled = warnings(() -> production.compile(List.of(paged), List.of()));
+        List<ILoggingEvent> failed = warnings(() -> assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> production.compile(List.of(broken), List.of())));
+        List<ILoggingEvent> configured = warnings(() -> compiler.compile(List.of(paged), List.of()));
+
+        assertThat(compiled)
+                .singleElement()
+                .satisfies(line -> assertThat(line.getFormattedMessage())
+                        .startsWith("synapse.api.rest.paging.cursor.key is not set"));
+        assertThat(failed).isEmpty();
+        assertThat(configured).isEmpty();
+    }
+
+    @Test
+    void generatedCursorKeyIsNotReportedWhenABindabilityCheckFails() {
+        PageCursors generated = RouteFixtures.cursors(null);
+        RouteCompiler production = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
+                new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
+                new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), generated, RouteFixtures.etags()),
+                generated,
+                () -> true);
+        RestBindings unconvertible = RestBindings.builder().get("/pairs/{pair}", new PairPageOperation()).build();
+        // The route passes the binding rules; only the bindability check, which runs after them, fails it.
+        assertThat(new BindingValidator(PagingSettings.defaults()).validate(unconvertible.routes(), List.of()))
+                .hasSize(1);
+
+        List<ILoggingEvent> failed = warnings(() -> assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> production.compile(List.of(unconvertible), List.of()))
+                .satisfies(e -> assertThat(e.description()).contains("can't be converted from a string")));
+
+        assertThat(failed).isEmpty();
+    }
+
+    /** Runs the action and returns the WARN lines it logged on the REST logger. */
+    private static List<ILoggingEvent> warnings(Runnable action) {
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            logger.detachAppender(appender);
+        }
+        return appender.list.stream().filter(line -> line.getLevel() == Level.WARN).toList();
+    }
+
     private static @Nullable String operationFor(RouterFunction<ServerResponse> routes, String method,
             String path) {
         HandlerFunction<ServerResponse> handler = handlerFor(routes, method, path);
@@ -140,6 +218,20 @@ class RouteCompilerTest {
     }
 
     record Slug(String slug) {
+    }
+
+    /** Two numbers: no conversion service makes one from a string. */
+    record Pair(int a, int b) {
+    }
+
+    record PairPageRequest(Pair pair, PageQuery page) {
+    }
+
+    static class PairPageOperation implements QueryOperation<PairPageRequest, PageResult<Pair>> {
+        @Override
+        public PageResult<Pair> execute(PairPageRequest input) {
+            return PageResult.of(List.of(input.pair()), false);
+        }
     }
 
     static class GetSlugOperation implements QueryOperation<Slug, Slug> {

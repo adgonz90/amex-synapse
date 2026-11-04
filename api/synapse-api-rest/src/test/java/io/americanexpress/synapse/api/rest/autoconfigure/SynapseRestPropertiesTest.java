@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.api.rest.autoconfigure;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -44,6 +45,67 @@ class SynapseRestPropertiesTest {
             assertThat(properties.errors().status()).isEmpty();
             assertThat(properties.operations()).isEmpty();
         });
+    }
+
+    @Test
+    void pagingDefaultsMatchTheSpec() {
+        runner.run(context -> {
+            SynapseRestProperties.Paging paging = context.getBean(SynapseRestProperties.class).paging();
+            assertThat(paging.parameters().cursor()).isEqualTo("cursor");
+            assertThat(paging.parameters().offset()).isEqualTo("offset");
+            assertThat(paging.parameters().size()).isEqualTo("size");
+            assertThat(paging.parameters().sort()).isEqualTo("sort");
+            assertThat(paging.maxOffset()).isEqualTo(1000);
+            assertThat(paging.cursor().key()).isNull();
+            assertThat(paging.cursor().previousKeys()).isEmpty();
+            assertThat(paging.cursor().maxAge()).isNull();
+        });
+    }
+
+    @Test
+    void rejectsDuplicateOrInvalidParameterNames() {
+        runner.withPropertyValues("synapse.api.rest.paging.parameters.size=offset").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(rootMessage(context.getStartupFailure())).contains("synapse.api.rest.paging.parameters");
+        });
+        runner.withPropertyValues("synapse.api.rest.paging.parameters.cursor=pa ge").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(rootMessage(context.getStartupFailure())).contains("synapse.api.rest.paging.parameters");
+        });
+        runner.withPropertyValues("synapse.api.rest.paging.parameters.sort= ").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(rootMessage(context.getStartupFailure())).contains("synapse.api.rest.paging.parameters");
+        });
+    }
+
+    @Test
+    void rejectsNegativeMaxOffsetAndNonPositiveMaxAge() {
+        runner.withPropertyValues("synapse.api.rest.paging.max-offset=-1").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(rootMessage(context.getStartupFailure())).contains("synapse.api.rest.paging.max-offset");
+        });
+        runner.withPropertyValues("synapse.api.rest.paging.cursor.max-age=0s").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(rootMessage(context.getStartupFailure())).contains("synapse.api.rest.paging.cursor.max-age");
+        });
+    }
+
+    @Test
+    void cursorToStringNeverShowsKeys() {
+        SynapseRestProperties.Paging.Cursor cursor = new SynapseRestProperties.Paging.Cursor(
+                "c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0MTI=", List.of("b2xkb2xkb2xkb2xk"), Duration.ofDays(1));
+
+        assertThat(cursor.toString())
+                .contains("key=set")
+                .contains("previousKeys=1")
+                .doesNotContain("c2VjcmV0")
+                .doesNotContain("b2xkb2xk");
+        assertThat(new SynapseRestProperties.Paging.Cursor(null, List.of(), null).toString())
+                .contains("key=unset")
+                .contains("previousKeys=0");
+        // A blank key counts as unset and blank previous keys are ignored, as the codec reads them.
+        assertThat(new SynapseRestProperties.Paging.Cursor(" \n", List.of("", "b2xkb2xkb2xkb2xk", "  "), null)
+                .toString()).contains("key=unset").contains("previousKeys=1");
     }
 
     @Test

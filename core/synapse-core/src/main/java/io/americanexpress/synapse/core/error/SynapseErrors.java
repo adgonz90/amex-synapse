@@ -36,6 +36,9 @@ public enum SynapseErrors implements ErrorDetails {
     /** The request conflicts with the resource state. */
     CONFLICT("The request conflicts with the current state of the resource", ErrorCategory.CONFLICT),
 
+    /** The resource changed since the caller read it, so the update would overwrite someone else's change. */
+    STALE_VERSION("The resource was changed by another request", ErrorCategory.CONFLICT),
+
     /** A precondition failed. */
     PRECONDITION_FAILED("A precondition failed", ErrorCategory.PRECONDITION_FAILED),
 

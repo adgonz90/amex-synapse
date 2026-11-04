@@ -13,10 +13,13 @@
  */
 package io.americanexpress.synapse.api.rest.internal.route;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.springframework.format.support.DefaultFormattingConversionService;
@@ -36,6 +39,7 @@ import io.americanexpress.synapse.api.rest.internal.error.BookErrors;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.Book;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.BookResult;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.CreateBookOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.CreateVersionedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.DeleteBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.FindBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.FindBookResultOperation;
@@ -45,29 +49,39 @@ import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetLabel
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetQuotaOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetRenamedResultOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetTaggedBookOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetVersionedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.Job;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.Labels;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.ListBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksRequest;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PurgeBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.Quota;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.SubmitJobOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.TaggedBook;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.VersionedBook;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 import static io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.BOOK;
 import static io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.route;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 class ResponseWriterTest {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    private final ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService());
+    private static final VersionedBook VERSIONED = new VersionedBook(7, "Dune", 7L);
+
+    private final ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(),
+            RouteFixtures.cursors(), RouteFixtures.etags());
 
     /** A written response. */
     private record Written(int status, MockHttpServletResponse response, String body) {
@@ -354,7 +368,8 @@ class ResponseWriterTest {
     void headerValuesUseTheConversionService() throws Exception {
         DefaultFormattingConversionService conversions = new DefaultFormattingConversionService();
         conversions.addConverter(Integer.class, String.class, number -> "#" + number);
-        ResponseWriter converting = new ResponseWriter(MAPPER, conversions);
+        ResponseWriter converting = new ResponseWriter(MAPPER, conversions, RouteFixtures.cursors(),
+                RouteFixtures.etags());
         RouteDefinition route = route(RestBindings
                 .builder()
                 .get("/results/{id}", new GetBookResultOperation())
@@ -455,7 +470,10 @@ class ResponseWriterTest {
                 .header("X-Rate", Quota::rateRemaining)
                 .build());
 
-        Written written = write(new ResponseWriter(snake, new DefaultFormattingConversionService()), quota,
+        Written written = write(
+                new ResponseWriter(snake, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
+                        RouteFixtures.etags()),
+                quota,
                 new Quota(BOOK, 5), "GET");
 
         assertThat(written.header("X-Rate")).isEqualTo("5");
@@ -482,6 +500,240 @@ class ResponseWriterTest {
         assertThat(head.header("X-RateLimit-Remaining")).isEqualTo("5");
     }
 
+    @Test
+    void pageResultIsAPageObject() throws Exception {
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+        PagedBooksRequest input = new PagedBooksRequest("herbert", PageQuery.first(20));
+        Book other = new Book(8, "Dune Messiah");
+
+        Written written = write(writer, paged, new PageResult<>(List.of(BOOK, other), "raw", true, 42L), "GET",
+                Map.of(), input);
+
+        assertThat(written.status()).isEqualTo(200);
+        assertThat(written.response().getContentType()).isEqualTo("application/json");
+        JsonNode body = written.json();
+        assertThat(body.propertyNames()).containsExactly("items", "nextCursor", "hasNext", "total");
+        assertThat(body.get("items")).isEqualTo(json(List.of(BOOK, other)));
+        assertThat(body.get("hasNext").asBoolean()).isTrue();
+        assertThat(body.get("total").asLong()).isEqualTo(42);
+        String token = body.get("nextCursor").asString();
+        assertThat(token).isNotEqualTo("raw").doesNotContain("raw").matches("[A-Za-z0-9_-]+");
+        assertThat(written.body()).doesNotContain("\"raw\"");
+        // The token is bound to the operation, the sort and the filters of this request.
+        Object next = RouteFixtures
+                .cursors()
+                .unwrap(paged, new PagedBooksRequest("herbert", PageQuery.ofCursor(token, 20, List.of())));
+        assertThat(next).isEqualTo(new PagedBooksRequest("herbert", PageQuery.ofCursor("raw", 20, List.of())));
+    }
+
+    @Test
+    void nullMembersAreOmitted() throws Exception {
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+
+        Written written = write(writer, paged, PageResult.of(List.of(), false), "GET", Map.of(),
+                new PagedBooksRequest(null, PageQuery.first(20)));
+
+        assertThat(written.status()).isEqualTo(200);
+        assertThat(written.body()).isEqualTo("{\"items\":[],\"hasNext\":false}");
+    }
+
+    @Test
+    void itemsAndHasNextSurviveTheApplicationsInclusion() throws Exception {
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+        for (JsonInclude.Include inclusion : List.of(JsonInclude.Include.NON_EMPTY, JsonInclude.Include.NON_DEFAULT)) {
+            JsonMapper strict = JsonMapper
+                    .builder()
+                    .changeDefaultPropertyInclusion(value -> value.withValueInclusion(inclusion))
+                    .build();
+
+            Written written = write(
+                    new ResponseWriter(strict, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
+                            RouteFixtures.etags()),
+                    paged, PageResult.of(List.of(), false), "GET", Map.of(),
+                    new PagedBooksRequest(null, PageQuery.first(20)));
+
+            assertThat(written.body()).as(inclusion.name()).isEqualTo("{\"items\":[],\"hasNext\":false}");
+        }
+    }
+
+    @Test
+    void pageMemberNamesFollowTheNamingStrategy() throws Exception {
+        JsonMapper snake = JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build();
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+
+        Written written = write(
+                new ResponseWriter(snake, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
+                        RouteFixtures.etags()),
+                paged, new PageResult<>(List.of(BOOK), "raw", true, 3L), "GET", Map.of(),
+                new PagedBooksRequest(null, PageQuery.first(20)));
+
+        assertThat(written.json().propertyNames()).containsExactly("items", "next_cursor", "has_next", "total");
+    }
+
+    @Test
+    void pageResultTheStartupCheckCantSeeIsNeverWritten() {
+        PageResult<Book> hidden = new PageResult<>(List.of(BOOK), "RAW-SECRET", true, null);
+        Smuggler output = new Smuggler("s", Map.of("page", hidden));
+        List<RouteDefinition> routes = List
+                .of(route(RestBindings.builder().get("/smuggler", new GetSmugglerOperation()).build()),
+                        route(RestBindings
+                                .builder()
+                                .get("/smuggler", new GetSmugglerOperation())
+                                .header("X-Name", Smuggler::name)
+                                .build()));
+
+        for (RouteDefinition route : routes) {
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> write(route, output))
+                    .withMessage("PageResult must be the operation's direct output")
+                    .satisfies(e -> {
+                        assertThat(e.getCause()).isNull();
+                        StringWriter trace = new StringWriter();
+                        e.printStackTrace(new PrintWriter(trace));
+                        assertThat(trace.toString()).doesNotContain("RAW-SECRET");
+                    });
+        }
+    }
+
+    @Test
+    void headOfAPageHasNoBody() throws Exception {
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+        PagedBooksRequest input = new PagedBooksRequest(null, PageQuery.first(20));
+
+        Written head = write(writer, paged, new PageResult<>(List.of(BOOK), "raw", true, null), "HEAD", Map.of(),
+                input);
+
+        assertThat(head.status()).isEqualTo(200);
+        assertThat(head.body()).isEmpty();
+        assertThat(head.response().getContentLength()).isPositive();
+        for (String name : head.response().getHeaderNames()) {
+            assertThat(head.response().getHeaders(name)).as(name).noneMatch(value -> value.contains("raw"));
+        }
+    }
+
+    @Test
+    void etagRouteAddsValidators() throws Exception {
+        Written written = write(versionedGet(), VERSIONED);
+
+        assertThat(written.status()).isEqualTo(200);
+        assertThat(written.header("ETag")).isEqualTo("\"7\"");
+        assertThat(written.header("Cache-Control")).isEqualTo("no-cache");
+        assertThat(written.header("Vary")).isEqualTo("Accept");
+        // The ETag component stays in the body.
+        assertThat(written.json().get("version").asLong()).isEqualTo(7);
+        assertThat(written.header("X-Title")).isEqualTo("Dune");
+    }
+
+    @Test
+    void matchingIfNoneMatchIs304() throws Exception {
+        for (String method : List.of("GET", "HEAD")) {
+            Written written = conditional(versionedGet(), VERSIONED, method, "\"7\"");
+
+            assertThat(written.status()).as(method).isEqualTo(304);
+            assertThat(written.header("ETag")).as(method).isEqualTo("\"7\"");
+            assertThat(written.header("Cache-Control")).as(method).isEqualTo("no-cache");
+            assertThat(written.header("Vary")).as(method).isEqualTo("Accept");
+            assertThat(written.body()).as(method).isEmpty();
+            assertThat(written.response().getContentType()).as(method).isNull();
+            assertThat(written.response().containsHeader("Content-Length")).as(method).isFalse();
+            // Nothing else: no output headers.
+            assertThat(written.response().getHeaderNames())
+                    .as(method)
+                    .containsExactlyInAnyOrder("ETag", "Cache-Control", "Vary");
+        }
+    }
+
+    @Test
+    void weakAndWildcardIfNoneMatchMatch() throws Exception {
+        assertThat(conditional(versionedGet(), VERSIONED, "GET", "W/\"7\"").status()).isEqualTo(304);
+        assertThat(conditional(versionedGet(), VERSIONED, "GET", "*").status()).isEqualTo(304);
+        assertThat(conditional(versionedGet(), VERSIONED, "GET", "\"5\", W/\"7\"").status()).isEqualTo(304);
+
+        Written other = conditional(versionedGet(), VERSIONED, "GET", "\"8\"");
+        assertThat(other.status()).isEqualTo(200);
+        assertThat(other.header("ETag")).isEqualTo("\"7\"");
+        assertThat(other.json().get("version").asLong()).isEqualTo(7);
+    }
+
+    @Test
+    void malformedIfNoneMatchIsIgnored() throws Exception {
+        for (String malformed : List.of("7", "\"7\"x", "*, \"7\"")) {
+            Written written = conditional(versionedGet(), VERSIONED, "GET", malformed);
+
+            assertThat(written.status()).as(malformed).isEqualTo(200);
+            assertThat(written.header("ETag")).as(malformed).isEqualTo("\"7\"");
+            assertThat(written.json().get("version").asLong()).as(malformed).isEqualTo(7);
+        }
+    }
+
+    @Test
+    void postCreatedSendsETagOnly() throws Exception {
+        RouteDefinition create = route(RestBindings
+                .builder()
+                .post("/books", new CreateVersionedBookOperation())
+                .created(b -> "/books/" + b.id())
+                .etag(VersionedBook::version)
+                .build());
+
+        Written written = conditional(create, new VersionedBook(1, "Dune", 1L), "POST", "*");
+
+        assertThat(written.status()).isEqualTo(201);
+        assertThat(written.header("Location")).isEqualTo("/books/1");
+        assertThat(written.header("ETag")).isEqualTo("\"1\"");
+        assertThat(written.response().containsHeader("Cache-Control")).isFalse();
+        assertThat(written.response().containsHeader("Vary")).isFalse();
+        assertThat(written.json().get("version").asLong()).isEqualTo(1);
+    }
+
+    @Test
+    void nullTagMeansNoValidators() throws Exception {
+        VersionedBook unversioned = new VersionedBook(7, "Dune", null);
+
+        Written written = conditional(versionedGet(), unversioned, "GET", "*");
+
+        assertThat(written.status()).isEqualTo(200);
+        assertThat(written.response().containsHeader("ETag")).isFalse();
+        assertThat(written.response().containsHeader("Cache-Control")).isFalse();
+        assertThat(written.response().containsHeader("Vary")).isFalse();
+        assertThat(written.json().has("title")).isTrue();
+    }
+
+    @Test
+    void etagIsSentOnlyWithA200OnRead() throws Exception {
+        RouteDefinition accepted = route(RestBindings
+                .builder()
+                .get("/books/{id}", new GetVersionedBookOperation())
+                .status(203)
+                .etag(VersionedBook::version)
+                .build());
+
+        Written written = conditional(accepted, VERSIONED, "GET", "\"7\"");
+
+        assertThat(written.status()).isEqualTo(203);
+        assertThat(written.response().containsHeader("ETag")).isFalse();
+        assertThat(written.response().containsHeader("Cache-Control")).isFalse();
+    }
+
+    /** A GET route with {@code .etag(version)} and an output header, so a 304 can show it leaves it out. */
+    private static RouteDefinition versionedGet() {
+        return route(RestBindings
+                .builder()
+                .get("/books/{id}", new GetVersionedBookOperation())
+                .etag(VersionedBook::version)
+                .header("X-Title", VersionedBook::title)
+                .alsoInBody()
+                .build());
+    }
+
+    /** Writes with an {@code If-None-Match} header. */
+    private Written conditional(RouteDefinition route, Object result, String method, String ifNoneMatch)
+            throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest(method, "/");
+        request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Map.of());
+        request.addHeader("If-None-Match", ifNoneMatch);
+        return written(request, writer.write(route, result, ServerRequest.create(request, List.of()), null));
+    }
+
     private Written write(RouteDefinition route, @Nullable Object result) throws Exception {
         return write(writer, route, result, route.method().name());
     }
@@ -494,15 +746,36 @@ class ResponseWriterTest {
     /** Writes with the path variables that routing would have put on the request. */
     private static Written write(ResponseWriter writer, RouteDefinition route, @Nullable Object result,
             String method, Map<String, String> pathVariables) throws Exception {
+        return write(writer, route, result, method, pathVariables, null);
+    }
+
+    /** Writes the result of the operation called with the input. */
+    private static Written write(ResponseWriter writer, RouteDefinition route, @Nullable Object result,
+            String method, Map<String, String> pathVariables, @Nullable Object input) throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest(method, "/");
         request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, pathVariables);
-        ServerResponse response = writer.write(route, result, ServerRequest.create(request, List.of()));
+        return written(request, writer.write(route, result, ServerRequest.create(request, List.of()), input));
+    }
+
+    /** Writes the response to a mock servlet response. */
+    private static Written written(MockHttpServletRequest request, ServerResponse response) throws Exception {
         MockHttpServletResponse servletResponse = new MockHttpServletResponse();
         response.writeTo(request, servletResponse, List::of);
         return new Written(servletResponse.getStatus(), servletResponse, servletResponse.getContentAsString());
     }
 
     /** Identifies a book on a shelf; the template names the shelf first. */
+    /** An output that hides a page where the startup check can't see it. */
+    record Smuggler(String name, Map<String, Object> extras) {
+    }
+
+    static class GetSmugglerOperation implements QueryOperation<Void, Smuggler> {
+        @Override
+        public Smuggler execute(Void input) {
+            return new Smuggler("s", Map.of());
+        }
+    }
+
     record ShelvedBookId(String shelf, long id) {
     }
 

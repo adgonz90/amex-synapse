@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.samples.books.api.rest;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,6 +24,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.client.RestTestClient;
 
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
+import io.americanexpress.synapse.core.paging.SortOrder;
 import io.americanexpress.synapse.samples.books.model.Book;
 import io.americanexpress.synapse.samples.books.model.CatalogStats;
 import io.americanexpress.synapse.samples.books.model.CreateBookRequest;
@@ -38,6 +42,7 @@ import io.americanexpress.synapse.samples.books.operation.SearchBooksOperation;
 import io.americanexpress.synapse.samples.books.operation.UpdateBookOperation;
 import io.americanexpress.synapse.test.rest.SynapseRestTest;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
@@ -53,7 +58,7 @@ class BooksRestTest {
 
     private static final UUID ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
-    private static final Book DUNE = new Book(ID, "978-0441172719", "Dune", "Frank Herbert", 1965, null);
+    private static final Book DUNE = new Book(ID, "978-0441172719", "Dune", "Frank Herbert", 1965, null, 1);
 
     @Autowired
     RestTestClient client;
@@ -96,6 +101,39 @@ class BooksRestTest {
     }
 
     @Test
+    void getAnswers304() {
+        given(getBook.execute(new GetBookRequest(ID))).willReturn(Optional.of(DUNE));
+
+        client
+                .get()
+                .uri("/books/{id}", ID)
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectHeader()
+                .valueEquals("ETag", "\"1\"")
+                .expectHeader()
+                .valueEquals("Cache-Control", "no-cache")
+                .expectHeader()
+                .valueEquals("Vary", "Accept")
+                .expectBody()
+                .jsonPath("$.version")
+                .isEqualTo(1);
+
+        client
+                .get()
+                .uri("/books/{id}", ID)
+                .header("If-None-Match", "\"1\"")
+                .exchange()
+                .expectStatus()
+                .isNotModified()
+                .expectHeader()
+                .valueEquals("ETag", "\"1\"")
+                .expectBody()
+                .isEmpty();
+    }
+
+    @Test
     void anEmptyResultIsBookNotFound() {
         given(getBook.execute(any())).willReturn(Optional.empty());
 
@@ -135,7 +173,9 @@ class BooksRestTest {
 
     @Test
     void theQueryStringFillsTheSearch() {
-        given(searchBooks.execute(new SearchBooksRequest("herbert"))).willReturn(List.of(DUNE));
+        // No size: the page size defaults to synapse.paging.default-size (20).
+        given(searchBooks.execute(new SearchBooksRequest("herbert", PageQuery.first(20))))
+                .willReturn(PageResult.ofCursor(List.of(DUNE), null));
 
         client
                 .get()
@@ -144,8 +184,55 @@ class BooksRestTest {
                 .expectStatus()
                 .isOk()
                 .expectBody()
-                .jsonPath("$[0].title")
+                .jsonPath("$.items[0].title")
                 .isEqualTo("Dune");
+    }
+
+    @Test
+    void searchReturnsAPageObject() {
+        given(searchBooks.execute(any())).willReturn(new PageResult<>(List.of(DUNE), "1", true, 3L));
+
+        var result = client
+                .get()
+                .uri("/books?sort=-year&size=1")
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectBody()
+                .jsonPath("$.items[0].title")
+                .isEqualTo("Dune")
+                .jsonPath("$.hasNext")
+                .isEqualTo(true)
+                .jsonPath("$.total")
+                .isEqualTo(3)
+                .returnResult();
+
+        // The client gets an encrypted token, never the operation's own cursor ("1"), in the body and in Link.
+        String body = new String(result.getResponseBodyContent(), StandardCharsets.UTF_8);
+        String token = body.replaceAll(".*\"nextCursor\":\"([^\"]+)\".*", "$1");
+        assertThat(token).isNotEqualTo("1").doesNotContain("\"");
+        assertThat(result.getResponseHeaders().getFirst("Link"))
+                .isEqualTo("</books?sort=-year&size=1&cursor=" + token + ">; rel=\"next\"");
+        then(searchBooks)
+                .should()
+                .execute(new SearchBooksRequest(null,
+                        new PageQuery(null, null, 1, List.of(new SortOrder("YEAR", SortOrder.Direction.DESC)))));
+    }
+
+    @Test
+    void aSortKeyThatIsNotAllowedIsAViolation() {
+        client
+                .get()
+                .uri("/books?sort=price")
+                .exchange()
+                .expectStatus()
+                .isBadRequest()
+                .expectBody()
+                .jsonPath("$.violations[0].field")
+                .isEqualTo("sort")
+                .jsonPath("$.violations[0].message")
+                .isEqualTo("has a key that is not allowed (allowed: title, year)");
+        then(searchBooks).should(never()).execute(any());
     }
 
     @Test
@@ -166,7 +253,7 @@ class BooksRestTest {
 
     @Test
     void createIs201WithLocationAndTakesTheChannelFromTheContext() {
-        Book created = new Book(ID, "isbn-1", "Title", "Author", null, "mobile");
+        Book created = new Book(ID, "isbn-1", "Title", "Author", null, "mobile", 1);
         given(createBook.execute(new CreateBookRequest("isbn-1", "Title", "Author", null, "mobile")))
                 .willReturn(created);
 
@@ -181,6 +268,8 @@ class BooksRestTest {
                 .isCreated()
                 .expectHeader()
                 .valueEquals("Location", "/books/" + ID)
+                .expectHeader()
+                .valueEquals("ETag", "\"1\"")
                 .expectBody()
                 .jsonPath("$.addedVia")
                 .isEqualTo("mobile");
@@ -225,12 +314,33 @@ class BooksRestTest {
 
     @Test
     void theIdComesFromThePathAndTheRestFromTheBody() {
-        UpdateBookRequest request = new UpdateBookRequest(ID, "978-0441172719", "Dune", "Frank Herbert", 1965);
+        // No If-Match: the version is null, and the business operation checks the version it reads.
+        UpdateBookRequest request = new UpdateBookRequest(ID, "978-0441172719", "Dune", "Frank Herbert", 1965, null);
         given(updateBook.execute(request)).willReturn(DUNE);
 
         client
                 .put()
                 .uri("/books/{id}", ID)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"isbn\":\"978-0441172719\",\"title\":\"Dune\",\"author\":\"Frank Herbert\",\"year\":1965}")
+                .exchange()
+                .expectStatus()
+                .isOk()
+                // RFC 9110 9.3.4: no ETag on a PUT response. The client reads the new version from the body.
+                .expectHeader()
+                .doesNotExist("ETag");
+        then(updateBook).should().execute(request);
+    }
+
+    @Test
+    void ifMatchFillsTheVersion() {
+        UpdateBookRequest request = new UpdateBookRequest(ID, "978-0441172719", "Dune", "Frank Herbert", 1965, 3L);
+        given(updateBook.execute(request)).willReturn(DUNE);
+
+        client
+                .put()
+                .uri("/books/{id}", ID)
+                .header("If-Match", "\"3\"")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body("{\"isbn\":\"978-0441172719\",\"title\":\"Dune\",\"author\":\"Frank Herbert\",\"year\":1965}")
                 .exchange()
@@ -259,8 +369,32 @@ class BooksRestTest {
 
     @Test
     void deleteIs204() {
-        client.delete().uri("/books/{id}", ID).exchange().expectStatus().isNoContent().expectBody().isEmpty();
-        then(deleteBook).should().execute(new DeleteBookRequest(ID));
+        client
+                .delete()
+                .uri("/books/{id}", ID)
+                .header("If-Match", "\"1\"")
+                .exchange()
+                .expectStatus()
+                .isNoContent()
+                .expectBody()
+                .isEmpty();
+        then(deleteBook).should().execute(new DeleteBookRequest(ID, 1L));
+    }
+
+    @Test
+    void deleteWithoutIfMatchIs428() {
+        client
+                .delete()
+                .uri("/books/{id}", ID)
+                .exchange()
+                .expectStatus()
+                .isEqualTo(428)
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("PRECONDITION_REQUIRED")
+                .jsonPath("$.violations[0].field")
+                .isEqualTo("If-Match");
+        then(deleteBook).should(never()).execute(any());
     }
 
     @Test

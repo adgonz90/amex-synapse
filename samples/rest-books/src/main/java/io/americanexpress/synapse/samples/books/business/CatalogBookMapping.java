@@ -23,6 +23,7 @@ final class CatalogBookMapping {
     }
 
     static CatalogBook toCatalogBook(StoredBook book) {
-        return new CatalogBook(book.id(), book.isbn(), book.title(), book.author(), book.year(), book.addedVia());
+        return new CatalogBook(book.id(), book.isbn(), book.title(), book.author(), book.year(), book.addedVia(),
+                book.version());
     }
 }

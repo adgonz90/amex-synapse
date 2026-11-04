@@ -128,4 +128,12 @@ public sealed interface InputSource {
             implements
                 InputSource {
     }
+
+    /**
+     * The paging parameters of the query string, on every method: the only source of a {@code PageQuery} component.
+     *
+     * @param component the input component, whose type is {@code PageQuery}
+     */
+    record Page(ResolvedComponent component) implements InputSource {
+    }
 }

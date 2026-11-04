@@ -40,6 +40,8 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * Input components with no declaration get, in this order: a {@link RestConventions} rule for their type; the path
  * variable of the same name; on {@code GET}/{@code HEAD}, the query parameter of the same name for strings, numbers,
  * booleans, enums, {@code java.time} types and lists of these; on {@code POST}/{@code PUT}, the JSON body property.
+ * A {@code PageQuery} component, or a {@code PageQuery} input, always binds from the paging query parameters
+ * ({@code synapse.api.rest.paging.parameters}) on every method, and can't be declared or bound by a convention.
  *
  * @param <I> the operation's input type
  * @param <O> the operation's output type
@@ -225,9 +227,12 @@ public final class RouteSpec<I, O> {
      * Binds an input component from a request header, or writes an output component to a response header, depending
      * on which record declares the component. An output component written to a header is removed from the body
      * unless {@link #alsoInBody()} follows. An output header needs a single value, so a route whose output is a
-     * {@code List} fails startup. The component must be a string, number, boolean, enum or {@code java.time} value, or
-     * a {@code List} or {@code Optional} of one, formatted with Spring MVC's conversion service; {@code Location},
-     * {@code Link}, {@code Content-Type} and {@code Content-Length} are reserved.
+     * {@code List} or a {@code PageResult} fails startup. The component must be a string, number, boolean, enum or
+     * {@code java.time} value, or a {@code List} or {@code Optional} of one, formatted with Spring MVC's conversion
+     * service; {@code Location}, {@code Link}, {@code Content-Type}, {@code Content-Length} and {@code ETag} are
+     * reserved, and so are {@code Cache-Control} and {@code Vary} on a route with {@link #etag}. An input component
+     * bound from {@code If-Match} or {@code If-None-Match} receives the entity tag's value, and must be
+     * {@code @Nullable}: {@code *} and an absent header bind {@code null}.
      *
      * @param name the header name
      * @param component a component of the input or the output record
@@ -241,7 +246,7 @@ public final class RouteSpec<I, O> {
     /**
      * Binds the whole request body to one input component, or writes one output component as the whole response
      * body, depending on which record declares the component. An output body component needs a single value, so a
-     * route whose output is a {@code List} fails startup.
+     * route whose output is a {@code List} or a {@code PageResult} fails startup.
      *
      * @param component a component of the input or the output record
      * @param <T> the record type
@@ -258,6 +263,74 @@ public final class RouteSpec<I, O> {
      */
     public RouteSpec<I, O> alsoInBody() {
         return declare(new RouteDeclaration.AlsoInBody());
+    }
+
+    /**
+     * Lets callers sort this route's pages by the constants of an enum. A constant's wire name, as callers send it in
+     * the sort parameter, is the value of its {@code @JsonProperty} when it has one, otherwise its name in lowerCamel
+     * ({@code PUBLISHED_AT} is {@code publishedAt}); a leading {@code -} sorts descending. The operation receives the
+     * constant's {@link Enum#name() name} as {@code SortOrder.property()}, so {@code SortKey.valueOf(order.property())}
+     * reads it back. Without {@code .sortable}, a sort parameter is rejected.
+     *
+     * <p>
+     * The route must bind {@code PageQuery}, and {@code .sortable} is declared once; wire names are made of letters,
+     * digits, {@code _} and {@code .} and must be distinct. Anything else fails startup.
+     *
+     * @param keys the enum of sort keys
+     * @param <E> the enum type
+     * @return this route
+     */
+    public <E extends Enum<E>> RouteSpec<I, O> sortable(Class<E> keys) {
+        return declare(new RouteDeclaration.Sortable(keys, List.of()));
+    }
+
+    /**
+     * Lets callers sort this route's pages by these keys. Each key is both the wire name callers send in the sort
+     * parameter (a leading {@code -} sorts descending) and the {@code SortOrder.property()} the operation receives.
+     * Without {@code .sortable}, a sort parameter is rejected.
+     *
+     * <p>
+     * The route must bind {@code PageQuery}, and {@code .sortable} is declared once with at least one key; keys are
+     * made of letters, digits, {@code _} and {@code .} and must be distinct. Anything else fails startup.
+     *
+     * @param keys the sort keys
+     * @return this route
+     */
+    public RouteSpec<I, O> sortable(String... keys) {
+        return declare(new RouteDeclaration.Sortable(null, List.of(keys)));
+    }
+
+    /**
+     * Sends an output component as the response's strong {@code ETag}, formatted with Spring MVC's conversion service.
+     * The component stays in the body. A {@code null} value sends no {@code ETag}. Responses with an {@code ETag} also
+     * carry {@code Cache-Control: no-cache} and {@code Vary: Accept}, and a {@code GET} or {@code HEAD} whose
+     * {@code If-None-Match} matches is answered 304.
+     *
+     * <p>
+     * {@code .etag} is declared once, on a {@code GET} or {@code HEAD} route, or on a {@code POST} route with
+     * {@link #created}: a {@code PUT} or {@code DELETE} response carries no {@code ETag} (RFC 9110 §9.3.4). The output
+     * must be a single value or an {@code Optional}, not a {@code List} or a {@code PageResult}, and the component a
+     * string, number, boolean, enum or {@code java.time} value of the output record. {@code ETag} is reserved on every
+     * route, and {@code Cache-Control} and {@code Vary} on a route with {@code .etag}, so no output header may use
+     * them. Anything else fails startup.
+     *
+     * @param component a component of the output record
+     * @param <T> the record type
+     * @return this route
+     */
+    public <T> RouteSpec<I, O> etag(ComponentRef<T, ?> component) {
+        return declare(new RouteDeclaration.ETag(component));
+    }
+
+    /**
+     * Answers 428 {@code PRECONDITION_REQUIRED} to a request without {@code If-Match}; {@code If-Match: *} counts as
+     * present. The route must be a {@code POST}, {@code PUT} or {@code DELETE} and must bind {@code If-Match} to an
+     * input component, on the route ({@code .header("If-Match", ...)}) or by a convention; otherwise startup fails.
+     *
+     * @return this route
+     */
+    public RouteSpec<I, O> requireIfMatch() {
+        return declare(new RouteDeclaration.RequireIfMatch());
     }
 
     /**

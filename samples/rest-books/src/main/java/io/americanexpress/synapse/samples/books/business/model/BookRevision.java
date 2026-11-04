@@ -25,6 +25,9 @@ import org.jspecify.annotations.Nullable;
  * @param title the title
  * @param author the author
  * @param year the year of publication, if known
+ * @param version the version the caller based the change on, or {@code null} to check against the version the
+ *        business operation reads
  */
-public record BookRevision(UUID id, String isbn, String title, String author, @Nullable Integer year) {
+public record BookRevision(UUID id, String isbn, String title, String author, @Nullable Integer year,
+        @Nullable Long version) {
 }

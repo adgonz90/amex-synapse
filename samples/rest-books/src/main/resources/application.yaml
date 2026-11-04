@@ -43,6 +43,18 @@ synapse:
       max-request-size: 1MB
       # Requests in flight before the service answers 503 with Retry-After. Actuator paths are never limited.
       max-concurrent-requests: 200
+      # Paging (GET /books). The page size is under synapse.paging: default-size 20, max-size 100.
+      # paging:
+      #   # The largest offset a caller may request (?offset=); a larger one is a 400. Callers page further by cursor.
+      #   max-offset: 1000
+      #   cursor:
+      #     # The base64 256-bit key that encrypts the paging cursors; create one with: openssl rand -base64 32
+      #     # Unset (or blank), a key is generated at every start: cursors then fail with 400 after a restart or on
+      #     # another instance, and a production start logs a WARN that says so. Give every instance the same key, from
+      #     # the environment or a secret store, never from a file in the repository. As written, the service doesn't
+      #     # start when BOOKS_CURSOR_KEY isn't set (the unresolved placeholder isn't a valid key); ${BOOKS_CURSOR_KEY:}
+      #     # would fall back to a generated key instead.
+      #     key: ${BOOKS_CURSOR_KEY}
 
 management:
   otlp:

@@ -14,16 +14,19 @@
 package io.americanexpress.synapse.api.rest.internal.aot;
 
 import org.jspecify.annotations.Nullable;
+import org.springframework.aot.hint.BindingReflectionHintsRegistrar;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.boot.context.properties.bind.BindableRuntimeHintsRegistrar;
 
 import io.americanexpress.synapse.api.rest.internal.edge.ManagementPaths;
+import io.americanexpress.synapse.api.rest.internal.paging.PageBody;
 
 /**
  * Registers what a native image needs for the REST plugin's own types: the health groups that {@link ManagementPaths}
  * binds from {@code management.endpoint.health.group} with Spring Boot's {@code Binder}, which constructs them
- * reflectively. The plugin's other types, such as the request wrappers of the edge and {@code RestErrors}, are used
+ * reflectively, and the {@link PageBody} that Jackson writes for a route whose operation returns a {@code PageResult}.
+ * The plugin's other types, such as the request wrappers of the edge and {@code RestErrors}, are used
  * directly and need no hints. The types of operation inputs and outputs,
  * which the binder and the response writer read with Jackson and record reflection, are registered by the core's
  * {@code OperationTypesAotProcessor}; the method references in REST bindings by {@link RestBindingsAotProcessor}.
@@ -34,5 +37,6 @@ public final class SynapseRestRuntimeHints implements RuntimeHintsRegistrar {
     @Override
     public void registerHints(RuntimeHints hints, @Nullable ClassLoader classLoader) {
         BindableRuntimeHintsRegistrar.forTypes(ManagementPaths.HealthGroup.class).registerHints(hints);
+        new BindingReflectionHintsRegistrar().registerReflectionHints(hints.reflection(), PageBody.class);
     }
 }

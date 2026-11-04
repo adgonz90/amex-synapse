@@ -20,6 +20,7 @@ import org.springframework.aot.hint.predicate.RuntimeHintsPredicates;
 import org.springframework.core.io.support.SpringFactoriesLoader;
 
 import io.americanexpress.synapse.api.rest.internal.edge.ManagementPaths;
+import io.americanexpress.synapse.api.rest.internal.paging.PageBody;
 
 import static io.americanexpress.synapse.test.aot.SynapseAotAssertions.assertThatHints;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +37,18 @@ class SynapseRestRuntimeHintsTest {
         assertThat(RuntimeHintsPredicates
                 .reflection()
                 .onConstructorInvocation(ManagementPaths.HealthGroup.class.getDeclaredConstructor(String.class)))
+                .accepts(hints);
+    }
+
+    @Test
+    void registersTheBindingOfThePageBodyThatJacksonWrites() {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseRestRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        assertThat(RuntimeHintsPredicates.reflection().onType(PageBody.class)).accepts(hints);
+        assertThat(RuntimeHintsPredicates.reflection().onMethodInvocation(PageBody.class, "items")).accepts(hints);
+        assertThat(RuntimeHintsPredicates.reflection().onMethodInvocation(PageBody.class, "nextCursor"))
                 .accepts(hints);
     }
 

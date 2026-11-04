@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.samples.books.business.RemoveBook;
+import io.americanexpress.synapse.samples.books.business.model.BookRemoval;
 import io.americanexpress.synapse.samples.books.model.DeleteBookRequest;
 
 /** Removes a book. It has no output ({@code Void}). */
@@ -39,7 +40,7 @@ public class DeleteBookOperation implements CommandOperation<DeleteBookRequest, 
     // be told.
     @SuppressWarnings("NullAway")
     public Void execute(DeleteBookRequest request) {
-        removeBook.execute(request.id());
+        removeBook.execute(new BookRemoval(request.id(), request.version()));
         return null;
     }
 }

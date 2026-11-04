@@ -27,8 +27,10 @@ import org.springframework.web.servlet.function.ServerResponse;
 import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.conditional.Preconditions;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestSizeLimits;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
+import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
@@ -39,8 +41,13 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * <li>applies the route's request body limit ({@code .maxRequestSize(...)}), if it has one, in place of the default;</li>
  * <li>checks {@code Accept}: absent or JSON-compatible, otherwise {@link RestErrors#NOT_ACCEPTABLE};</li>
  * <li>binds the input;</li>
- * <li>calls the operation bean, a proxy that runs the operation pipeline;</li>
- * <li>writes the response.</li>
+ * <li>replaces the client's cursor token with the operation's raw cursor (a token the codec rejects is the cursor
+ * violation, and the operation is not called);</li>
+ * <li>checks a write's preconditions: an {@code If-Match} or {@code If-None-Match} the route doesn't bind, or a weak
+ * {@code If-Match}, is 412; a missing {@code If-Match} on a route that requires it is 428;</li>
+ * <li>calls the operation bean, a proxy that runs the operation pipeline, and answers its {@code STALE_VERSION} as 412
+ * when the request sent a bound {@code If-Match};</li>
+ * <li>writes the response, wrapping a page's next cursor in a token bound to the same input.</li>
  * </ol>
  */
 public final class OperationHandler implements HandlerFunction<ServerResponse> {
@@ -51,17 +58,21 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
 
     private final ResponseWriter writer;
 
+    private final PageCursors cursors;
+
     /**
      * Creates the handler.
      *
      * @param route the resolved route
      * @param binder binds the input
      * @param writer writes the response
+     * @param cursors unwraps the client's cursor token
      */
-    public OperationHandler(RouteDefinition route, RequestBinder binder, ResponseWriter writer) {
+    public OperationHandler(RouteDefinition route, RequestBinder binder, ResponseWriter writer, PageCursors cursors) {
         this.route = route;
         this.binder = binder;
         this.writer = writer;
+        this.cursors = cursors;
     }
 
     /**
@@ -82,9 +93,18 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
             RequestSizeLimits.apply(request.servletRequest(), maxRequestSize);
         }
         checkAccept(request);
-        Object input = binder.bind(route, request);
-        Object result = execute(route.operation(), input);
-        return writer.write(route, result, request);
+        Object bound = binder.bind(route, request);
+        // The digest leaves the PageQuery out, so the unwrapped input has the same cursor scope as the bound one.
+        Object input = cursors.unwrap(route, bound);
+        // After the 400s, just before the action (RFC 9110 §13.2.1).
+        Preconditions.check(route, request);
+        Object result;
+        try {
+            result = execute(route.operation(), input);
+        } catch (SynapseException e) {
+            throw Preconditions.translate(route, request, e);
+        }
+        return writer.write(route, result, request, input);
     }
 
     /**

@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.jspecify.annotations.Nullable;
 import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.core.ResolvableType;
 import org.springframework.http.HttpMethod;
@@ -26,6 +27,7 @@ import org.springframework.util.ClassUtils;
 
 import io.americanexpress.synapse.core.operation.OperationNames;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 /**
  * One REST route. {@code RestBindings.routes()} returns routes as declared: {@link #sources()} is empty and the
@@ -42,10 +44,13 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * @param sources the input sources in component order (empty until resolved)
  * @param response the response rules
  * @param declarations the component calls made on the route, in declaration order
+ * @param paging how the route reads {@code PageQuery} from the paging parameters, or {@code null} when the route
+ *        doesn't bind {@code PageQuery} (always {@code null} until resolved)
+ * @param conditional the conditional request rules ({@link ConditionalRules#NONE} until resolved)
  */
 public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?, ?> operation, String operationName,
         Class<?> inputType, Class<?> outputType, List<InputSource> sources, ResponseRules response,
-        List<RouteDeclaration> declarations) {
+        List<RouteDeclaration> declarations, @Nullable PagingRules paging, ConditionalRules conditional) {
 
     /** A template variable, {@code {name}} or a catch-all {@code {*name}}: group 1 is the name. */
     private static final Pattern VARIABLE = Pattern.compile("\\{\\*?([A-Za-z_$][\\w$]*)");
@@ -62,6 +67,8 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
      * @param sources the input sources
      * @param response the response rules
      * @param declarations the declarations
+     * @param paging the paging rules, or {@code null}
+     * @param conditional the conditional request rules
      */
     public RouteDefinition {
         sources = List.copyOf(sources);
@@ -84,17 +91,26 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
         Class<?> operationClass = operationClass(operation);
         return new RouteDefinition(method, path, operation, OperationNames.nameOf(operationClass),
                 generic(operationClass, 0).resolve(Object.class), generic(operationClass, 1).resolve(Object.class),
-                List.of(), response, declarations);
+                List.of(), response, declarations, null, ConditionalRules.NONE);
     }
 
     /**
-     * Returns the output type unwrapped from {@code Optional} or {@code List}: the type whose components output
-     * headers and the body component name.
+     * Returns the output type unwrapped from {@code Optional}, {@code List} or {@code PageResult}: the type whose
+     * components output headers and the body component name (for a list or a page, the item type).
      *
      * @return the unwrapped output type
      */
     public Class<?> outputValueType() {
         return unwrap(generic(operationClass(operation), 1)).resolve(Object.class);
+    }
+
+    /**
+     * Tells whether the operation returns a {@code PageResult}, which is written as a page.
+     *
+     * @return true when the raw output type is {@code PageResult}
+     */
+    public boolean pagedOutput() {
+        return outputType == PageResult.class;
     }
 
     /**
@@ -117,11 +133,14 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
      *
      * @param resolvedSources the sources
      * @param resolvedResponse the response rules
+     * @param resolvedPaging the paging rules, or {@code null} when the route doesn't bind {@code PageQuery}
+     * @param resolvedConditional the conditional request rules
      * @return the resolved route
      */
-    RouteDefinition resolved(List<InputSource> resolvedSources, ResponseRules resolvedResponse) {
+    RouteDefinition resolved(List<InputSource> resolvedSources, ResponseRules resolvedResponse,
+            @Nullable PagingRules resolvedPaging, ConditionalRules resolvedConditional) {
         return new RouteDefinition(method, path, operation, operationName, inputType, outputType, resolvedSources,
-                resolvedResponse, declarations);
+                resolvedResponse, declarations, resolvedPaging, resolvedConditional);
     }
 
     static Class<?> operationClass(ServiceOperation<?, ?> operation) {
@@ -134,7 +153,7 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
 
     static ResolvableType unwrap(ResolvableType type) {
         Class<?> raw = type.resolve(Object.class);
-        if (raw == Optional.class || raw == List.class) {
+        if (raw == Optional.class || raw == List.class || raw == PageResult.class) {
             return type.getGeneric(0);
         }
         return type;
