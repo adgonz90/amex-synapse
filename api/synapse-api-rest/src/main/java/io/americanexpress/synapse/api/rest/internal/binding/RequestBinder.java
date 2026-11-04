@@ -1,0 +1,688 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package io.americanexpress.synapse.api.rest.internal.binding;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.RecordComponent;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.core.ResolvableType;
+import org.springframework.core.convert.ConversionFailedException;
+import org.springframework.core.convert.ConversionService;
+import org.springframework.core.convert.TypeDescriptor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.util.ReflectionUtils;
+import org.springframework.util.StringUtils;
+import org.springframework.web.servlet.function.ServerRequest;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.JsonParser;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectReader;
+import tools.jackson.databind.PropertyName;
+import tools.jackson.databind.deser.DeserializationContextExt;
+import tools.jackson.databind.deser.SettableBeanProperty;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
+
+import io.americanexpress.synapse.api.rest.RestErrors;
+import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
+import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.context.RequestContext;
+import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+
+/**
+ * Turns a request into the operation's input record, reading only the sources of a resolved {@link RouteDefinition}.
+ *
+ * <ul>
+ * <li>Path variables, query parameters, headers and cookies are converted with the {@link ConversionService}. Query
+ * parameters come from the query string only, never from a form body; a repeated one gives a {@code List} component
+ * all its values.</li>
+ * <li>The body is read only on POST and PUT when the route has a body source, and only as JSON
+ * ({@code application/json} or {@code *+json}); a missing or empty body counts as {@code {}}.</li>
+ * <li>A component filled from a body property is read with the creator property Jackson itself would use for it, so
+ * Jackson's rules apply to it (naming, {@code @JsonProperty}, {@code @JsonAlias}, {@code @JsonFormat},
+ * {@code @JsonDeserialize} on the component), and a component Jackson never reads (ignored or {@code READ_ONLY}) is
+ * never taken from the body. Unknown properties are ignored. A record with its own deserializer is read whole by
+ * Jackson instead, and the other sources then replace their components.</li>
+ * <li>A component bound elsewhere whose JSON property is in the body with a different value is a conflict.</li>
+ * </ul>
+ *
+ * Every component problem is collected, in component order, into one {@link SynapseErrors#VALIDATION_FAILED}. The
+ * record is built once, with its canonical constructor, and only when there is none; a constructor that rejects the
+ * values is also {@code VALIDATION_FAILED}. A violation never repeats the rejected value or a conversion, parser or
+ * constructor message.
+ */
+public final class RequestBinder {
+
+    private static final Logger LOG = LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+
+    private static final String INVALID = "is not a valid value";
+
+    private static final String MISSING = "must not be null";
+
+    private static final String CONFLICT = "conflicts with the value from the ";
+
+    private static final TypeDescriptor STRING = TypeDescriptor.valueOf(String.class);
+
+    private static final TypeDescriptor STRINGS = TypeDescriptor.collection(List.class, STRING);
+
+    /** Stands for a component whose value could not be read; its violation is already recorded. */
+    private static final Object FAILED = new Object();
+
+    /** The application's mapper with unknown properties ignored at every level of the body. */
+    private final JsonMapper bodyMapper;
+
+    private final ConversionService conversionService;
+
+    private final Map<Class<?>, BodyModel> models = new ConcurrentHashMap<>();
+
+    private final Map<Class<?>, Constructor<?>> constructors = new ConcurrentHashMap<>();
+
+    /**
+     * Creates the binder.
+     *
+     * @param mapper reads the request body
+     * @param conversionService converts path, query, header and cookie values (in an application, Spring MVC's
+     *        conversion service bean)
+     */
+    public RequestBinder(JsonMapper mapper, ConversionService conversionService) {
+        this.bodyMapper = mapper.rebuild().disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
+        this.conversionService = conversionService;
+    }
+
+    /**
+     * Checks at startup that the route's input can be bound: Jackson can describe the input type, and every
+     * non-nullable component filled from the body is one Jackson reads from JSON.
+     *
+     * @param route the resolved route
+     * @throws SynapseConfigurationException when the route can never be bound
+     */
+    public void checkBindable(RouteDefinition route) {
+        Class<?> inputType = route.inputType();
+        if (!inputType.isRecord() || route.sources().stream().noneMatch(InputSource.Body.class::isInstance)) {
+            return;
+        }
+        BodyModel model;
+        try {
+            model = model(inputType);
+        } catch (JacksonException e) {
+            throw failure(route, "Jackson cannot read the input type " + inputType.getName() + " from JSON",
+                    "Fix the Jackson mapping of " + inputType.getSimpleName()
+                            + " (for example two components with the same JSON name).",
+                    e);
+        }
+        Map<String, SettableBeanProperty> properties = model.properties();
+        if (properties == null) {
+            // The record's own deserializer decides what it reads.
+            return;
+        }
+        for (InputSource source : route.sources()) {
+            ResolvedComponent component = source.component();
+            if (source instanceof InputSource.Body && !component.nullable()
+                    && !properties.containsKey(component.name())) {
+                throw failure(route,
+                        "component " + component.recordType().getSimpleName() + "." + component.name()
+                                + " is bound from the body but Jackson ignores it",
+                        "Bind it on the route from another source (.path, .query, .header, .cookie, .context or "
+                                + ".from), make it @Nullable, or remove the @JsonIgnore, @JsonIgnoreProperties or "
+                                + "READ_ONLY access that hides it from JSON.",
+                        null);
+            }
+        }
+    }
+
+    private static SynapseConfigurationException failure(RouteDefinition route, String problem, String action,
+            @Nullable Throwable cause) {
+        SynapseConfigurationException failure = new SynapseConfigurationException("REST route "
+                + route.method().name() + " " + route.path() + " (" + route.operationName() + "): " + problem, action);
+        if (cause != null) {
+            failure.initCause(cause);
+        }
+        return failure;
+    }
+
+    /**
+     * Builds the route's input from the request.
+     *
+     * @param route the resolved route
+     * @param request the request
+     * @return the input record, or {@code null} when the input type is {@code Void}
+     * @throws SynapseException {@link RestErrors#UNSUPPORTED_MEDIA_TYPE} for a body that isn't JSON,
+     *         {@link RestErrors#PAYLOAD_TOO_LARGE} for a body over the request size limit,
+     *         {@link SynapseErrors#MALFORMED_REQUEST} for a body or query string that can't be read, and
+     *         {@link SynapseErrors#VALIDATION_FAILED} with the violations of the components that can't be bound
+     */
+    public @Nullable Object bind(RouteDefinition route, ServerRequest request) {
+        Class<?> inputType = route.inputType();
+        if (!inputType.isRecord()) {
+            // The startup checks admit only records and Void.
+            return null;
+        }
+        JsonNode body = readsBody(route) ? readBody(request) : null;
+        ObjectNode properties = null;
+        BodyModel model = BodyModel.NONE;
+        if (body != null && route.sources().stream().anyMatch(InputSource.Body.class::isInstance)) {
+            // The body fills components by property, so it must be an object.
+            if (!(body instanceof ObjectNode object)) {
+                throw new SynapseException(SynapseErrors.MALFORMED_REQUEST);
+            }
+            properties = object;
+            model = model(inputType);
+        }
+        return new Binding(request, body, properties, model).bind(inputType, route.sources());
+    }
+
+    private BodyModel model(Class<?> inputType) {
+        return models.computeIfAbsent(inputType, this::createModel);
+    }
+
+    private BodyModel createModel(Class<?> inputType) {
+        Map<String, SettableBeanProperty> properties = JsonNames.creatorProperties(bodyMapper, inputType);
+        if (properties == null) {
+            return new BodyModel(null, Map.of());
+        }
+        Map<String, List<String>> names = new HashMap<>();
+        properties.forEach((component, property) -> {
+            List<String> accepted = new ArrayList<>();
+            accepted.add(property.getName());
+            for (PropertyName alias : property.findAliases(bodyMapper.deserializationConfig())) {
+                accepted.add(alias.getSimpleName());
+            }
+            names.put(component, List.copyOf(accepted));
+        });
+        return new BodyModel(properties, names);
+    }
+
+    private static boolean readsBody(RouteDefinition route) {
+        boolean bodyMethod = route.method().equals(HttpMethod.POST) || route.method().equals(HttpMethod.PUT);
+        return bodyMethod && route
+                .sources()
+                .stream()
+                .anyMatch(source -> source instanceof InputSource.Body || source instanceof InputSource.BodyComponent);
+    }
+
+    private JsonNode readBody(ServerRequest request) {
+        HttpServletRequest servletRequest = request.servletRequest();
+        String contentType = servletRequest.getContentType();
+        if (contentType == null ? hasContent(servletRequest) : !isJson(contentType)) {
+            throw new SynapseException(RestErrors.UNSUPPORTED_MEDIA_TYPE);
+        }
+        if (contentType == null) {
+            return bodyMapper.createObjectNode();
+        }
+        JsonNode tree;
+        try {
+            tree = bodyMapper.readTree(servletRequest.getInputStream());
+        } catch (IOException | JacksonException e) {
+            // The one place a body that can't be read lands: a stream failure (an IOException, which Jackson wraps
+            // in JacksonIOException), a body over the size limit (thrown by the stream, so possibly wrapped too) or
+            // JSON that doesn't parse.
+            if (RequestTooLargeException.isCauseOf(e)) {
+                throw new SynapseException(RestErrors.PAYLOAD_TOO_LARGE, e);
+            }
+            throw new SynapseException(SynapseErrors.MALFORMED_REQUEST, e);
+        }
+        return tree == null || tree.isMissingNode() ? bodyMapper.createObjectNode() : tree;
+    }
+
+    private static boolean hasContent(HttpServletRequest request) {
+        return request.getContentLengthLong() > 0 || request.getHeader(HttpHeaders.TRANSFER_ENCODING) != null;
+    }
+
+    private static boolean isJson(String contentType) {
+        MediaType type;
+        try {
+            type = MediaType.parseMediaType(contentType);
+        } catch (InvalidMediaTypeException e) {
+            return false;
+        }
+        if (type.isWildcardSubtype()) {
+            return false;
+        }
+        return (type.getType().equals("application") && type.getSubtype().equals("json"))
+                || "json".equals(type.getSubtypeSuffix());
+    }
+
+    /** Parses a raw query string; names and values are decoded by {@link #decode(String)}. */
+    private static MultiValueMap<String, String> parseQuery(@Nullable String query) {
+        MultiValueMap<String, String> parameters = new LinkedMultiValueMap<>();
+        if (query == null) {
+            return parameters;
+        }
+        for (String pair : StringUtils.delimitedListToStringArray(query, "&")) {
+            if (pair.isEmpty()) {
+                continue;
+            }
+            int equals = pair.indexOf('=');
+            String name = equals < 0 ? pair : pair.substring(0, equals);
+            String value = equals < 0 ? "" : pair.substring(equals + 1);
+            parameters.add(decode(name), decode(value));
+        }
+        return parameters;
+    }
+
+    /**
+     * Decodes one query string name or value: {@code +} is a space, as servlet containers decode parameters, and
+     * percent escapes must form valid UTF-8. Anything else is {@link SynapseErrors#MALFORMED_REQUEST}.
+     */
+    private static String decode(String text) {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream(text.length());
+        int literal = 0;
+        int index = 0;
+        while (index < text.length()) {
+            if (text.charAt(index) != '%') {
+                index++;
+                continue;
+            }
+            bytes.writeBytes(text.substring(literal, index).replace('+', ' ').getBytes(StandardCharsets.UTF_8));
+            int high = index + 2 < text.length() ? Character.digit(text.charAt(index + 1), 16) : -1;
+            int low = high < 0 ? -1 : Character.digit(text.charAt(index + 2), 16);
+            if (low < 0) {
+                throw new SynapseException(SynapseErrors.MALFORMED_REQUEST);
+            }
+            bytes.write((high << 4) | low);
+            index += 3;
+            literal = index;
+        }
+        bytes.writeBytes(text.substring(literal).replace('+', ' ').getBytes(StandardCharsets.UTF_8));
+        try {
+            return StandardCharsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes.toByteArray()))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            throw new SynapseException(SynapseErrors.MALFORMED_REQUEST, e);
+        }
+    }
+
+    private ObjectReader reader(ResolvedComponent component) {
+        return bodyMapper.readerFor(bodyMapper.constructType(component.genericType()));
+    }
+
+    /** Reads one JSON value with the creator property Jackson uses for that component. */
+    private @Nullable Object deserialize(SettableBeanProperty property, JsonNode node) {
+        DeserializationContextExt context = bodyMapper._deserializationContext();
+        try (JsonParser parser = node.traverse(context)) {
+            context.assignParser(parser);
+            parser.nextToken();
+            return property.deserialize(parser, context);
+        }
+    }
+
+    /**
+     * Builds the input record. A constructor that rejects the values is {@link SynapseErrors#VALIDATION_FAILED}
+     * without detail, unless it threw its own {@link SynapseException}, which reaches the caller as it is.
+     */
+    private Object construct(Class<?> recordType, @Nullable Object[] args) {
+        try {
+            return instantiate(recordType, args);
+        } catch (Rejected rejected) {
+            Throwable thrown = rejected.getCause();
+            if (thrown instanceof SynapseException synapse) {
+                // The record reported its own error.
+                throw synapse;
+            }
+            LOG.debug("{} rejected the bound values", recordType.getName(), thrown);
+            throw new SynapseException(SynapseErrors.VALIDATION_FAILED, Objects.requireNonNull(thrown));
+        }
+    }
+
+    /** Calls the canonical constructor; what it throws comes back as {@link Rejected}, except an {@link Error}. */
+    private Object instantiate(Class<?> recordType, @Nullable Object[] args) throws Rejected {
+        Constructor<?> constructor = constructors.computeIfAbsent(recordType, RequestBinder::canonicalConstructor);
+        try {
+            return constructor.newInstance(args);
+        } catch (InvocationTargetException e) {
+            Throwable thrown = e.getTargetException();
+            if (thrown instanceof Error error) {
+                throw error;
+            }
+            throw new Rejected(thrown);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Cannot create " + recordType.getName(), e);
+        }
+    }
+
+    /** A record constructor rejected its values; the cause is what it threw. */
+    private static final class Rejected extends Exception {
+
+        private static final long serialVersionUID = 1L;
+
+        Rejected(Throwable cause) {
+            super(null, cause, false, false);
+        }
+    }
+
+    private static Constructor<?> canonicalConstructor(Class<?> recordType) {
+        Class<?>[] types = Arrays
+                .stream(Objects.requireNonNull(recordType.getRecordComponents()))
+                .map(RecordComponent::getType)
+                .toArray(Class<?>[]::new);
+        try {
+            Constructor<?> constructor = recordType.getDeclaredConstructor(types);
+            ReflectionUtils.makeAccessible(constructor);
+            return constructor;
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException("No canonical constructor on " + recordType.getName(), e);
+        }
+    }
+
+    private static @Nullable Object componentValue(RecordComponent component, Object record) {
+        Method accessor = component.getAccessor();
+        ReflectionUtils.makeAccessible(accessor);
+        return ReflectionUtils.invokeMethod(accessor, record);
+    }
+
+    private static String location(InputSource source) {
+        return switch (source) {
+            case InputSource.Path path -> "path";
+            case InputSource.Query query -> "query string";
+            case InputSource.QueryRecord query -> "query string";
+            case InputSource.Header header -> "header";
+            case InputSource.Cookie cookie -> "cookie";
+            case InputSource.Context context -> "request context";
+            case InputSource.Custom custom -> "request";
+            case InputSource.Body body -> "body";
+            case InputSource.BodyComponent body -> "body";
+        };
+    }
+
+    private static List<String> single(@Nullable String value) {
+        return value == null ? List.of() : List.of(value);
+    }
+
+    /**
+     * How a record is read from body properties.
+     *
+     * @param properties the creator property for each component Jackson reads, or {@code null} when the record has
+     *        its own deserializer
+     * @param names the JSON names (primary name, then aliases) accepted for each of those components
+     */
+    private record BodyModel(@Nullable Map<String, SettableBeanProperty> properties, Map<String, List<String>> names) {
+
+        static final BodyModel NONE = new BodyModel(Map.of(), Map.of());
+    }
+
+    /** The state of binding one request. */
+    private final class Binding {
+
+        private final ServerRequest request;
+
+        private final @Nullable JsonNode body;
+
+        /** The body when it fills components by property; {@code null} otherwise. */
+        private final @Nullable ObjectNode properties;
+
+        private final BodyModel model;
+
+        private final List<Violation> violations = new ArrayList<>();
+
+        private @Nullable MultiValueMap<String, String> query;
+
+        Binding(ServerRequest request, @Nullable JsonNode body, @Nullable ObjectNode properties, BodyModel model) {
+            this.request = request;
+            this.body = body;
+            this.properties = properties;
+            this.model = model;
+        }
+
+        Object bind(Class<?> inputType, List<InputSource> sources) {
+            RecordComponent[] components = Objects.requireNonNull(inputType.getRecordComponents());
+            Map<String, InputSource> byComponent = new HashMap<>();
+            for (InputSource source : sources) {
+                byComponent.put(source.component().name(), source);
+            }
+            ObjectNode object = properties;
+            boolean readWhole = false;
+            Object whole = null;
+            if (object != null && model.properties() == null) {
+                readWhole = true;
+                whole = readWhole(inputType, object);
+            }
+            @Nullable
+            Object[] args = new Object[components.length];
+            for (int i = 0; i < components.length; i++) {
+                InputSource source = byComponent.get(components[i].getName());
+                if (source instanceof InputSource.Body && readWhole) {
+                    // No presence checks: the record's own deserializer decides what is required.
+                    args[i] = whole == null ? null : componentValue(components[i], whole);
+                } else if (source instanceof InputSource.Body) {
+                    args[i] = bodyValue(source.component());
+                } else if (source != null) {
+                    args[i] = bind(source);
+                }
+            }
+            if (!violations.isEmpty()) {
+                throw SynapseException.ofViolations(SynapseErrors.VALIDATION_FAILED, violations);
+            }
+            return construct(inputType, args);
+        }
+
+        /** Reads a record that has its own deserializer; Jackson decides everything about it. */
+        private @Nullable Object readWhole(Class<?> inputType, ObjectNode object) {
+            try {
+                return bodyMapper.readerFor(inputType).readValue(object);
+            } catch (RuntimeException e) {
+                // Jackson's failure or anything the record's deserializer throws; its text never reaches the caller.
+                throw new SynapseException(SynapseErrors.MALFORMED_REQUEST, e);
+            }
+        }
+
+        private @Nullable Object bodyValue(ResolvedComponent component) {
+            JsonNode node = node(component);
+            if (node == null || node.isNull()) {
+                if (!component.nullable()) {
+                    violations.add(new Violation(component.name(), MISSING));
+                }
+                return null;
+            }
+            Object value;
+            try {
+                value = deserialize(property(component), node);
+            } catch (RuntimeException e) {
+                // Jackson's failure or anything a component deserializer throws; its text never reaches the caller.
+                LOG.debug("Body property for {} could not be read", component.name(), e);
+                violations.add(new Violation(component.name(), INVALID));
+                return null;
+            }
+            if (value == null && !component.nullable()) {
+                violations.add(new Violation(component.name(), MISSING));
+            }
+            return value;
+        }
+
+        /** The component's JSON property in the body, under its name or one of its aliases. */
+        private @Nullable JsonNode node(ResolvedComponent component) {
+            ObjectNode object = properties;
+            List<String> names = model.names().get(component.name());
+            if (object == null || names == null) {
+                return null;
+            }
+            for (String name : names) {
+                JsonNode node = object.get(name);
+                if (node != null) {
+                    return node;
+                }
+            }
+            return null;
+        }
+
+        private SettableBeanProperty property(ResolvedComponent component) {
+            return Objects.requireNonNull(Objects.requireNonNull(model.properties()).get(component.name()));
+        }
+
+        private @Nullable Object bind(InputSource source) {
+            ResolvedComponent component = source.component();
+            Object value = value(source);
+            if (value == FAILED) {
+                return null;
+            }
+            if (value == null && !component.nullable()) {
+                violations.add(new Violation(component.name(), MISSING));
+                return null;
+            }
+            if (conflicts(component, value)) {
+                violations.add(new Violation(component.name(), CONFLICT + location(source)));
+                return null;
+            }
+            return value;
+        }
+
+        private @Nullable Object value(InputSource source) {
+            ResolvedComponent component = source.component();
+            return switch (source) {
+                case InputSource.Path path -> convert(component, single(request.pathVariables().get(path.variable())));
+                case InputSource.Query query -> convert(component, parameter(query.parameter()));
+                case InputSource.QueryRecord query -> queryRecord(query);
+                case InputSource.Header header -> convert(component, request.headers().header(header.name()));
+                case InputSource.Cookie cookie -> convert(component, single(cookie(cookie.name())));
+                case InputSource.Context context -> context.value().apply(RequestContext.current());
+                case InputSource.Custom custom -> custom.value().apply(request);
+                case InputSource.BodyComponent whole -> read(component, body);
+                case InputSource.Body property -> throw new IllegalStateException("Read by property");
+            };
+        }
+
+        private MultiValueMap<String, String> query() {
+            MultiValueMap<String, String> parsed = query;
+            if (parsed == null) {
+                parsed = parseQuery(request.servletRequest().getQueryString());
+                query = parsed;
+            }
+            return parsed;
+        }
+
+        private List<String> parameter(String name) {
+            return query().getOrDefault(name, List.of());
+        }
+
+        private @Nullable String cookie(String name) {
+            Cookie cookie = request.cookies().getFirst(name);
+            return cookie == null ? null : cookie.getValue();
+        }
+
+        private @Nullable Object convert(ResolvedComponent component, List<String> values) {
+            if (values.isEmpty()) {
+                return null;
+            }
+            TypeDescriptor target = new TypeDescriptor(ResolvableType.forType(component.genericType()), null, null);
+            try {
+                return values.size() == 1
+                        ? conversionService.convert(values.getFirst(), STRING, target)
+                        : conversionService.convert(values, STRINGS, target);
+            } catch (ConversionFailedException e) {
+                violations.add(new Violation(component.name(), INVALID));
+                return FAILED;
+            }
+        }
+
+        private @Nullable Object queryRecord(InputSource.QueryRecord source) {
+            List<ResolvedComponent> components = source.components();
+            if (source.component().nullable()
+                    && components.stream().noneMatch(component -> query().containsKey(component.name()))) {
+                return null;
+            }
+            @Nullable
+            Object[] args = new Object[components.size()];
+            boolean failed = false;
+            for (int i = 0; i < components.size(); i++) {
+                ResolvedComponent component = components.get(i);
+                Object value = convert(component, parameter(component.name()));
+                if (value == FAILED) {
+                    failed = true;
+                } else if (value == null && !component.nullable()) {
+                    violations.add(new Violation(component.name(), MISSING));
+                    failed = true;
+                } else {
+                    args[i] = value;
+                }
+            }
+            if (failed) {
+                return FAILED;
+            }
+            try {
+                return instantiate(source.component().type(), args);
+            } catch (Rejected rejected) {
+                // Reported like any other value that can't be bound, so the other components' violations still are.
+                LOG.debug("{} rejected the query values", source.component().type().getName(), rejected.getCause());
+                violations.add(new Violation(source.component().name(), INVALID));
+                return FAILED;
+            }
+        }
+
+        private @Nullable Object read(ResolvedComponent component, @Nullable JsonNode node) {
+            if (node == null || node.isNull()) {
+                return null;
+            }
+            try {
+                return reader(component).readValue(node);
+            } catch (RuntimeException e) {
+                // Jackson's failure or anything a deserializer throws; its text never reaches the caller.
+                LOG.debug("Body for {} could not be read", component.name(), e);
+                violations.add(new Violation(component.name(), INVALID));
+                return FAILED;
+            }
+        }
+
+        /**
+         * Tells whether the body carries this component, bound elsewhere, with a different value. Only components
+         * Jackson reads from JSON can conflict; the body value is read the way Jackson reads that component.
+         */
+        private boolean conflicts(ResolvedComponent component, @Nullable Object value) {
+            JsonNode node = node(component);
+            if (node == null) {
+                return false;
+            }
+            Object bodyValue;
+            try {
+                bodyValue = node.isNull() ? null : deserialize(property(component), node);
+            } catch (RuntimeException e) {
+                // A body value that can't be read can't match the bound one.
+                LOG.debug("Body property for {} could not be read", component.name(), e);
+                return true;
+            }
+            return !Objects.equals(value, bodyValue);
+        }
+    }
+}

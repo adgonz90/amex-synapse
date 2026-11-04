@@ -28,8 +28,11 @@ public final class SynapseLifecyclePhases {
 
     /**
      * Inbound edges (REST, gRPC, GraphQL, cloud function adapters). Stopping in this phase makes the edge stop accepting
-     * requests, so nothing new enters while the drain waits. It is the phase of Spring Boot's web server graceful
-     * shutdown.
+     * requests, so nothing new enters while the drain waits. It is the phase in which Spring Boot stops the embedded
+     * web server ({@code DEFAULT_PHASE - 2048}, {@code WebServerApplicationContext.START_STOP_LIFECYCLE_PHASE}). Boot's
+     * graceful shutdown of the web server runs earlier, at {@code DEFAULT_PHASE - 1024}
+     * ({@code WebServerApplicationContext.GRACEFUL_SHUTDOWN_PHASE}), so HTTP stops accepting requests and waits for
+     * in-flight ones before this phase.
      */
     public static final int INBOUND = SmartLifecycle.DEFAULT_PHASE - 2048;
 

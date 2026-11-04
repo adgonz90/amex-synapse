@@ -91,12 +91,19 @@ verified principal.
 WARN lines for a replaced correlation id and for dropped entries are limited to one per minute per kind; the rest go
 to DEBUG.
 
+[#correlation-id]
 == Correlation id
 
 The id is read from the header named by `synapse.correlation.header` (`X-Correlation-Id`). It is accepted only if it
 is 1 to `synapse.correlation.max-length` (128) characters of `[A-Za-z0-9._:-]`; otherwise it is replaced with a new
 UUID and the original is logged once, sanitized and truncated. It is generated when absent. It is the baggage field and
 MDC key `correlationId` and a high-cardinality tag on the operation observation.
+
+The correlation header must not also be a remote baggage field or a propagation header, because edges hide those
+headers from untrusted callers. Startup fails when `synapse.correlation.header` equals, ignoring case,
+`correlationId`, a context attribute name, an entry of `management.tracing.baggage.remote-fields`, `baggage`,
+`traceparent`, `tracestate`, or a B3 header (`b3`, `X-B3-TraceId`, `X-B3-SpanId`, `X-B3-ParentSpanId`,
+`X-B3-Sampled`, `X-B3-Flags`).
 
 == Deadlines
 
@@ -202,6 +209,7 @@ fallback value) for any other exception, and `none` on success. `synapse.observa
 `spans` (default), `metrics` (a timer, no span) or `off`. Define an `OperationObservationConvention` bean to replace
 the default convention.
 
+[#logging]
 == Logging
 
 Synapse logs through SLF4J and never picks a backend (see xref:logging-log4j2.adoc[Log4j2 logging]). Successful calls
@@ -212,6 +220,7 @@ pool timeout) are WARN with the cause's stack trace; without a cause (the pipeli
 check) they are one line. The line carries the key-values `operation`, `error.code`, `error.category` and
 `correlationId`.
 
+[#tracing]
 == Tracing is required
 
 Operations carry their context as tracing baggage, so the service module needs the OpenTelemetry bridge
@@ -251,6 +260,19 @@ During the drain a call is rejected with `UNAVAILABLE` only when the pipeline mu
 a `@Scheduled` method). A call in an existing or inherited context (an admitted request fanning out to other threads)
 is admitted and awaited. Spring waits for the drain for at most `spring.lifecycle.timeout-per-shutdown-phase`; the
 drain thread itself gives up after 10 minutes if Spring has stopped waiting, so it never lingers.
+
+On Kubernetes, the pod gets `SIGTERM` and is killed after `terminationGracePeriodSeconds` (30 by default). Removing a
+pod from its endpoints is asynchronous, so a `preStop` sleep keeps it serving until load balancers stop sending to it.
+Leave enough time for every phase that waits:
+
+----
+preStop delay + (phases that wait × spring.lifecycle.timeout-per-shutdown-phase) + margin < terminationGracePeriodSeconds
+----
+
+The phases that wait are the web server's graceful shutdown (in-flight requests, see xref:rest.adoc#shutdown[REST]),
+the drain, and the publishers, clients and data stores of the modules you use. For example, a REST service with a 5
+second `preStop` sleep and `spring.lifecycle.timeout-per-shutdown-phase=10s` needs 5 + 2 × 10 = 25 seconds, within
+the default 30.
 
 == Native image and AOT
 

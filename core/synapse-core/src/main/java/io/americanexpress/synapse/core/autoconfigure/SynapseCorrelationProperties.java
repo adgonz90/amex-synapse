@@ -24,8 +24,11 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *     generated one. Must be at least 1.
  */
 @ConfigurationProperties("synapse.correlation")
-public record SynapseCorrelationProperties(@DefaultValue("X-Correlation-Id") String header,
+public record SynapseCorrelationProperties(@DefaultValue(SynapseCorrelationProperties.DEFAULT_HEADER) String header,
         @DefaultValue("128") int maxLength) {
+
+    /** The default correlation id header, also used before the properties are bound. */
+    static final String DEFAULT_HEADER = "X-Correlation-Id";
 
     /**
      * Validates the properties.

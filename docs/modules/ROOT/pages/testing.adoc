@@ -94,6 +94,69 @@ class GetBookOperationTest {
 }
 ----
 
+== @SynapseRestTest
+
+A slice for the REST layer, in `synapse-test-rest`:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test-rest</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+It starts the xref:rest.adoc[REST plugin] (routes, edge filters, problem responses) on `MockMvc`, with no web server,
+together with the classes that declare a `RestBindings` or `RestConventions` `@Bean`, and the application's
+controllers, controller advice, `WebMvcConfigurer`s, converters and servlet filters. Operations, business beans and
+every other component are left out. Calls are made with the autowired `RestTestClient`, which is bound to `MockMvc`.
+As in `@SynapseOperationTest`, the `test` profile is active (so problem responses carry their `detail`) and a
+`MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you define a `Clock`.
+
+Declare a `@MockitoBean` (or a `@TestBean`) for each operation the bindings use:
+
+[source,java]
+----
+@SynapseRestTest
+class BooksRestTest {
+
+    @Autowired RestTestClient client;
+    @MockitoBean GetBookOperation getBook;
+    @MockitoBean SearchBooksOperation searchBooks;
+
+    @Test
+    void getsABook() {
+        given(getBook.execute(new GetBookRequest(1))).willReturn(Optional.of(new Book(1, "Dune")));
+
+        client.get().uri("/books/1")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody().jsonPath("$.title").isEqualTo("Dune");
+    }
+
+    @Test
+    void missingBookIsProblemJson() {
+        willThrow(new SynapseException(BookErrors.BOOK_NOT_FOUND, 1)).given(getBook).execute(any());
+
+        client.get().uri("/books/1")
+                .exchange()
+                .expectStatus().isNotFound()
+                .expectBody().jsonPath("$.code").isEqualTo("BOOK_NOT_FOUND");
+    }
+}
+----
+
+When an operation has no double, the slice fails before any bean is created and names every missing operation and
+the `@Bean` method that binds it. The check covers operations that are parameters of a `@Bean` method returning
+`RestBindings`. Operations reached another way, or bindings registered without a `@Bean` method, are not checked; a
+missing one then fails the test with Spring's own error.
+
+The doubles are used as they are, without the pipeline: Jakarta Validation, observation, translation and failure
+logging of the operation don't run. Request binding (with its violations), response mapping, the edge filters and the
+error responses do. A `@MockitoSpyBean` needs a real operation bean, which the slice doesn't create: add the
+operation with `@Import(GetBookOperation.class)` and replace its collaborators with `@MockitoBean`.
+
 == MutableClock
 
 [source,java]

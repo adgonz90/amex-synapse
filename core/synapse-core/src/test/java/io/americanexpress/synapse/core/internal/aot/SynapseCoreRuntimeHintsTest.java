@@ -13,7 +13,10 @@
  */
 package io.americanexpress.synapse.core.internal.aot;
 
+import java.lang.invoke.SerializedLambda;
+
 import org.junit.jupiter.api.Test;
+import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.aot.hint.predicate.RuntimeHintsPredicates;
@@ -38,6 +41,21 @@ class SynapseCoreRuntimeHintsTest {
         assertThat(RuntimeHintsPredicates
                 .reflection()
                 .onConstructorInvocation(ContextValueAccessor.class.getConstructor())).accepts(hints);
+    }
+
+    @Test
+    void registersSerializedLambdaReflection() {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseCoreRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        assertThat(RuntimeHintsPredicates.reflection().onType(SerializedLambda.class)).accepts(hints);
+        assertThat(hints
+                .reflection()
+                .typeHints()
+                .filter(hint -> hint.getType().getName().equals(SerializedLambda.class.getName()))
+                .flatMap(hint -> hint.getMemberCategories().stream()))
+                .contains(MemberCategory.INVOKE_DECLARED_METHODS);
     }
 
     @Test

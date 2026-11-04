@@ -62,6 +62,8 @@
         <module>core/synapse-core</module>
         <module>core/synapse-test</module>
         <module>core/synapse-logging-log4j2</module>
+        <module>api/synapse-api-rest</module>
+        <module>api/synapse-test-rest</module>
         <!-- Build-rule tests; never published. -->
         <module>tests/synapse-build-rules-tests</module>
     </modules>
@@ -70,7 +72,8 @@
         <!-- Java: built with JDK 25, bytecode and API level 21 (see specs/v2/BUILD.md) -->
         <java.release>21</java.release>
         <build.java.version>[25,)</build.java.version>
-        <!-- Set to true only by synapse-test, the one module allowed to export test libraries in compile scope. -->
+        <!-- Set to true only by synapse-test and the synapse-test-<plugin> slices, the modules allowed to export test
+             libraries in compile scope. -->
         <synapse.enforcer.allowTestLibraries>false</synapse.enforcer.allowTestLibraries>
         <maven.compiler.release>${java.release}</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -148,6 +151,16 @@
             <dependency>
                 <groupId>io.americanexpress.synapse</groupId>
                 <artifactId>synapse-logging-log4j2</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-rest</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-rest</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -383,8 +396,8 @@
                             </rules>
                         </configuration>
                     </execution>
-                    <!-- Test libraries stay out of compile/runtime scope. synapse-test exists to export them and sets
-                         synapse.enforcer.allowTestLibraries=true in its POM. -->
+                    <!-- Test libraries stay out of compile/runtime scope. synapse-test and the synapse-test-<plugin> slices
+                         exist to export them and set synapse.enforcer.allowTestLibraries=true in their POMs. -->
                     <execution>
                         <id>enforce-test-scope</id>
                         <goals>
@@ -394,7 +407,7 @@
                             <skip>${synapse.enforcer.allowTestLibraries}</skip>
                             <rules>
                                 <bannedDependencies>
-                                    <message>Test libraries must stay in test scope (only synapse-test may export them): see the Quality gates section of specs/v2/BUILD.md.</message>
+                                    <message>Test libraries must stay in test scope (only synapse-test and the synapse-test-&lt;plugin&gt; slices may export them): see the Quality gates section of specs/v2/BUILD.md.</message>
                                     <excludes>
                                         <exclude>org.junit.jupiter:*:*:*:compile</exclude>
                                         <exclude>org.junit.jupiter:*:*:*:runtime</exclude>

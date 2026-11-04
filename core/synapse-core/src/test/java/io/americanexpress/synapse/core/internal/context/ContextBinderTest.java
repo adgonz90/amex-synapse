@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.micrometer.tracing.Baggage;
 import io.micrometer.tracing.BaggageInScope;
@@ -33,6 +34,9 @@ import io.micrometer.tracing.otel.bridge.OtelTracer;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import io.americanexpress.synapse.core.context.RequestContext;
 
@@ -44,6 +48,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+@ExtendWith(OutputCaptureExtension.class)
 class ContextBinderTest {
 
     private static final Principal ALICE = () -> "alice";
@@ -259,6 +264,130 @@ class ContextBinderTest {
             assertThat(RequestContext.current().remaining(clockAt("2026-01-01T00:00:30Z")))
                     .isEqualTo(Optional.of(Duration.ZERO));
         }
+    }
+
+    @Test
+    void closingOnAnotherThreadWarnsAndLeavesThatThreadAlone(CapturedOutput output) throws Exception {
+        ContextScope scope = binder.open(new InboundContext("r", Map.of("tenant", "t1"), null, null, null));
+        AtomicReference<String> otherSaw = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread other = new Thread(() -> {
+            ContextScope own = binder.open(new InboundContext("own", Map.of(), null, null, null));
+            try {
+                scope.close();
+                otherSaw.set(RequestContext.current().correlationId());
+            } catch (Throwable ex) {
+                failure.set(ex);
+            } finally {
+                own.close();
+            }
+        });
+        try {
+            other.start();
+            other.join();
+            assertThat(failure.get()).isNull();
+            assertThat(output).contains("Closed a Synapse request context on a different thread");
+            assertThat(otherSaw.get()).isEqualTo("own");
+            // the opener's state is untouched until the opener unwinds
+            assertThat(RequestContext.current().correlationId()).isEqualTo("r");
+            // the opener's next open heals it
+            ContextScope next = binder.open(new InboundContext("next", Map.of(), null, null, null));
+            assertThat(RequestContext.current().correlationId()).isEqualTo("next");
+            assertThat(baggage("tenant")).isNull();
+            next.close();
+            assertThat(RequestContext.find()).isEmpty();
+            assertThat(baggage("correlationId")).isNull();
+        } finally {
+            scope.close();
+        }
+    }
+
+    @Test
+    void closingOutOfOrderWarnsAndUnwindsWhenTheInnerScopeCloses(CapturedOutput output) {
+        ContextScope a = binder.open(new InboundContext("a", Map.of("tenant", "ta"), null, null, null));
+        ContextScope b = binder.open(new InboundContext("b", Map.of("tenant", "tb"), null, null, null));
+        a.close();
+        assertThat(output).contains("out of order");
+        assertThat(RequestContext.current().correlationId()).isEqualTo("b");
+        assertThat(baggage("tenant")).isEqualTo("tb");
+        b.close();
+        assertThat(RequestContext.find()).isEmpty();
+        assertThat(baggage("correlationId")).isNull();
+        assertThat(baggage("tenant")).isNull();
+    }
+
+    @Test
+    void closingMiddleScopeFirstUnwindsInOrder() {
+        ContextScope a = binder.open(new InboundContext("a", Map.of(), null, null, null));
+        ContextScope b = binder.open(new InboundContext("b", Map.of(), null, null, null));
+        ContextScope c = binder.open(new InboundContext("c", Map.of(), null, null, null));
+        b.close();
+        assertThat(RequestContext.current().correlationId()).isEqualTo("c");
+        c.close();
+        assertThat(RequestContext.current().correlationId()).isEqualTo("a");
+        assertThat(baggage("correlationId")).isEqualTo("a");
+        a.close();
+        assertThat(RequestContext.find()).isEmpty();
+        assertThat(baggage("correlationId")).isNull();
+    }
+
+    @Test
+    void threeNestedScopesCloseInOrder() {
+        ContextScope a = binder.open(new InboundContext("a", Map.of(), null, null, null));
+        ContextScope b = binder.open(new InboundContext("b", Map.of(), null, null, null));
+        ContextScope c = binder.open(new InboundContext("c", Map.of(), null, null, null));
+        c.close();
+        assertThat(RequestContext.current().correlationId()).isEqualTo("b");
+        b.close();
+        assertThat(RequestContext.current().correlationId()).isEqualTo("a");
+        a.close();
+        assertThat(RequestContext.find()).isEmpty();
+    }
+
+    @Test
+    void attributeWithControlCharacterIsDropped(CapturedOutput output) {
+        try (ContextScope scope = binder
+                .open(new InboundContext("r", Map.of("tenant", "acme\nINFO fake"), null, null, null))) {
+            assertThat(RequestContext.current().attribute("tenant")).isEmpty();
+        }
+        assertThat(output).contains("Dropped 1 inbound context attribute");
+    }
+
+    @Test
+    void attributeWithControlCharacterInTheNameIsDropped() {
+        try (ContextScope scope = binder.open(new InboundContext("r", Map.of("te\tnant", "x"), null, null, null))) {
+            assertThat(RequestContext.current().attributes()).isEmpty();
+        }
+    }
+
+    @Test
+    void attributeWithLineSeparatorIsDropped() {
+        try (ContextScope scope = binder
+                .open(new InboundContext("r", Map.of("tenant", "a\u2028b", "other", "a\u2029b"), null, null, null))) {
+            assertThat(RequestContext.current().attributes()).isEmpty();
+        }
+    }
+
+    @Test
+    void attributeWithFormatCharacterIsKept() {
+        try (ContextScope scope = binder
+                .open(new InboundContext("r", Map.of("tenant", "a\u200Db"), null, null, null))) {
+            assertThat(RequestContext.current().attribute("tenant")).isPresent();
+        }
+    }
+
+    @Test
+    void unsafeAndOverLimitDropsAreCountedSeparately(CapturedOutput output) {
+        ContextBinder limited = new ContextBinder(tracer, new CorrelationIdPolicy(128), true, 1, 4096);
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("a", "1");
+        attributes.put("b", "2");
+        attributes.put("c", "x\ny");
+        try (ContextScope scope = limited.open(new InboundContext("r", attributes, null, null, null))) {
+            assertThat(RequestContext.current().attributes()).containsOnlyKeys("a");
+        }
+        assertThat(output).contains("Dropped 1 inbound context attribute(s) over the limit of 1 entries");
+        assertThat(output).contains("Dropped 1 inbound context attribute(s) containing a control character");
     }
 
     private static Clock clockAt(String instant) {

@@ -13,6 +13,8 @@
  */
 package io.americanexpress.synapse.core.internal.aot;
 
+import java.lang.invoke.SerializedLambda;
+
 import org.jspecify.annotations.Nullable;
 import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
@@ -23,7 +25,8 @@ import io.americanexpress.synapse.core.internal.context.ContextValueAccessor;
 /**
  * Registers what a native image needs for the core's own types: the service file through which Micrometer's context
  * propagation finds the {@link ContextValueAccessor}, and the accessor's constructor, which the service loader calls
- * reflectively. Listed in {@code META-INF/spring/aot.factories}.
+ * reflectively, and the serialized form of a component reference, which Synapse reads to find the component it
+ * names. Listed in {@code META-INF/spring/aot.factories}.
  */
 public final class SynapseCoreRuntimeHints implements RuntimeHintsRegistrar {
 
@@ -34,5 +37,6 @@ public final class SynapseCoreRuntimeHints implements RuntimeHintsRegistrar {
     public void registerHints(RuntimeHints hints, @Nullable ClassLoader classLoader) {
         hints.resources().registerPattern(THREAD_LOCAL_ACCESSOR_SERVICES);
         hints.reflection().registerType(ContextValueAccessor.class, MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS);
+        hints.reflection().registerType(SerializedLambda.class, MemberCategory.INVOKE_DECLARED_METHODS);
     }
 }

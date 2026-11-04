@@ -41,6 +41,7 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-parent` | P0 | Consumer parent; extends `spring-boot-starter-parent`. Build conventions, image build, default logging (see *Consumer parent*). |
 | `synapse-core` | P1 | Contracts, invocation pipeline, `RequestContext`, errors, correlation, deadlines, JSON conventions, `@Masked`, `Clock`, observability contract, AOT hints. |
 | `synapse-test` | P1 | Test support: operation harness and slices, ArchUnit rules, Testcontainers definitions, fixtures, AOT hint assertions. |
+| `synapse-test-rest` | P1 | @SynapseRestTest: the REST slice. Depends on synapse-test and synapse-api-rest. (gRPC and data slices get their own synapse-test-<plugin> artifacts in their plans.) |
 | `synapse-logging-log4j2` | P1 | Log4j2 backend for consumers (synchronous by default), structured JSON (ECS), optional failure-log burst limit. |
 | `synapse-api-rest` | P1 (XML codec and `BinaryContent` in P4) | REST plugin: `RestBindings`, problem+json, OpenAPI via springdoc, versioning, CORS, limits. |
 | `synapse-api-grpc` | P1 | gRPC plugin on Boot's gRPC server support. |
@@ -128,7 +129,7 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 - `dependencyConvergence` is enforced. Every pin that affects consumers' runtime classpath goes into `synapse-bom`
   (the root build imports the same list), with a comment and a removal condition. `synapse-parent` repeats them
   directly (see *Consumer parent*). A CI check keeps the root POM, the BOM and the parent in sync.
-- Test libraries stay in test scope, except in `synapse-test`, which exists to provide them (its POM overrides the
+- Test libraries stay in test scope, except in `synapse-test` and the `synapse-test-<plugin>` slice artifacts, which exist to provide them (its POM overrides the
   ban; an invoker test proves the ban still holds elsewhere).
 
 ### 3.5 API stability
@@ -301,12 +302,18 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   `synapse.api.grpc.context.metadata.<attribute>=<key>`) and baggage are accepted by default, within hard limits
   (`synapse.context.inbound.max-entries`, default 16; `synapse.context.inbound.max-size`, default 4 KB; excess is
   dropped and logged once). A public-facing service sets `synapse.context.inbound.trusted=false`: inbound context
-  headers and baggage are dropped and the trace is restarted at the edge.
+  headers and baggage are dropped and the trace is restarted at the edge. At the REST edge this works on headers:
+  before tracing extracts them, the edge hides `traceparent`, `tracestate`, `baggage`, the B3 headers and the remote
+  baggage-field headers, so the server span starts a new trace. The OpenTelemetry Java agent extracts before any
+  filter, so under the agent the Synapse agent extension (plan 5) does this; until then `trusted=false` does not
+  restart the trace under the agent (documented).
 - **Never for security:** values used for security decisions (tenant, roles) never come from headers or baggage,
   only from the verified credential (see *Security*). The principal and locale never travel as baggage.
 - **Outbound:** correlation id, W3C trace context and the remaining deadline are always forwarded on client calls.
   Other attributes are forwarded only when listed: `synapse.client.defaults.propagate=tenant,channel`, overridable per
   client (empty for third-party APIs). Synapse removes non-listed baggage entries from outbound client requests.
+  It does so on the outbound `baggage` header and the remote baggage-field headers (primitive in P1 plan 2a, wired
+  into clients in P2; under the agent, in the plan-5 extension).
   `Authorization` and cookies are never propagated. Deadlines never travel on messages.
 
 ### 5.4 Correlation id
@@ -319,7 +326,7 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 - REST reads a relative `Request-Timeout: <milliseconds>` header (`synapse.api.rest.deadline.header`; a Synapse
   convention, not a standard); gRPC uses its native deadline. Requests without one get
   `synapse.api.rest.deadline.default` (and the gRPC/GraphQL equivalents). Requested budgets are capped by
-  `synapse.api.rest.deadline.max`. Defaults are sized in the P1 plan. Malformed values are ignored.
+  `synapse.api.rest.deadline.max`. Defaults: `default` 10 s, `max` 30 s. Malformed values are ignored.
 - Scheduled and runner invocations have no deadline unless `synapse.scheduling` sets one. Kafka records use the
   subscriber's processing timeout (see *Subscriber*).
 - Clients cap their timeouts to the remaining budget and forward it.
@@ -369,7 +376,8 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 - **Concurrency limit:** every inbound plugin caps concurrent in-flight work (`synapse.api.rest.max-concurrent-requests`,
   `synapse.api.grpc.max-concurrent-calls`, `synapse.api.graphql.max-concurrent-requests`; Kafka is bounded by its
   concurrency). When full, it answers `UNAVAILABLE` (REST 503 with `Retry-After`) without running the operation.
-  Defaults are sized in the P1 plan. (With virtual threads, Boot's thread-pool settings no longer limit concurrency.)
+  Defaults: REST 200, counting every request except Actuator management paths (which are never limited), with
+  `Retry-After: 1`; the gRPC and GraphQL defaults are set in their plans. (With virtual threads, Boot's thread-pool settings no longer limit concurrency.)
 - **Shutdown order** (Spring waits for each phase at most `spring.lifecycle.timeout-per-shutdown-phase`): stop inbound
   (HTTP, gRPC, GraphQL, Kafka consumers, schedulers) → drain in-flight operations (the pipeline counts them) → flush
   publishers (`publishAsync` futures) → close clients and pools. The drain thread itself waits at most 10 minutes, so a
@@ -424,8 +432,8 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   and hidden in production; an explicit `true` or `false` always wins. A run with no active profile is production (see
   *Non-production rails*), so detail is off until a non-production profile (default `dev,local,test`) is active.
   A `MessageSource` entry that equals the code (Boot's `use-code-as-default-message`) counts as no entry. Never stack
-  traces (encrypted or not), exception class names or internal messages. The problem body's RFC 9457 `instance` is a
-  URN built from the correlation id (REST plan). Full detail and cause are logged server-side.
+  traces (encrypted or not), exception class names or internal messages. Problem bodies carry no RFC 9457 `instance`;
+  the `correlationId` member is the lookup key. Full detail and cause are logged server-side.
 - **Protocol-only failures** never reach an operation; the plugin answers them in the same error shape with fixed
   codes: REST `ROUTE_NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405 (+ `Allow`), `NOT_ACCEPTABLE` 406,
   `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400; gRPC `UNIMPLEMENTED` and
@@ -466,7 +474,7 @@ record type (e.g. `.query(WriteOptions.class)` binds all of `WriteOptions` from 
 types. Values are converted with Spring's `ConversionService`; validation runs once on the assembled record.
 
 **Paging safety:** sort keys must be allow-listed per route (`.sortable(SearchBooksRequest.SortKey.class)` or a set of
-names); unknown keys are `INVALID_INPUT`. Offsets are capped (`synapse.api.rest.paging.max-offset`); cursors are opaque
+names); unknown keys are `INVALID_INPUT`. Offsets are capped (`synapse.api.rest.paging.max-offset`, default 1000); cursors are opaque
 and HMAC-signed (key from `synapse.api.rest.paging.cursor-secret`, generated per start if unset, with a startup WARN
 in production profiles). Page size defaults to `synapse.paging.default-size` (20) and is capped by
 `synapse.paging.max-size` (100).
@@ -496,7 +504,9 @@ in production profiles). Page size defaults to `synapse.paging.default-size` (20
 - Errors are RFC 9457 `application/problem+json` with extension members `code`, `correlationId` and `violations[]`
   (each `{field, message}`). With `synapse.errors.type-base-uri` unset, `type` is `about:blank` and `title` is the HTTP
   status phrase; when set, `type` is the base URI plus the code and `title` comes from the category. `status` always
-  equals the real status.
+  equals the real status. `violations` is omitted when empty. With `type-base-uri` set, `type` is the base URI, `/`
+  and the code, and the category title can be overridden with the `MessageSource` key `synapse.category.<CATEGORY>`.
+  A 401 without `synapse-security` carries `WWW-Authenticate: Bearer`.
 - No response envelope; metadata travels in headers (correlation id, paging `Link`, `ETag`).
 
 **API versioning:** off unless a binding uses `.version("2")`. Then Synapse enables Spring Framework 7's API versioning
@@ -780,7 +790,8 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 | `SynapseOperations.invoke(op, input)`, `RequestContexts.with(...).run(...)` | P1 | Runs the real pipeline around a plain instance without Spring; works for `BusinessOperation` too. |
 | `@SynapseOperationTest` | P1 (client fakes P2, publisher fakes P3) | Boots operations, business beans and the pipeline only; replaces client interfaces and `PublisherOperation`s with fakes or mocks. |
 | `assertThatSynapseException(...)` | P1 | `.hasCode(...)`, `.hasCategory(...)`, `.hasViolation(field)`. |
-| `@SynapseRestTest`, `@SynapseGrpcTest` | P1 | Plugin plus the app's bindings with operations mocked; Boot 4's MVC test client (`MockMvcTester` or `RestTestClient`, chosen in the P1 plan) and grpc-java's in-process server. |
+| @SynapseRestTest (synapse-test-rest) | P1 | Plugin plus the app's bindings and controllers; the test declares a @MockitoBean for each bound operation (the slice fails fast and names any missing one); RestTestClient bound to MockMvc (the same client works against a running server). |
+| @SynapseGrpcTest (synapse-test-grpc) | P1 | Plugin plus the app's bindings with operations mocked; grpc-java's in-process server. |
 | `@SynapseDataTest("<store>")` | P1 | Starts only that store's repositories, migrations and auditing, against shared Testcontainers with per-name `@ServiceConnection`. |
 | `SynapseArchitecture.forApplication(…)` | P1 | The layering rules (section 4.3). |
 | Mutable test `Clock`, JSON fixture loaders | P1 | |
@@ -827,7 +838,7 @@ All must pass for a phase to be done; enforced in CI on every pull request unles
    import order, LF and license header (applied locally, checked in CI); Javadoc built on the JDK 25 PR leg.
 5. **Enforcer:** Java 25 for the build, Maven ≥ 3.9.6, `dependencyConvergence`, `banDuplicatePomDependencyVersions`,
    banned dependencies (`slf4j-ext`, `log4j:log4j`, JUnit 4, test libraries outside test scope except in
-   `synapse-test`, `spring-boot-starter-logging` in Synapse jars). Rules are tested by invoker projects in
+   `synapse-test` and the `synapse-test-<plugin>` slice artifacts, `spring-boot-starter-logging` in Synapse jars). Rules are tested by invoker projects in
    `tests/synapse-build-rules-tests`.
 6. **Auto-configuration tests** for every auto-configuration (section 3.1); **AOT hint tests** for every module.
 7. **Property metadata:** every `synapse.*` property has a description (enforced by the docs build) and the
@@ -975,8 +986,17 @@ cover acceptance items 2 (ArchUnit probe), 6 (core part), 9, 10 (core modules), 
 (`SynapseOperations.invoke`, `@SynapseOperationTest`, `SynapseArchitecture.forApplication(…)`) and 20. REST, gRPC,
 data and the reference app come in later plans.
 
+**Done (plan 2a, REST edge):** `synapse-api-rest` and `synapse-test-rest` are built and documented (`rest.adoc`, and
+the `@SynapseRestTest` section of `testing.adoc`). They cover acceptance items 1, 3 (REST), 4 (REST), 5 (REST),
+6 (REST), 10 (REST modules), 11 (REST: the default deadline without `Request-Timeout`, a `CommandOperation` bound to
+GET failing startup), 12 (path, body and `RestConventions` query binding, a mismatched body id, `.created`,
+`.accepted`, `.notFound`, a header-mapped output component absent from the body, a renamed component breaking
+compilation), 13 (REST), 14 (REST), 16 (REST), 17 (REST) and 19 (`@SynapseRestTest` is provided; the reference app
+uses it in plan 5). Plan 2b covers 7 (OpenAPI) and the rest of 11 (page size over the cap via REST) and 12 (`PageQuery`, unknown
+sort key, tampered cursor, `version` from `If-Match`, 304, 412, 409).
+
 **Carried to later P1 plans (plan 1 settled the core side):**
-- Plan 2 (REST):
+- Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
   - The edge opens the Synapse scope inside the server observation's span, with an IT asserting MDC and baggage on an
     `@Async` thread.
   - Reject an allow-listed attribute named `correlationId`.
@@ -986,16 +1006,21 @@ data and the reference app come in later plans.
   - Slices that mock operations (`@WebMvcTest`-style) rely on the test-double exemption (`@MockitoBean` replacements
     are not checked for the pipeline proxy).
   - Edges overwrite or strip inbound baggage for `correlationId` and for the Synapse attribute fields.
-  - `inbound.trusted=false` (trace restart) and outbound stripping of non-allow-listed baggage must work under the
-    OpenTelemetry Java agent as well as the starter, acting on the OpenTelemetry context, not on headers; tests cover
-    both.
-  - Problem responses carry an RFC 9457 `instance` URN built from the correlation id, and never a stack trace.
+  - `inbound.trusted=false` and outbound stripping work at the header level under the OpenTelemetry starter.
+  - Problem responses never carry a stack trace.
   - Verify the `INBOUND` shutdown phase against `WebServerGracefulShutdownLifecycle`.
+- Plan 2b (REST features): paging safety, conditional requests, API versioning, CORS, OpenAPI.
+- Plan 3 (gRPC edge):
+  - The REST edge's Synapse fields include only REST attribute names; with both plugins, include
+    `synapse.api.grpc.context.metadata` names so trusted-mode REST callers can't set gRPC attribute baggage
+    unvalidated.
 - Plan 5 (archetype, parent, reference app):
   - The OpenTelemetry Java agent recipe: `management.opentelemetry.map-environment-variables` and `-Dotel.*`
     guidance, an archetype profile that defines the `GlobalOpenTelemetry` `OpenTelemetry` bean, and an agent IT.
   - Later, a Synapse agent extension (`synapse-opentelemetry-agent-extension`). Whether the `OTEL_*` mapping is on by
     default and a JVM-wide baggage propagator in that extension are open questions (DESIGN.md *Open questions*).
+  - `inbound.trusted=false` (trace restart, baggage dropped) and outbound baggage stripping under the OpenTelemetry
+    Java agent, in the Synapse agent extension.
 - Later phase, own branch: a rate-limited failure-log policy (a one-line WARN on every occurrence, the stack once per
   window, the translator WARN included, and a "dropped N" summary for the burst limit).
 
@@ -1089,7 +1114,7 @@ the migration guide covers every row of the module map in DESIGN.md.
 
 ## 16. Decided in phase plans
 These are settled at the start of the named phase (details in DESIGN.md *Open questions*): default sizes for
-concurrency limits, deadlines, paging and client settings (P1/P2); the MVC test client (P1); the client readiness
+the gRPC and GraphQL concurrency limits and deadlines (their plans) and client settings (P2); the client readiness
 signal (P2); WireMock's Boot 4 fit (P2); Kafka retry defaults, subscriber `max.poll.records` and timeout defaults (P3);
 the AWS function binding and Lambda operating model, GraphQL limit values, ShedLock's Boot 4 fit (P4); the archetype
 set (P6).

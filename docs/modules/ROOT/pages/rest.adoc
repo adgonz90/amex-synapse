@@ -1,0 +1,586 @@
+= REST
+
+`synapse-api-rest` exposes operations over HTTP with JSON. You declare routes in a `RestBindings` bean; Synapse
+compiles them to Spring MVC functional routes, binds each request to the operation's input record, calls the
+operation through the pipeline and maps its output to the response. Errors are `application/problem+json`.
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-api-rest</artifactId>
+</dependency>
+----
+
+The module brings Spring MVC and Tomcat. To run on Jetty, exclude Tomcat and add Boot's Jetty starter (Synapse's own
+tests run on Tomcat, and the limits below that name Tomcat are Tomcat's):
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-api-rest</artifactId>
+  <exclusions>
+    <exclusion>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-tomcat</artifactId>
+    </exclusion>
+  </exclusions>
+</dependency>
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-jetty</artifactId>
+</dependency>
+----
+
+The plugin is active in servlet web applications. As with every operation, tracing must be present (see
+xref:core.adoc#tracing[Tracing is required]). An operation bean and a `RestBindings` bean are all the configuration an
+endpoint needs.
+
+NOTE: Paging (`PageQuery` binding, sort allow-lists, signed cursors), conditional requests (`ETag`, `If-Match`), API
+versioning, CORS and OpenAPI are not available yet. Until paging lands, a route whose input has a non-nullable
+`PageQuery` component fails startup because the component has no source.
+
+== Bindings
+
+[source,java]
+----
+@Bean
+RestBindings books(GetBookOperation getBook, SearchBooksOperation searchBooks, CreateBookOperation createBook,
+                   UpdateBookOperation updateBook, DeleteBookOperation deleteBook) {
+    return RestBindings.builder()
+        .get("/books/{id}", getBook).notFound(BookErrors.BOOK_NOT_FOUND)
+        .get("/books", searchBooks)
+        .post("/books", createBook).created(book -> "/books/" + book.id())
+        .put("/books/{id}", updateBook).header("If-Match", UpdateBookRequest::version)
+        .delete("/books/{id}", deleteBook)
+        .build();
+}
+----
+
+The verb is always explicit: `get`, `head`, `post`, `put` and `delete`. Components are referenced by method reference
+(`UpdateBookRequest::version`), never by string, so renaming a record component breaks the compilation of the
+binding, not startup. Only `QueryOperation` and `CommandOperation` beans can be bound; a `BusinessOperation` does not
+compile. Bindings belong in the service module's `api.rest` package. Several `RestBindings` beans are combined.
+
+Building the bindings only records them. They are resolved and checked when the routes are created, and a mistake
+fails startup with a `SynapseConfigurationException` whose message starts with the route, for example
+`+REST route GET /books/{id} (get-book): the path variable {id} is not bound to an input component+`. Startup fails when:
+
+* two routes have the same method and path (variable names are ignored when comparing);
+* the input type is not a record or `Void`;
+* a `CommandOperation` is bound to `GET` or `HEAD`;
+* the input or output type (or the element of an `Optional`, `List` or `PageResult` output) is a persistence entity
+  (JPA's `@Entity`, Spring Data's `@Document` or `@Table`, or a Synapse data type);
+* the path template is invalid, a template variable is not bound, or `.path(...)` names a variable the template
+  doesn't have;
+* a referenced component is not part of the input or output record;
+* a component has two sources, or a non-nullable input component has none;
+* `.body(...)` binds an input component on a method other than `POST` or `PUT`;
+* a non-nullable component that would be read from the body is one Jackson never reads (`@JsonIgnore`,
+  `@JsonIgnoreProperties` or `READ_ONLY` access), or Jackson cannot describe the input type;
+* a response option is invalid (see <<responses>>).
+
+The operation must be the Synapse bean, so that its calls run through the pipeline (validation, deadline,
+observation, translation and failure logging).
+
+*Route order.* When several templates match a path, the most specific one wins, whatever the declaration order and
+whichever `RestBindings` bean declares it: `.get("/books/latest", ...)` serves `/books/latest` even when
+`+.get("/books/{id}", ...)+` is declared first. Specificity is Spring's `PathPattern.SPECIFICITY_COMPARATOR`: a template
+without a catch-all (`+{*rest}+`, `/**`) beats one with, then fewer variables and wildcards win, then the longer
+template. Equally specific templates keep their declaration order. The implicit `HEAD` routes (see <<head-options>>)
+come after every declared route, in the same order, so a declared `.head(...)` route always wins over them, also when
+its template is less specific: `+.head("/books/{id}", ...)+` takes the `HEAD` requests of `/books/latest` from
+`.get("/books/latest", ...)`.
+
+[#input]
+== Input binding
+
+Each component of the input record gets its value from one source. A declaration on the route beats a
+`RestConventions` rule for the component's type, which beats the defaults.
+
+[cols="2,4,4",options="header"]
+|===
+|Location |Default |Declared form
+|Path variable
+|`+{id}+` fills the component `id` (template name = component name).
+|`.path("bookId", GetBookRequest::id)`
+|Query parameter
+|`GET` and `HEAD` only: components that are strings, numbers, booleans, enums, `java.time` values, or lists of these,
+from the parameter of the same name. `UUID` and other types are not implicit.
+|`.query(SearchBooksRequest::author)`, `.query("sort_by", SearchBooksRequest::sort)`, on any method. A record-typed
+component is built from the parameters named after its own components (when it is `@Nullable` and none of them is
+present, it is `null`).
+|Body
+|`POST` and `PUT`: the JSON body fills every component not bound elsewhere, unless the route declares a body
+component.
+|`.body(UpdateBookRequest::changes)` reads the whole body into one component (`POST` and `PUT` only).
+|Header |Never implicit. |`.header("If-Match", UpdateBookRequest::version)`
+|Cookie |Never implicit. |`.cookie("session", UpdateBookRequest::session)`
+|Request context |None. |`.context(UpdateBookRequest::tenant, ctx -> ctx.attribute("tenant").orElse(null))`
+|Custom |None. |`.from(UpdateBookRequest::region, request -> ...)` with the Spring `ServerRequest`; it may use protocol
+types, so it lives in `api..`.
+|===
+
+A `DELETE` route has no query or body defaults: its components come from path variables or declarations, or are
+`@Nullable`.
+
+Values:
+
+* Path variables, query parameters, headers and cookies are converted with Spring MVC's conversion service. A repeated
+  query parameter or header gives a `List` component all its values.
+* Query values come from the query string only, never from a form body. The query string is decoded as UTF-8
+  (`+` is a space); a malformed escape is `MALFORMED_REQUEST`.
+* The body is read only on `POST` and `PUT`, and only as JSON (`application/json` or a `+json` type). Another media
+  type, or content without a `Content-Type`, is `UNSUPPORTED_MEDIA_TYPE`. A missing or empty body counts as `{}`. JSON
+  that doesn't parse, or a body that isn't an object when components are read from its properties, is
+  `MALFORMED_REQUEST`.
+* Body properties are read with Jackson's own rules for the input record: naming strategy, `@JsonProperty`,
+  `@JsonAlias`, `@JsonFormat` and `@JsonDeserialize` on a component all apply. A component Jackson ignores
+  (`@JsonIgnore`, `@JsonIgnoreProperties`, `READ_ONLY`) is never taken from the body, so a caller cannot set it.
+  Unknown properties are ignored. A record with its own deserializer is read whole by Jackson, and the other sources
+  then replace their components; no presence checks run for it.
+* A component bound from another location whose JSON property is also in the body with a different value is a
+  conflict (path `/books/1`, body `"id": 2`). Equal values are accepted.
+
+Every problem is collected, from every source, in component order, into one `VALIDATION_FAILED` (400) with a
+violation per component:
+
+[cols="3,3",options="header"]
+|===
+|Problem |Violation message
+|Missing value for a non-nullable component (a primitive included) |`must not be null`
+|A value that can't be converted or deserialized |`is not a valid value`
+|A conflict with the body |`conflicts with the value from the path` (or `query string`, `header`, `cookie`,
+`request context`, `request`)
+|===
+
+The violation `field` is the component name. A violation never repeats the rejected value or a conversion, parser or
+constructor message. The record is built once, with its canonical constructor, after all sources are read. A
+constructor that throws is `VALIDATION_FAILED` without violations (the exception is logged at DEBUG), unless it throws
+a `SynapseException`, which reaches the caller unchanged. Only the input record's own constructor passes a
+`SynapseException` through: one thrown by a record-level custom deserializer is `MALFORMED_REQUEST`, and one thrown by
+the constructor of a nested query record is a violation of that component. Jakarta Validation then runs on the
+assembled record in the pipeline.
+
+== Conventions
+
+App-wide rules are declared once in a `RestConventions` bean and apply by type to every route:
+
+[source,java]
+----
+@Bean
+RestConventions conventions() {
+    return RestConventions.builder()
+        .query(WriteOptions.class)
+        .header("X-Tenant", TenantId.class)
+        .responseHeader("X-RateLimit-Remaining", BookResult.class, BookResult::remaining)
+        .build();
+}
+----
+
+* `query(WriteOptions.class)` binds every input component of that record type from the query string, on any method,
+  each of the record's components from the parameter of the same name. The type must be a record.
+* `header("X-Tenant", TenantId.class)` binds every input component of that type from the header.
+* `responseHeader(name, OutputType.class, OutputType::component)` writes the component to the header on every route
+  whose output, unwrapped from `Optional`, is that type, and removes it from the body. It is skipped for components
+  the route maps itself and for routes whose output is a `List`.
+
+Several `RestConventions` beans are merged. Two rules that bind the same component type fail startup.
+
+[#responses]
+== Response mapping
+
+[cols="3,3,3",options="header"]
+|===
+|Case |Default |Route option
+|A value |200 |`.status(201)`, `.status(r -> r.queued() ? 202 : 200)`
+|`.created(fn)` |201 with `Location` |
+|`.accepted(fn)` |202 with `Location` and `Link: <location>; rel="status"` |
+|`DELETE` |204, no body |`.status(200)` to return a body
+|`void` or `null` output |204 |`.status(int)`
+|Empty `Optional` (or `null` for an `Optional` output) |404 problem, code `NOT_FOUND`
+|`.notFound(BookErrors.BOOK_NOT_FOUND)`; `.emptyAs(204)` answers that status with no body
+|Empty list |200 with `[]` |
+|===
+
+The functions passed to `.status`, `.created` and `.accepted` receive the output exactly as the operation returned
+it. The body is the output serialized with the application's `JsonMapper` as `application/json`; there is no response
+envelope. The caller's `Accept` must be absent or admit `application/json`, otherwise the answer is `NOT_ACCEPTABLE`
+(406).
+
+Output headers and the body component:
+
+* `.header("X-RateLimit-Remaining", BookResult::remaining)` with a component of the output record writes it to a
+  response header and removes it from the body; `.alsoInBody()` right after keeps it in the body too
+  (`.alsoInBody()` anywhere else fails startup).
+* `.body(BookResult::book)` makes one output component the whole body. A `null` body component answers 204 with no
+  body.
+* Output headers and `.body` apply only to outputs that are a single record or an `Optional` of one. Declaring them
+  on a route whose output is a `List` fails startup.
+* A header component must be a string, number, boolean, enum or `java.time` value, or a `List` or `Optional` of one.
+  It is formatted with Spring MVC's conversion service; a `List` writes one header value per element, and `null` or
+  an empty `Optional` writes no header. Other types fail startup.
+* `Location`, `Link`, `Content-Type` and `Content-Length` are reserved and can't be output header names. A header
+  name mapped twice (ignoring case), or an output component mapped twice, fails startup.
+* A header value computed from the output that contains a control character fails the request with `INTERNAL`.
+
+Startup also fails when `.status(...)` is combined with `.created(...)` or `.accepted(...)` (they set the status),
+when `.status(int)` or `.emptyAs(int)` is given a number outside 100 to 599, and when `.notFound` or `.emptyAs` is
+declared on a route whose output is not an `Optional`.
+
+[#head-options]
+== HEAD and OPTIONS
+
+* Every `GET` route also serves `HEAD`, with the same handling, status and headers (`Content-Length` included) and no
+  body. A route declared with `.head(...)` for the same path wins.
+* `OPTIONS` on a path that matches a Synapse route answers 200 with `Allow` and no body. CORS pre-flight requests are
+  answered by Spring MVC before that.
+* A method no route serves on a matching path is `METHOD_NOT_ALLOWED` (405) with `Allow`. For Synapse routes, `Allow`
+  lists the declared methods plus `HEAD` (when `GET` is declared) and `OPTIONS`, in the order
+  `GET, HEAD, POST, PUT, DELETE, OPTIONS`. Spring MVC's own 405 for an escape-hatch controller lists the controller's
+  methods alphabetically (see <<escape-hatch>>).
+* A path that matches no route is `ROUTE_NOT_FOUND` (404).
+
+The 405 and `OPTIONS` answers come from a fallback that Spring MVC asks only after every other handler mapping
+(annotated controllers included) and before the static resources, so an escape-hatch controller on a Synapse path is
+reached. Neither the routes nor the fallback handle the servlet container's error dispatch: a template such as
+`+/{slug}+` matches `/error` on a normal request, but an error raised in a filter still reaches the error controller.
+
+[#errors]
+== Errors
+
+Every error is an RFC 9457 `application/problem+json` response:
+
+[source,json]
+----
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "The request is invalid",
+  "code": "VALIDATION_FAILED",
+  "correlationId": "c-9",
+  "violations": [
+    { "field": "title", "message": "must not be blank" }
+  ]
+}
+----
+
+* `code` and `correlationId` are always present, and the correlation id is also echoed in the correlation header.
+  There is no `instance` member: `correlationId` is the lookup key.
+* `detail` is the formatted message, shown or hidden by `synapse.errors.include-detail` and the environment (see
+  xref:core.adoc#errors[Errors]): by default it is shown outside production and hidden in production.
+* `violations` is omitted when empty.
+* With `synapse.errors.type-base-uri` unset, `type` is `about:blank` and `title` is the HTTP status phrase. When it is
+  set, `type` is the base URI, `/` and the code, and `title` is the category's title, which the `MessageSource` key
+  `synapse.category.<CATEGORY>` overrides.
+* The category title and `detail` are resolved in the locale of the caller's `Accept-Language`, or in the root locale
+  when the request has none (never the server's default locale).
+* `status` always equals the response status.
+* A 401 carries `WWW-Authenticate: Bearer` unless the response already has one.
+* Stack traces, exception class names and internal messages never appear. The full exception is logged server-side.
+
+The status comes from the error's category:
+
+[cols="2,1",options="header"]
+|===
+|Category |Status
+|`INVALID_INPUT` |400
+|`UNAUTHENTICATED` |401
+|`FORBIDDEN` |403
+|`NOT_FOUND` |404
+|`CONFLICT` |409
+|`PRECONDITION_FAILED` |412
+|`RATE_LIMITED` |429
+|`UNAVAILABLE` |503
+|`TIMEOUT` |504
+|`INTERNAL` |500
+|===
+
+Requests that never reach an operation get the `RestErrors` codes, each with a fixed status:
+
+[cols="2,1,3",options="header"]
+|===
+|Code |Status |When
+|`ROUTE_NOT_FOUND` |404 |No route matches the path.
+|`METHOD_NOT_ALLOWED` |405 |The path matches but not the method; the response has `Allow`.
+|`NOT_ACCEPTABLE` |406 |`Accept` does not admit `application/json`.
+|`PAYLOAD_TOO_LARGE` |413 |The body is over the limit.
+|`UNSUPPORTED_MEDIA_TYPE` |415 |The body is not JSON.
+|===
+
+A body or query string that can't be read is `MALFORMED_REQUEST` (400).
+
+Override the status of any code, for every operation or for one, with the code in brackets:
+
+[source,properties]
+----
+synapse.api.rest.errors.status.[BOOK_NOT_FOUND]=423
+synapse.api.rest.operations.get-book.errors.status.[BOOK_NOT_FOUND]=410
+----
+
+The first that applies wins: the operation's override, the global override, the fixed status of a `RestErrors` code,
+the category's status. An override outside 400 to 599 fails startup.
+
+Errors raised outside Spring MVC (in a filter, or by the servlet container) reach the container's error dispatch,
+except client errors that escape the filter chain, which the edge answers itself (see below). Synapse's error
+controller replaces Boot's `BasicErrorController` there and maps the status the same way as for Spring's own
+`ErrorResponse` exceptions (such as `ResponseStatusException`):
+
+[cols="1,3",options="header"]
+|===
+|Status |Code
+|400 |`MALFORMED_REQUEST`
+|401 |`UNAUTHENTICATED`
+|403 |`FORBIDDEN`
+|404 |`ROUTE_NOT_FOUND` on the error dispatch; `NOT_FOUND` for an `ErrorResponse`
+|405, 406, 413, 415 |`METHOD_NOT_ALLOWED`, `NOT_ACCEPTABLE`, `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`
+|409 |`CONFLICT`
+|412 |`PRECONDITION_FAILED`
+|429 |`RATE_LIMITED`
+|503 |`UNAVAILABLE`
+|504 |`DEADLINE_EXCEEDED`
+|Any other 4xx |`MALFORMED_REQUEST`
+|Any other status |`INTERNAL`
+|===
+
+When the error dispatch carries an exception, the table doesn't apply: the exception is classified exactly as Spring
+MVC exceptions are (the same code, status and log level). A `SynapseException` is written as it is, logged at ERROR
+when its status is 5xx; a form body that Boot's form content filter can't decode is `MALFORMED_REQUEST`; an unknown
+exception is `INTERNAL`.
+
+Logging: failures of operations are logged by the pipeline (see xref:core.adoc#logging[Logging]). Requests rejected
+before an operation runs (protocol failures, binding violations, the concurrency limit) are logged at DEBUG at most,
+except Spring MVC exceptions that map to `UNAVAILABLE` or `TIMEOUT`, which are WARN. Any other exception is `INTERNAL`
+and is logged at ERROR with its stack trace. Every line carries the correlation id, also on the error and async
+dispatches that run after the request context closed. The edge logs on `io.americanexpress.synapse.api.rest`.
+
+A client error that escapes the filter chain, such as a form body that Boot's form content filter can't decode or a
+body over the size limit that it read, never reaches the container: the innermost edge filter
+(`synapseClientErrorFilter`, see <<edge-filters>>) classifies the exception as the error controller does and, when its
+status is 4xx, writes the problem itself (code, violations and correlation id kept, no exception text) and logs one
+DEBUG line. A server error, an exception on a response already committed or after async processing started, and any
+`Error` are rethrown unchanged: Tomcat logs them at ERROR itself, and the error dispatch answers them as described
+above. A client error the filter can't write (for example, when the application already took the response's writer)
+is rethrown too, with the write failure added as suppressed.
+
+With Spring Security, such a failure (in the form content filter, `-9900`) happens before authentication (`-100`), and
+the answer doesn't pass through Spring Security's ERROR-dispatch chain: an unauthenticated caller that sends a
+malformed or oversized body gets the 400 or 413 problem, not 401.
+
+== Correlation id and context
+
+The edge opens the Synapse `RequestContext` for every request, inside the span of Boot's server observation, so the
+correlation id and attributes reach the MDC, the logs, `@Async` and virtual threads and outbound calls. The context is
+closed on the request thread when the request ends.
+
+* *Correlation id:* read from `synapse.correlation.header` (`X-Correlation-Id`), validated and generated as described
+  in xref:core.adoc#correlation-id[Correlation id]. It is echoed in the response header of every response, errors
+  included, and tags the server observation as `correlation.id`.
+* *Context attributes:* each one maps a request header to an attribute name:
++
+[source,properties]
+----
+synapse.api.rest.context.headers.tenant=X-Tenant
+synapse.api.rest.context.headers.channel=X-Channel
+----
++
+Attributes are read in this order, so when there are more than the context limits allow
+(`synapse.context.inbound.max-entries`, `.max-size`), the last ones are dropped. An empty header counts as absent.
+* *Locale:* from `Accept-Language`, only when the header is present.
+
+Synapse adds `correlationId` and the attribute names to Boot's baggage remote fields and correlation (MDC) fields.
+
+=== Baggage and trust
+
+A trusted caller (the default, `synapse.context.inbound.trusted=true`) can also send the correlation id and the
+attributes as W3C `baggage` entries named `correlationId` and after the attributes (or the remote-field headers of
+those names).
+The edge removes these Synapse fields from the `baggage` header before tracing reads it; they are only candidates,
+used when the mapped header is absent, and are validated like header values before they reach the context, tracing,
+logs or downstream calls. Other baggage entries and remote fields pass through.
+
+A public-facing service sets `synapse.context.inbound.trusted=false`. Then the edge:
+
+* hides the trace headers, so each request starts a new trace. Only W3C Trace Context (`traceparent`, `tracestate`)
+  and B3 (`b3`, `X-B3-TraceId`, `X-B3-SpanId`, `X-B3-ParentSpanId`, `X-B3-Sampled`, `X-B3-Flags`) are masked; other
+  trace formats (Jaeger `uber-trace-id`, `ot-*`, AWS X-Ray) are not;
+* hides the `baggage` header and the header of every remote baggage field
+  (`management.tracing.baggage.remote-fields`), so the caller's baggage is dropped;
+* drops the inbound context attributes (in core). The correlation header is still accepted.
+
+The headers are hidden from everything behind the first filter, including application code: an escape-hatch controller
+or a `.from(...)` binding cannot read them either.
+
+The correlation header must not be a baggage, remote-field or trace header, or untrusted mode would hide it; startup
+fails when it is (see xref:core.adoc#correlation-id[Correlation id]).
+
+WARNING: The masking works on the HTTP headers that Boot's OpenTelemetry bridge reads. The OpenTelemetry Java agent
+reads the caller's trace and baggage before any servlet filter runs, so under the agent `trusted=false` does not yet
+restart the trace or drop the caller's baggage. A Synapse agent extension that closes this gap is planned.
+
+Never base a security decision on an attribute or on baggage; callers control them.
+
+== Deadlines
+
+The caller's timeout is read from `Request-Timeout: <milliseconds>` (`synapse.api.rest.deadline.header`) and becomes
+the request deadline. A positive whole number of milliseconds is honored up to `synapse.api.rest.deadline.max` (30s).
+Anything else (absent, empty, zero, negative, a fraction, a sign, a unit or spaces) is ignored, and the default
+`synapse.api.rest.deadline.default` (10s) applies, so every request has a deadline. The pipeline fails a call whose
+deadline has passed with `DEADLINE_EXCEEDED` (504) before `execute`; a running operation is not interrupted.
+
+== Limits
+
+[cols="2,1,4",options="header"]
+|===
+|Limit |Default |Property
+|Request body |1 MB |`synapse.api.rest.max-request-size`; per route `.maxRequestSize(DataSize.ofKilobytes(64))`
+|Request headers |16 KB |Boot's `server.max-http-request-header-size`, which Synapse defaults to 16KB at lowest
+precedence, so your value wins
+|Concurrent requests |200 |`synapse.api.rest.max-concurrent-requests`
+|===
+
+*Request body.* A body over the limit is `PAYLOAD_TOO_LARGE` (413). A declared `Content-Length` over the limit is
+rejected before anything is read; a chunked body fails once more than the limit has been read. The limit applies to
+every request, escape-hatch controllers included; a route's own limit replaces the default for that route only. A body
+read before Spring MVC, such as a form `PUT` that Boot's form content filter parses, also gets 413.
+
+* After a 413, Tomcat reads and discards at most `server.tomcat.max-swallow-size` (2 MB by default) of the unread body
+  to keep the connection open. A larger body closes the connection, and a client still sending it may see the
+  connection reset before it reads the 413.
+* Form `POST` parameters that Tomcat parses itself are not counted by this limit; Tomcat bounds them with
+  `server.tomcat.max-http-form-post-size`.
+
+*Concurrency.* With virtual threads, the server's thread pool no longer limits how much work runs at once, so the edge
+caps it. A request that finds the limit reached is answered `UNAVAILABLE` (503) with `Retry-After: 1` and the
+correlation id, without running anything behind the filter; it never waits. A request holds its permit until it ends,
+also when it is processed asynchronously.
+
+Actuator requests on the application's port are never counted, so health probes are answered under full load. The
+excluded paths come from Boot's properties: `management.endpoints.web.base-path` (default `/actuator`) when Actuator
+shares the server's port, and each health group's `additional-path` in the `server:` namespace, prefixed with
+`spring.mvc.servlet.path`. Nothing is excluded when Actuator is not on the class path. With
+`management.endpoints.web.base-path=/`, Actuator's paths can't be told apart from the application's, so its requests
+are counted, and probes can get 503 under full load; health groups' `additional-path` values in the `server:`
+namespace are still excluded. A request is excluded only when both the path the container mapped and the raw request
+URI are under an excluded path, so `/files/../actuator/health` is counted.
+
+The concurrency filter and the client error filter write their problems with the REST error handling. Excluding
+`SynapseRestErrorAutoConfiguration` therefore fails startup unless you also replace the `synapseConcurrencyLimitFilter`
+and `synapseClientErrorFilter` beans.
+
+[#edge-filters]
+== Edge filters
+
+The edge is five servlet filters, for REQUEST dispatches, around Boot's server observation filter (`HIGHEST_PRECEDENCE
++ 1`). All of them run before Boot's form content filter (`-9900`) and Spring Security's filter chain (`-100`).
+Replace one by defining a bean with its name.
+
+[cols="2,1,4",options="header"]
+|===
+|Bean |Order |Does
+|`synapseInboundPropagationFilter` |`HIGHEST_PRECEDENCE` |Hides or strips propagation headers before tracing reads
+them.
+|`synapseRestContextFilter` |`+ 2` |Opens the request context (correlation id, attributes, locale, deadline).
+|`synapseConcurrencyLimitFilter` |`+ 3` |Caps concurrent requests.
+|`synapseRequestSizeLimitFilter` |`+ 4` |Limits the request body.
+|`synapseClientErrorFilter` |`+ 5` |Answers client errors (4xx) that escape the rest of the filter chain with the
+problem response, instead of leaving them to the container.
+|===
+
+Async dispatches don't need the client error filter: filters such as the form content filter read the body on the
+REQUEST dispatch only, and an exception of an async request is resolved inside Spring MVC.
+
+Order your own filters that read the request body after `HIGHEST_PRECEDENCE + 5`, so their client errors reach the
+client error filter; at exactly `+ 5`, their order relative to it is undefined.
+
+Replacing `synapseClientErrorFilter` brings back Tomcat's ERROR line (with its stack trace) for a body over the size
+limit and for a form body that can't be decoded; the error controller still answers them with the right problem (413
+and 400).
+
+The other beans (`synapseRestRoutes`, the `synapseRestMethodNotAllowedMapping` fallback, the binder, the response
+writer, the problem writer, the exception resolver and the error controller) back off when you define your own.
+
+[#shutdown]
+== Shutdown
+
+Boot's graceful shutdown (`server.shutdown=graceful`, Boot's default) stops the server accepting new connections and
+waits for the requests in flight. It runs before the `INBOUND` phase, where Boot stops the web server; then the
+pipeline drains the operations still running. Each phase waits at most `spring.lifecycle.timeout-per-shutdown-phase`.
+See xref:core.adoc#shutdown[Shutdown] for the phases and the Kubernetes formula.
+
+== Exposure inventory
+
+When the web server starts, the plugin logs every route it exposes, one INFO line each on
+`io.americanexpress.synapse.api.rest`:
+
+----
+Synapse REST exposes GET /books/{id} -> get-book on port 8080
+----
+
+The implicit `HEAD` routes and escape-hatch controllers are not listed, and a separate management server is not
+reported.
+
+[#escape-hatch]
+== Escape hatch
+
+A `@RestController` that injects operations is the escape hatch for what bindings can't express. The operation call
+runs through the pipeline, and the controller gets the same edge: correlation id and context, deadline, limits and
+problem responses.
+
+[source,java]
+----
+@RestController
+class LegacyBooksController {
+
+    private final GetBookOperation getBook;
+
+    LegacyBooksController(GetBookOperation getBook) {
+        this.getBook = getBook;
+    }
+
+    @GetMapping("/legacy/books/{id}")
+    Book book(@PathVariable long id) {
+        return getBook.execute(new GetBookRequest(id)).orElseThrow(
+                () -> new SynapseException(BookErrors.BOOK_NOT_FOUND, id));
+    }
+}
+----
+
+* Synapse's exception resolver runs before Spring MVC's own and handles every exception, so `@ExceptionHandler`
+  methods and `@ControllerAdvice` classes are not called. To answer with another error, throw a `SynapseException`
+  with your own `ErrorDetails`.
+* Spring MVC's client errors map to Synapse codes: `@Valid` and method validation failures are `VALIDATION_FAILED`
+  with a violation per field or parameter (the constraint's message; cross-parameter violations use the field name
+  `value`); a value that can't be converted is a violation `is not a valid value`; a missing parameter, header or
+  cookie is a violation `must not be null`; an unreadable body is `MALFORMED_REQUEST`. Other `ErrorResponse`
+  exceptions follow the status table above.
+* A `SynapseException` the controller throws outside an operation is written but not logged.
+* A controller can serve a path that a Synapse route also serves, for example `+@PatchMapping("/books/{id}")+` next to
+  `+.get("/books/{id}", ...)+`. Spring MVC tries the Synapse routes first, then the controllers, then the Synapse 405
+  and `OPTIONS` fallback. On such a path, each method goes to whichever declares it, the Synapse route first when both
+  do. A method that neither declares, and `OPTIONS`, are answered by Spring MVC from the controller's mappings, so
+  their `Allow` lists only the controller's methods (`PATCH` on the 405, `PATCH,OPTIONS` on `OPTIONS`), not the
+  Synapse ones.
+
+== Native image and AOT
+
+The plugin registers hints for the method references in bindings and conventions. Synapse reads a reference such as
+`GetBookRequest::id` through its serialized form, which a native image allows only for lambda classes with metadata.
+The hint is registered for the class that declares the `@Bean` method of each `RestBindings` or `RestConventions` bean,
+covering every method reference created in that class. So:
+
+* write the method references in the class that declares the `@Bean` method, not in a helper class it calls;
+* `RestBindings` and `RestConventions` beans not created by a `@Bean` factory method (registered with an instance
+  supplier, `@Component`, a `FactoryBean`) get no hints.
+
+The types of operation inputs and outputs are registered by core. Spring's AOT processing of a REST service is tested
+on the JVM; whether a native image also needs metadata for the lambdas' `writeReplace` method is not verified yet, and
+will be checked by the native build of the reference application.
+
+== Configuration
+
+The REST properties are `synapse.api.rest.*`; all are in the
+xref:reference/configuration-properties.adoc[property reference]. The plugin also reads core's `synapse.correlation.*`,
+`synapse.context.inbound.*` and `synapse.errors.*`.

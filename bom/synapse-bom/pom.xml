@@ -67,6 +67,16 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-rest</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-rest</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
                 <version>1.5.1</version>

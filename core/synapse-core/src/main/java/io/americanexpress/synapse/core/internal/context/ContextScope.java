@@ -16,7 +16,8 @@ package io.americanexpress.synapse.core.internal.context;
 import io.americanexpress.synapse.core.context.RequestContext;
 
 /**
- * An open request context. Closing it restores whatever the thread had before.
+ * An open request context. Close it on the thread that opened it, innermost scope first; closing it restores whatever
+ * the thread had before. A misordered or foreign-thread close is logged and unwound later on the opening thread.
  */
 public interface ContextScope extends AutoCloseable {
 

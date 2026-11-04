@@ -1,0 +1,121 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package io.americanexpress.synapse.api.rest.internal.binding;
+
+import java.util.List;
+import java.util.Optional;
+
+import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.core.ResolvableType;
+import org.springframework.http.HttpMethod;
+import org.springframework.util.ClassUtils;
+
+import io.americanexpress.synapse.core.operation.OperationNames;
+import io.americanexpress.synapse.core.operation.ServiceOperation;
+
+/**
+ * One REST route. {@code RestBindings.routes()} returns routes as declared: {@link #sources()} is empty and the
+ * {@link #response()} has no output headers or body component yet. {@link BindingValidator#validate} returns the
+ * resolved routes, with a source for every input component that has one and the convention header rules applied;
+ * request binding and response writing read only resolved routes.
+ *
+ * @param method the HTTP method
+ * @param path the path template
+ * @param operation the operation bean (possibly a proxy)
+ * @param operationName the operation name
+ * @param inputType the operation's input type {@code I}
+ * @param outputType the operation's raw output type {@code O} (for example {@code Optional})
+ * @param sources the input sources in component order (empty until resolved)
+ * @param response the response rules
+ * @param declarations the component calls made on the route, in declaration order
+ */
+public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?, ?> operation, String operationName,
+        Class<?> inputType, Class<?> outputType, List<InputSource> sources, ResponseRules response,
+        List<RouteDeclaration> declarations) {
+
+    /**
+     * Creates the definition.
+     *
+     * @param method the method
+     * @param path the path template
+     * @param operation the operation
+     * @param operationName the operation name
+     * @param inputType the input type
+     * @param outputType the output type
+     * @param sources the input sources
+     * @param response the response rules
+     * @param declarations the declarations
+     */
+    public RouteDefinition {
+        sources = List.copyOf(sources);
+        declarations = List.copyOf(declarations);
+    }
+
+    /**
+     * Creates a route as declared, resolving the operation's name and its input and output types from the operation
+     * class (through a CGLIB or Spring AOP proxy).
+     *
+     * @param method the method
+     * @param path the path template
+     * @param operation the operation
+     * @param declarations the component calls, in order
+     * @param response the response rules as declared
+     * @return the route
+     */
+    public static RouteDefinition declared(HttpMethod method, String path, ServiceOperation<?, ?> operation,
+            List<RouteDeclaration> declarations, ResponseRules response) {
+        Class<?> operationClass = operationClass(operation);
+        return new RouteDefinition(method, path, operation, OperationNames.nameOf(operationClass),
+                generic(operationClass, 0).resolve(Object.class), generic(operationClass, 1).resolve(Object.class),
+                List.of(), response, declarations);
+    }
+
+    /**
+     * Returns the output type unwrapped from {@code Optional} or {@code List}: the type whose components output
+     * headers and the body component name.
+     *
+     * @return the unwrapped output type
+     */
+    public Class<?> outputValueType() {
+        return unwrap(generic(operationClass(operation), 1)).resolve(Object.class);
+    }
+
+    /**
+     * Returns these resolved sources and output rules applied to this route.
+     *
+     * @param resolvedSources the sources
+     * @param resolvedResponse the response rules
+     * @return the resolved route
+     */
+    RouteDefinition resolved(List<InputSource> resolvedSources, ResponseRules resolvedResponse) {
+        return new RouteDefinition(method, path, operation, operationName, inputType, outputType, resolvedSources,
+                resolvedResponse, declarations);
+    }
+
+    static Class<?> operationClass(ServiceOperation<?, ?> operation) {
+        return ClassUtils.getUserClass(AopProxyUtils.ultimateTargetClass(operation));
+    }
+
+    static ResolvableType generic(Class<?> operationClass, int index) {
+        return ResolvableType.forClass(operationClass).as(ServiceOperation.class).getGeneric(index);
+    }
+
+    static ResolvableType unwrap(ResolvableType type) {
+        Class<?> raw = type.resolve(Object.class);
+        if (raw == Optional.class || raw == List.class) {
+            return type.getGeneric(0);
+        }
+        return type;
+    }
+}

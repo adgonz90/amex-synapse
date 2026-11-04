@@ -21,6 +21,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.micrometer.tracing.BaggageInScope;
 import io.micrometer.tracing.Tracer;
@@ -41,12 +42,17 @@ public final class ContextBinder {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ContextBinder.class);
 
+    /** The innermost open scope of this thread, used to skip scopes that were closed out of order. */
+    private static final ThreadLocal<@Nullable Scope> OPEN = new ThreadLocal<>();
+
     private final Tracer tracer;
     private final CorrelationIdPolicy correlation;
     private final boolean trusted;
     private final int maxEntries;
     private final long maxSizeBytes;
     private final RateLimitedWarn dropped;
+    private final RateLimitedWarn misuse;
+    private final RateLimitedWarn droppedUnsafe;
 
     /**
      * Creates a binder that uses the system clock for its log rate limit.
@@ -80,11 +86,15 @@ public final class ContextBinder {
         this.maxEntries = maxEntries;
         this.maxSizeBytes = maxSizeBytes;
         this.dropped = new RateLimitedWarn(LOGGER, clock, Duration.ofMinutes(1));
+        this.misuse = new RateLimitedWarn(LOGGER, clock, Duration.ofMinutes(1));
+        this.droppedUnsafe = new RateLimitedWarn(LOGGER, clock, Duration.ofMinutes(1));
     }
 
     /**
-     * Opens a context for the current thread. The caller must close the returned scope on the same thread, normally
-     * with try-with-resources.
+     * Opens a context for the current thread. The caller must close the returned scope on this same thread, innermost
+     * first, normally with try-with-resources. A scope closed on another thread, or before the scopes opened inside it,
+     * is logged as a warning and left alone; it is unwound on this thread when the inner scopes close or when this
+     * thread next opens a context.
      *
      * <p>
      * Open it inside the span of the server observation (the request's span must be in scope): the baggage this
@@ -98,6 +108,7 @@ public final class ContextBinder {
      * @return the open scope
      */
     public ContextScope open(InboundContext inbound) {
+        unwindClosedScopes(true);
         String id = correlation.acceptOrGenerate(inbound.correlationId());
         Map<String, String> attributes = limit(inbound.attributes());
         ContextValue value = new ContextValue(id, inbound.principal(), inbound.locale(), inbound.deadline(),
@@ -118,7 +129,7 @@ public final class ContextBinder {
             }
             throw ex;
         }
-        return new Scope(value, baggage, previous);
+        return new Scope(value, baggage, previous, misuse);
     }
 
     private Map<String, String> limit(Map<String, String> candidates) {
@@ -131,19 +142,39 @@ public final class ContextBinder {
             }
             return kept;
         }
-        long size = 0;
+        Map<String, String> safe = new LinkedHashMap<>();
+        int unsafe = 0;
         for (Map.Entry<String, String> candidate : candidates.entrySet()) {
+            if (isUnsafe(candidate.getKey()) || isUnsafe(candidate.getValue())) {
+                unsafe++;
+            } else {
+                safe.put(candidate.getKey(), candidate.getValue());
+            }
+        }
+        if (unsafe > 0) {
+            droppedUnsafe.log("Dropped {} inbound context attribute(s) containing a control character", unsafe);
+        }
+        long size = 0;
+        for (Map.Entry<String, String> candidate : safe.entrySet()) {
             long entrySize = utf8Length(candidate.getKey()) + utf8Length(candidate.getValue());
             if (kept.size() >= maxEntries || size + entrySize > maxSizeBytes) {
                 dropped
                         .log("Dropped {} inbound context attribute(s) over the limit of {} entries and {} bytes",
-                                candidates.size() - kept.size(), maxEntries, maxSizeBytes);
+                                safe.size() - kept.size(), maxEntries, maxSizeBytes);
                 break;
             }
             kept.put(candidate.getKey(), candidate.getValue());
             size += entrySize;
         }
         return kept;
+    }
+
+    /** Control characters and line or paragraph separators could forge log lines or header values. */
+    private static boolean isUnsafe(String text) {
+        return text
+                .codePoints()
+                .anyMatch(cp -> Character.isISOControl(cp) || Character.getType(cp) == Character.LINE_SEPARATOR
+                        || Character.getType(cp) == Character.PARAGRAPH_SEPARATOR);
     }
 
     private static int utf8Length(String text) {
@@ -173,17 +204,60 @@ public final class ContextBinder {
         }
     }
 
+    /**
+     * Unwinds the scopes of this thread that were closed while another scope was still open (or from another thread):
+     * closes their baggage, innermost first, and restores the value each one replaced. Stops at the first scope that is
+     * still open.
+     *
+     * @param quiet whether a failure is logged instead of thrown
+     */
+    private static void unwindClosedScopes(boolean quiet) {
+        RuntimeException failure = null;
+        Scope top = OPEN.get();
+        while (top != null && top.closed.get()) {
+            Scope below = top.previousScope;
+            if (below == null) {
+                OPEN.remove();
+            } else {
+                OPEN.set(below);
+            }
+            try {
+                release(top.baggage, top.previous);
+            } catch (RuntimeException ex) {
+                if (failure == null) {
+                    failure = ex;
+                } else {
+                    failure.addSuppressed(ex);
+                }
+            }
+            top = below;
+        }
+        if (failure != null) {
+            if (quiet) {
+                LOGGER.warn("Failed to close a Synapse request context that was closed out of order", failure);
+            } else {
+                throw failure;
+            }
+        }
+    }
+
     private static final class Scope implements ContextScope {
 
         private final ContextValue value;
         private final List<BaggageInScope> baggage;
         private final @Nullable ContextValue previous;
-        private boolean closed;
+        private final Thread opener = Thread.currentThread();
+        private final @Nullable Scope previousScope = OPEN.get();
+        private final RateLimitedWarn misuse;
+        private final AtomicBoolean closed = new AtomicBoolean();
 
-        Scope(ContextValue value, List<BaggageInScope> baggage, @Nullable ContextValue previous) {
+        Scope(ContextValue value, List<BaggageInScope> baggage, @Nullable ContextValue previous,
+                RateLimitedWarn misuse) {
             this.value = value;
             this.baggage = baggage;
             this.previous = previous;
+            this.misuse = misuse;
+            OPEN.set(this);
         }
 
         @Override
@@ -193,11 +267,22 @@ public final class ContextBinder {
 
         @Override
         public void close() {
-            if (closed) {
+            if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            closed = true;
-            release(baggage, previous);
+            Thread current = Thread.currentThread();
+            if (current == opener && OPEN.get() == this) {
+                unwindClosedScopes(false);
+            } else if (current != opener) {
+                misuse
+                        .log("Closed a Synapse request context on a different thread ({}) than the one that opened it ({}); "
+                                + "it is unwound when its opening thread next opens or closes a context",
+                                current.getName(), opener.getName());
+            } else {
+                misuse
+                        .log("Closed a Synapse request context out of order: it is not the innermost open context; "
+                                + "it is unwound when the inner contexts close");
+            }
         }
     }
 }

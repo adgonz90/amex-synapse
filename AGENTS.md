@@ -41,7 +41,7 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
   - Don't hand-format against the profile.
   - The formatter engine version (`eclipse-formatter.version`) is pinned. Bump it only in its own commit.
 - **Static analysis:** Error Prone and NullAway (JSpecify mode). Every package has a `package-info.java` annotated `@NullMarked`, and nullable types are marked `@Nullable`.
-- **Dependencies:** the Maven Enforcer bans some dependencies (see the root `pom.xml`) and requires dependency convergence. Test libraries must stay in test scope.
+- **Dependencies:** the Maven Enforcer bans some dependencies (see the root `pom.xml`) and requires dependency convergence. Test libraries must stay in test scope (except `synapse-test` and the `synapse-test-<plugin>` slices).
 - **Tests:**
   - Unit tests (`*Test`, surefire) and integration tests (`*IT`, failsafe) are never skipped. Pull requests run all of them on JDK 25, and unit tests plus each module's smoke integration tests on JDK 21; the full JDK 21 run is nightly. Oracle and SQL Server integration tests run nightly, on release, and on PRs that change those modules.
   - Every module with integration tests tags at least one of them `@Tag("smoke")` (keep them fast); those are the ones the JDK 21 pull request leg runs (`-Dsynapse.it.groups=smoke`).
@@ -82,6 +82,7 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 | `core/synapse-core` | Protocol-agnostic core |
 | `core/synapse-test` | Test support: `SynapseOperations`, `@SynapseOperationTest`, architecture rules, AOT assertions |
 | `core/synapse-logging-log4j2` | Prescriptive Log4j2 logging: ECS JSON default, optional failure-log burst limit |
+| `api/` | API plugins and their test slices (synapse-api-rest, synapse-test-rest) |
 | `docs/` | Documentation site (Antora, AsciiDoc); property tables are generated from configuration metadata |
 | `tests/` | Tests of the build itself (maven-invoker projects for the Enforcer rules); never published |
 | `specs/` | Design specifications |

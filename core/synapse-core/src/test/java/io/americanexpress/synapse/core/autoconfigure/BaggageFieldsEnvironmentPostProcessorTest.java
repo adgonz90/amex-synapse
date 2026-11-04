@@ -28,7 +28,10 @@ import org.springframework.core.env.SimpleCommandLinePropertySource;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.io.support.SpringFactoriesLoader;
 
+import io.americanexpress.synapse.core.SynapseConfigurationException;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BaggageFieldsEnvironmentPostProcessorTest {
 
@@ -107,6 +110,108 @@ class BaggageFieldsEnvironmentPostProcessorTest {
                 .load(EnvironmentPostProcessor.class, null, (type, name, failure) -> {
                 }))
                 .anyMatch(BaggageFieldsEnvironmentPostProcessor.class::isInstance);
+    }
+
+    @Test
+    void rejectsRestAttributeNamedCorrelationId() {
+        userProperties(Map.of("synapse.api.rest.context.headers.correlationId", "X-Corr"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class,
+                        ex -> assertThat(ex.description())
+                                .contains("synapse.api.rest.context.headers", "reserved"));
+    }
+
+    @Test
+    void rejectsGrpcAttributeNamedCorrelationId() {
+        userProperties(Map.of("synapse.api.grpc.context.metadata.correlationId", "x-corr"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class,
+                        ex -> assertThat(ex.description())
+                                .contains("synapse.api.grpc.context.metadata", "reserved"));
+    }
+
+    @Test
+    void rejectsReservedNameInAnyCase() {
+        userProperties(Map.of("synapse.api.rest.context.headers.correlationid", "X-Corr"));
+        assertThatThrownBy(this::process).isInstanceOf(SynapseConfigurationException.class);
+    }
+
+    @Test
+    void rejectsDefaultCorrelationHeaderThatIsAlsoARemoteField() {
+        userProperties(Map.of(REMOTE_FIELDS, "region,x-correlation-id"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description())
+                            .contains("synapse.correlation.header", REMOTE_FIELDS, "X-Correlation-Id",
+                                    "x-correlation-id");
+                    assertThat(ex.action()).contains("Rename");
+                });
+    }
+
+    @Test
+    void rejectsConfiguredCorrelationHeaderThatIsAlsoARemoteField() {
+        userProperties(Map.of("synapse.correlation.header", "Request-Id", REMOTE_FIELDS, "REQUEST-ID"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class,
+                        ex -> assertThat(ex.description()).contains("synapse.correlation.header", REMOTE_FIELDS));
+    }
+
+    @Test
+    void rejectsCorrelationHeaderThatIsAlsoARestAttributeName() {
+        userProperties(Map
+                .of("synapse.correlation.header", "tenant", "synapse.api.rest.context.headers.Tenant",
+                        "X-Tenant"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description())
+                            .contains("synapse.correlation.header", "synapse.api.rest.context.headers");
+                    assertThat(ex.action()).contains("Rename");
+                });
+    }
+
+    @Test
+    void rejectsCorrelationHeaderThatIsAlsoAGrpcAttributeName() {
+        userProperties(Map
+                .of("synapse.correlation.header", "channel", "synapse.api.grpc.context.metadata.channel",
+                        "x-channel"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class,
+                        ex -> assertThat(ex.description())
+                                .contains("synapse.correlation.header", "synapse.api.grpc.context.metadata"));
+    }
+
+    @Test
+    void rejectsCorrelationHeaderNamedAfterTheCorrelationField() {
+        userProperties(Map.of("synapse.correlation.header", "CorrelationId"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description()).contains("synapse.correlation.header", "correlationId");
+                    assertThat(ex.action()).contains("synapse.correlation.header");
+                });
+    }
+
+    @Test
+    void rejectsCorrelationHeaderThatIsAPropagationHeader() {
+        for (String header : List.of("TraceParent", "baggage", "x-b3-traceid")) {
+            environment.getPropertySources().remove("user");
+            userProperties(Map.of("synapse.correlation.header", header));
+            assertThatThrownBy(this::process)
+                    .as(header)
+                    .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                        assertThat(ex.description()).contains("synapse.correlation.header", header);
+                        assertThat(ex.action()).contains("synapse.correlation.header");
+                    });
+        }
+    }
+
+    @Test
+    void acceptsCorrelationHeaderThatIsNotABaggageField() {
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put(REMOTE_FIELDS, "region");
+        user.put("synapse.api.rest.context.headers.tenant", "X-Correlation-Id-Not");
+        userProperties(user);
+        process();
+        assertThat(list(REMOTE_FIELDS)).containsExactly("region", "correlationId", "tenant");
     }
 
     private void userProperties(Map<String, Object> properties) {
