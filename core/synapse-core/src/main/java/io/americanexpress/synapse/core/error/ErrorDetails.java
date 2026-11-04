@@ -1,0 +1,43 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package io.americanexpress.synapse.core.error;
+
+/**
+ * Describes one kind of failure: a stable code, a message template and a category. Services implement it, usually with
+ * an enum, to define their own error codes.
+ */
+public interface ErrorDetails {
+
+    /**
+     * Returns the stable, machine-readable code that identifies this error.
+     *
+     * @return the code
+     */
+    String code();
+
+    /**
+     * Returns the message template, in {@link java.text.MessageFormat} syntax. Arguments are converted with
+     * {@link String#valueOf(Object)} before formatting.
+     *
+     * @return the template
+     */
+    String messageTemplate();
+
+    /**
+     * Returns the category that API plugins map to a protocol status.
+     *
+     * @return the category
+     */
+    ErrorCategory category();
+}

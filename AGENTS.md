@@ -19,6 +19,8 @@ instead of deciding.
 | `main` | Synapse 2 (in development). Spring Boot 4.1, built with JDK 25, `--release 21` | All new work. Short-lived `feature/*` / `fix/*` branches, merged by pull request. |
 | `develop` | Synapse 0.4.x (v1), Spring Boot 3.5, JDK 21 | Maintenance only: security (CVE) fixes. CircleCI. |
 
+Synapse 2 work happens only on `main`. Don't change `develop`: its security fixes are handled separately.
+
 Check which branch you are on before editing. Everything below describes `main`.
 
 ## Build and test
@@ -41,8 +43,8 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 - **Static analysis:** Error Prone and NullAway (JSpecify mode). Every package has a `package-info.java` annotated `@NullMarked`, and nullable types are marked `@Nullable`.
 - **Dependencies:** the Maven Enforcer bans some dependencies (see the root `pom.xml`) and requires dependency convergence. Test libraries must stay in test scope.
 - **Tests:**
-  - Unit tests (`*Test`, surefire) and integration tests (`*IT`, failsafe) are never skipped. Pull requests run all of them on JDK 25, and unit tests plus one smoke integration test per module on JDK 21; the full JDK 21 run is nightly. Oracle and SQL Server integration tests run nightly, on release, and on PRs that change those modules.
-  - Every module with integration tests tags one of them `@Tag("smoke")`; that is the one the JDK 21 pull request leg runs (`-Dsynapse.it.groups=smoke`).
+  - Unit tests (`*Test`, surefire) and integration tests (`*IT`, failsafe) are never skipped. Pull requests run all of them on JDK 25, and unit tests plus each module's smoke integration tests on JDK 21; the full JDK 21 run is nightly. Oracle and SQL Server integration tests run nightly, on release, and on PRs that change those modules.
+  - Every module with integration tests tags at least one of them `@Tag("smoke")` (keep them fast); those are the ones the JDK 21 pull request leg runs (`-Dsynapse.it.groups=smoke`).
   - `-DskipTests` also skips the coverage gate (there is no execution data), so a build with it is not a passing build.
   - Per-module JaCoCo floor: 80% line / 70% branch.
   - Pull requests must cover at least 90% of the lines they change.
@@ -64,7 +66,7 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
   - Operation and business code (`ServiceOperation`/`BusinessOperation` beans and their models) never imports protocol code (servlet, gRPC, GraphQL, Synapse API plugins). In consumer projects, protocol bindings live in the service module's `api.<protocol>` packages. Business code never calls operations and never uses the service's own models, except its events and the contract models of the services it calls (see BUILD.md, *Layering rules*).
   - Protocol concerns, such as HTTP status codes, live only in API plugins.
 - **Logging:** SLF4J API only. Library code never chooses a logging backend. The prescriptive default, synchronous Log4j2 (`synapse-logging-log4j2`), is managed by `synapse-parent` and declared only by consumers' bootable `service-*` modules.
-- **Errors:** never expose stack traces, exception class names or internal messages to callers. Error detail is hidden unless `synapse.errors.include-detail=true`.
+- **Errors:** never expose stack traces, exception class names or internal messages to callers. Error detail is shown outside production and hidden in production (a run with no active profile counts as production); an explicit `synapse.errors.include-detail` always wins.
 - **Java:** the code must compile with `--release 21`, so don't use Java 22+ APIs. Prefer records for data carriers.
 - **Bug fixes** start with a failing test that reproduces the bug.
 - **Dependency versions** are managed in the root `pom.xml`. Overriding a version that Spring Boot manages is allowed only as a documented CVE pin, with a removal condition and the advisory ID.
@@ -78,6 +80,8 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 | `bom/synapse-bom` | Bill of materials for consumers (does not import Spring Boot's BOM) |
 | `parent/synapse-parent` | Parent POM for consumer applications (extends `spring-boot-starter-parent`) |
 | `core/synapse-core` | Protocol-agnostic core |
+| `core/synapse-test` | Test support: `SynapseOperations`, `@SynapseOperationTest`, architecture rules, AOT assertions |
+| `core/synapse-logging-log4j2` | Prescriptive Log4j2 logging: ECS JSON default, optional failure-log burst limit |
 | `docs/` | Documentation site (Antora, AsciiDoc); property tables are generated from configuration metadata |
 | `tests/` | Tests of the build itself (maven-invoker projects for the Enforcer rules); never published |
 | `specs/` | Design specifications |

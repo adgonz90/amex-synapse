@@ -60,6 +60,8 @@
         <module>bom/synapse-bom</module>
         <module>parent/synapse-parent</module>
         <module>core/synapse-core</module>
+        <module>core/synapse-test</module>
+        <module>core/synapse-logging-log4j2</module>
         <!-- Build-rule tests; never published. -->
         <module>tests/synapse-build-rules-tests</module>
     </modules>
@@ -125,6 +127,9 @@
         <spotless-maven-plugin.version>3.10.4</spotless-maven-plugin.version>
         <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
         <maven-invoker-plugin.version>3.10.1</maven-invoker-plugin.version>
+
+        <!-- Architecture rules for consumers (synapse-test, archunit support); not managed by Spring Boot. -->
+        <archunit.version>1.5.1</archunit.version>
     </properties>
 
     <dependencyManagement>
@@ -134,6 +139,21 @@
                 <groupId>io.americanexpress.synapse</groupId>
                 <artifactId>synapse-core</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-logging-log4j2</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit-junit5</artifactId>
+                <version>${archunit.version}</version>
             </dependency>
 
             <dependency>
@@ -416,6 +436,36 @@
                         </licenseHeader>
                     </java>
                 </configuration>
+            </plugin>
+            <!--
+                Spotless never checks the license header of package-info.java or module-info.java (the step skips
+                them by file name, whatever the delimiter), so this check covers those two files.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>license-header-package-info</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <fileset id="without-license-header" dir="${project.basedir}/src" erroronmissingdir="false">
+                                    <include name="**/package-info.java"/>
+                                    <include name="**/module-info.java"/>
+                                    <not>
+                                        <contains text="Licensed under the Apache License, Version 2.0"/>
+                                    </not>
+                                </fileset>
+                                <pathconvert property="files-without-license-header" refid="without-license-header" pathsep="${line.separator}" setonempty="false"/>
+                                <fail if="files-without-license-header" message="Missing license header (Spotless does not check package-info.java or module-info.java); copy .config/license-header.txt into:${line.separator}${files-without-license-header}"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

@@ -1,0 +1,230 @@
+= Testing
+
+`synapse-test` is added in `test` scope. It runs the real pipeline in tests.
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+== SynapseOperations.invoke
+
+Runs an operation (or a `BusinessOperation`) through the pipeline around a plain instance, with no Spring context.
+Validation, deadline and exception translation apply. As in the application, a `ConstraintViolationException` thrown
+by the operation or a collaborator becomes `VALIDATION_FAILED`; translators added with `translator(...)` are tried after
+that, in the order added. A lambda, anonymous, record or final operation class is rejected with an
+`IllegalArgumentException` that gives the reason.
+
+[source,java]
+----
+Book book = SynapseOperations.invoke(new GetBookOperation(books), new GetBookRequest("1"));
+
+OperationInvoker invoker = SynapseOperations.with()
+        .clock(clock)
+        .translator(new MyTranslator())
+        .maxPageSize(50)
+        .invoker();
+----
+
+== RequestContexts
+
+Opens a context as an inbound edge does, with the production limits (16 entries, 4KB, 128-character ids). Attributes
+keep the order they were added in, and the ones past the limits are dropped. It is closed afterwards, also on failure.
+
+[source,java]
+----
+RequestContexts.with()
+        .correlationId("c-9")
+        .attribute("tenant", "acme")
+        .deadline(clock.instant().plusSeconds(5))
+        .run(() -> SynapseOperations.invoke(operation, input));
+----
+
+== assertThatSynapseException
+
+[source,java]
+----
+import static io.americanexpress.synapse.test.assertj.SynapseAssertions.assertThatSynapseException;
+
+assertThatSynapseException(() -> SynapseOperations.invoke(operation, new CreateBookRequest("")))
+        .hasCode(SynapseErrors.VALIDATION_FAILED)
+        .hasCategory(ErrorCategory.INVALID_INPUT)
+        .hasViolation("title");
+----
+
+`hasViolation(field, message)` also checks the message.
+
+== @SynapseOperationTest
+
+A slice that starts only operation and business beans with the real pipeline: validation, observation, tracing,
+translation and context. It has no web server, binding, data store or other component. It includes the OpenTelemetry
+bridge (no exporters), so the tracing requirement is met, and the transaction auto-configuration when it is on the
+classpath. Replace collaborators with `@MockitoBean` or a `@TestConfiguration`. The `test` profile is active and a
+`MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you define a `Clock`.
+
+The slice finds operation and business beans by type (`ServiceOperation`, `BusinessOperation`), not by package. A
+business helper bean that isn't a `BusinessOperation` (a strategy, mapper, validator or listener in the `business`
+package) is not in the slice: a test replaces it with `@MockitoBean` or adds it with `@Import(Helper.class)`.
+
+An operation or business bean can itself be replaced with `@MockitoBean` or `@TestBean`. The double is used as it is,
+without the pipeline (no validation, observation or translation of its own calls); the other operations still run
+through the pipeline when they call it. `@MockitoSpyBean` keeps the pipeline.
+
+Spring's test context cache shares one context, and so one `MutableClock` bean, between the test classes that have the
+same configuration. A class that advances the clock leaves it advanced for the next class, so set the instant a test
+depends on with `clock.set(...)` (for example in a `@BeforeEach` method) instead of relying on the initial one.
+
+[source,java]
+----
+@SynapseOperationTest
+class GetBookOperationTest {
+
+    @Autowired GetBookOperation operation;
+    @MockitoBean BookRepository books;
+
+    @Test
+    void failsWhenMissing() {
+        assertThatSynapseException(() -> operation.execute(new GetBookRequest("9")))
+                .hasCode(BookErrors.BOOK_NOT_FOUND);
+    }
+}
+----
+
+== MutableClock
+
+[source,java]
+----
+MutableClock clock = MutableClock.at("2026-01-01T00:00:00Z");
+clock.advance(Duration.ofMinutes(5));
+clock.set(Instant.parse("2026-02-01T00:00:00Z"));
+----
+
+Always UTC and thread-safe. `withZone` returns a view that shares the instant.
+
+== JsonFixtures
+
+[source,java]
+----
+Book book = JsonFixtures.standard().read("fixtures/book.json", Book.class);
+String text = JsonFixtures.of(myMapper).text("fixtures/book.json");
+----
+
+Reads from the test classpath with a Jackson 3 `JsonMapper`.
+
+== SynapseArchitecture
+
+[source,java]
+----
+@Test
+void followsSynapseArchitecture() {
+    SynapseArchitecture.forApplication(BooksApplication.class).check();
+}
+----
+
+`forApplication` takes the package of the application class as the root. A module without an application class, such
+as a shared `business-<name>` module, names its roots: `SynapseArchitecture.forRoots("com.acme.pricing")`. `check()`
+imports the classes under the roots from the class path, without test classes; `check(classes)` checks classes you
+imported yourself.
+
+A service lists the roots of the `business-`, `client-`, `data-` and `publisher-` modules it uses next to its own, for
+example `SynapseArchitecture.forRoots("com.acme.books", "com.acme.pricing")`; `check()` imports them from their jars.
+Calls into a module whose root isn't listed are not checked. A module's classes are layer code only when they sit under
+`<root>.<layer>..`, for example `com.acme.pricing.business`.
+
+`DO_NOT_INCLUDE_TESTS` excludes test class directories only: a sibling module's `-tests.jar` resolved from `~/.m2` is
+imported as application code.
+
+Rules (each a constant on `SynapseArchitecture`):
+
+* `PROTOCOL_FREE`: operation, model, business and contract packages do not import Spring Web or HTTP, Servlet, gRPC,
+  GraphQL, protobuf, Kafka or `io.americanexpress.synapse.api..`. The layer is the first package segment below the
+  root, so `client` and `api` models may use protocol types. Classes generated from `.proto` (including protoc's outer
+  class) are exempt.
+* `CALL_DIRECTIONS`: an allow-list of the layers each layer may depend on (the table below): `api -> operation`;
+  `operation -> business | client | data | publisher` (and other operations); `business -> business | client | data |
+  publisher`. It is made of one rule per target layer, each of which can be left out on its own: `NOTHING_CALLS_API`,
+  `ONLY_API_AND_OPERATIONS_CALL_OPERATIONS`, `ONLY_OPERATIONS_AND_BUSINESS_CALL_BUSINESS`,
+  `ONLY_OPERATIONS_AND_BUSINESS_CALL_CLIENTS`, `ONLY_OPERATIONS_AND_BUSINESS_CALL_DATA`,
+  `ONLY_OPERATIONS_AND_BUSINESS_CALL_PUBLISHERS` and `ONLY_API_OPERATIONS_AND_BUSINESS_USE_THE_SERVICE_MODEL`.
+* `BUSINESS_DOES_NOT_USE_SERVICE_MODEL`: business code does not use the service's `model` except `model.event`.
+* `OPERATIONS_CALL_BUSINESS_THROUGH_CONTRACT`: operations use business code only through types that implement
+  `BusinessOperation`, and call only their `execute` method. An operation may not depend on a business Spring bean,
+  interface or abstract class that isn't a `BusinessOperation`. Business values are used directly: records, enums,
+  exceptions, sealed types (such as a sealed result), annotation types and every non-bean type in `business.model`.
+  An operation calls no `execute` overload (only `execute(I)`), constructs no business code other than business values
+  (`new PriceBook()` or `PriceBook::new` fails: inject the `BusinessOperation`), and calls no static method of another
+  concrete business class; a static call whose business callee ArchUnit cannot resolve (its class is not in the imported
+  set) is not flagged. An operation can construct only business values (records, enums, exceptions and `business.model`
+  types): a non-record builder or helper in `business` cannot be constructed by an operation. Code used only inside the
+  business layer (helpers, strategies, mappers, validators, listeners, configuration) needn't implement
+  `BusinessOperation`.
+* `NO_ENTITIES_IN_OPERATION_SIGNATURES`: no `@Entity`, `@Document`, `@Table` or Synapse data type as input or output.
+* `NO_SYNAPSE_INTERNALS`: no `..internal..` imports.
+* `NULL_MARKED_MODELS`: operation, model, business and contract packages, and every `..model..` package, are
+  `@NullMarked`.
+
+Call directions (row: the layer of the class; column: the layer it may depend on; "no layer" is a class under the root
+but in no layer, such as configuration):
+
+[cols="2,1,1,1,1,1,1,1,1"]
+|===
+| | api | operation | business | client | data | publisher | model | contract
+
+| api | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓
+| operation | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓
+| business | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | `model.event` ^1^ | ✓
+| client | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓
+| data | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓
+| publisher | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | `model.event` | ✓
+| model | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓
+| contract | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓
+| no layer | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓
+|===
+
+^1^ `CALL_DIRECTIONS` allows business code to use the model layer; `BUSINESS_DOES_NOT_USE_SERVICE_MODEL` narrows it to
+`model.event`.
+
+Only classes under the roots are checked. A class's layer is the first package segment below its root, when it is one
+of the exact, singular segments `api`, `operation`, `model`, `business`, `contract`, `client`, `data` or `publisher`:
+with the root `com.acme.books`, `com.acme.books.business.model` is in the business layer and `com.acme.books.config`
+is in no layer. Plural names are not layers. The root may itself contain a layer name: with the root
+`com.acme.data.orders`, `com.acme.data.orders.operation` is the operation layer. When roots are nested, a class
+belongs to the most specific one. Several roots are checked as one application. A dependency on a class outside the
+roots, such as a third-party `..api..` or `..model..` package or Synapse itself, is never a dependency on a layer.
+Classes that Spring generates are not checked: Spring AOT's classes (annotated `@Generated`, for example
+`BooksApplication__BeanFactoryRegistrations` after `process-aot`) and CGLIB subclasses (`..$$SpringCGLIB$$..`).
+`check` fails when no class under one of the roots was imported, so a mistyped root cannot pass.
+
+Classes in no layer (such as `config`, `util` or `common`) are not checked by `PROTOCOL_FREE`, and every layer may use
+them; the rules check direct dependencies only, so a call that goes through such a class is not checked. Configuration
+that wires api beans belongs under `api.<protocol>`, because no other class may depend on the api layer.
+
+Leave a rule out only with a reason:
+
+[source,java]
+----
+SynapseArchitecture.forApplication(BooksApplication.class)
+        .except(SynapseArchitecture.PROTOCOL_FREE, "legacy adapter, removed in 3.2")
+        .check();
+----
+
+Leaving out `CALL_DIRECTIONS` leaves out all of its parts. To keep the others, leave out only one direction, for
+example `except(SynapseArchitecture.ONLY_OPERATIONS_AND_BUSINESS_CALL_BUSINESS, "LegacyFeeAdapter, removed in 3.2")`.
+
+`asArchRule()` returns the set as one rule for an `@ArchTest` field.
+
+== AOT assertions
+
+[source,java]
+----
+SynapseAotAssertions.assertThatHints(new MyRuntimeHints())
+        .registersReflection(BookRequest.class)
+        .registersResource("META-INF/services/io.micrometer.context.ThreadLocalAccessor");
+----
+
+Also `registersReflection(type, categories...)` and `registersJdkProxy(interfaces...)`. A failure names the missing
+hint.

@@ -1,0 +1,106 @@
+= Log4j2 logging
+
+`synapse-logging-log4j2` is Synapse's prescriptive logging setup. Library modules use only the SLF4J API; this is the
+one module that brings a backend, and only your bootable service module declares it.
+
+== Add the module
+
+Exclude `spring-boot-starter-logging` from the service module (Logback must be absent), then add the module:
+
+[source,xml]
+----
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-web</artifactId>
+  <exclusions>
+    <exclusion>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-logging</artifactId>
+    </exclusion>
+  </exclusions>
+</dependency>
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-logging-log4j2</artifactId>
+</dependency>
+----
+
+Repeat the exclusion on every starter that pulls the logging starter, including `spring-boot-starter-test`: it depends
+on `spring-boot-starter`, which brings Logback back to the test classpath.
+
+[source,xml]
+----
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-test</artifactId>
+  <scope>test</scope>
+  <exclusions>
+    <exclusion>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-logging</artifactId>
+    </exclusion>
+  </exclusions>
+</dependency>
+----
+
+Startup fails with a clear message when Logback is still on the classpath, because Boot would pick Logback and ignore
+Log4j2.
+
+The module ships no Log4j2 configuration file, so it never overrides yours.
+
+== ECS JSON by default
+
+Console output uses Boot's structured logging in the Elastic Common Schema format. The module sets
+`logging.structured.format.console=ecs` at the lowest precedence: anything you set in application properties or with
+`SpringApplication.setDefaultProperties` wins. In Boot 4.1 the level is nested (`"log":{"level":"ERROR"}`) and
+`correlationId` is a top-level field.
+
+== Burst limit on failure logs
+
+Off by default. Set both properties to limit the failure lines of operations:
+
+[source,properties]
+----
+synapse.logging.failure-burst.rate=10
+synapse.logging.failure-burst.max-burst=50
+----
+
+`rate` is the events per second sustained once the burst is used up; `max-burst` is how many events are logged back
+to back first. Both or neither; both must be greater than 0, or startup fails. The limit is a Log4j2 `BurstFilter` on
+the logger `io.americanexpress.synapse.operation` at level ERROR, which limits ERROR and less severe events (WARN
+lines for client errors and ERROR lines for internal failures). Only FATAL is never dropped. It replaces any
+`BurstFilter` already configured on that logger. Payload logs are on `io.americanexpress.synapse.payload`, outside
+that logger, so they are never limited and never use up the failure budget.
+
+== Async logging (opt-in)
+
+Logging is synchronous by default. For asynchronous loggers, add the LMAX Disruptor and set the Log4j2 context
+selector:
+
+[source,xml]
+----
+<dependency>
+  <groupId>com.lmax</groupId>
+  <artifactId>disruptor</artifactId>
+  <version>4.0.0</version>
+  <scope>runtime</scope>
+</dependency>
+----
+
+[source,text]
+----
+-Dlog4j2.contextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector
+----
+
+The property can also go in `log4j2.component.properties` at the classpath root. Spring Boot does not manage the
+Disruptor version, so declare it yourself. `BasicAsyncLoggerContextSelector` creates one context for the whole JVM
+instead of one per class loader.
+
+// Source: https://logging.apache.org/log4j/2.x/manual/async.html (fetched 2026-11-02). The page is unversioned (its
+// links point at the 2.25.3 branch); Boot 4.1.2 manages Log4j 2.25.5. It names the property log4j2.contextSelector with
+// AsyncLoggerContextSelector and BasicAsyncLoggerContextSelector, and com.lmax:disruptor:4.0.0 (runtime scope).
+
+== Configuration
+
+The `synapse.logging.failure-burst.*` properties are in the
+xref:reference/configuration-properties.adoc[property reference].

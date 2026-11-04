@@ -13,14 +13,68 @@
  */
 package io.americanexpress.synapse.core.autoconfigure;
 
+import java.time.Clock;
+import java.util.Arrays;
+
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
+import tools.jackson.databind.json.JsonMapper;
+
+import io.americanexpress.synapse.core.environment.SynapseEnvironment;
+import io.americanexpress.synapse.core.masking.LogMasking;
 
 /**
- * Auto-configuration for the Synapse core. Registered in
+ * Auto-configuration for the Synapse core: its properties, the application {@link Clock}, the
+ * {@link SynapseEnvironment} and the {@link LogMasking}. Registered in
  * {@code META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}.
  */
-@AutoConfiguration
-@EnableConfigurationProperties(SynapseErrorProperties.class)
+@AutoConfiguration(afterName = "org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration")
+@EnableConfigurationProperties({SynapseErrorProperties.class, SynapsePagingProperties.class,
+        SynapseEnvironmentProperties.class, SynapseObservabilityProperties.class, SynapseOperationsProperties.class})
 public class SynapseCoreAutoConfiguration {
+
+    /**
+     * The clock Synapse reads the time from, in UTC. Tests replace it with a fixed or mutable clock.
+     *
+     * @return the system clock in UTC
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    Clock clock() {
+        return Clock.systemUTC();
+    }
+
+    /**
+     * The environment, production unless a non-production profile is active.
+     *
+     * @param environment the Spring environment
+     * @param properties the environment properties
+     * @return the Synapse environment
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    SynapseEnvironment synapseEnvironment(Environment environment, SynapseEnvironmentProperties properties) {
+        return SynapseEnvironment
+                .fromProfiles(Arrays.asList(environment.getActiveProfiles()),
+                        properties.nonProductionProfiles());
+    }
+
+    /**
+     * Writes payloads for logs with {@code @Masked} members masked. It follows Boot's {@link JsonMapper} (naming
+     * strategy and other {@code spring.jackson.*} settings) when there is a single or primary one, without changing
+     * that mapper; otherwise it uses its own standard mapper.
+     *
+     * @param jsonMapper Boot's mapper, if there is a single or primary one
+     * @return the log masker
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    LogMasking logMasking(ObjectProvider<JsonMapper> jsonMapper) {
+        JsonMapper base = jsonMapper.getIfUnique();
+        return base != null ? new LogMasking(base) : LogMasking.standard();
+    }
 }

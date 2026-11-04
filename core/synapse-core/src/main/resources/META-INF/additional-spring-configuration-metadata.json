@@ -1,0 +1,11 @@
+{
+  "properties": [
+    {
+      "name": "synapse.operations.*.logging.payloads",
+      "type": "java.lang.Boolean",
+      "description": "Whether the operation's input and output are logged. Fields annotated with @Masked are masked. Replace * with the operation name, for example synapse.operations.get-book.logging.payloads.",
+      "sourceType": "io.americanexpress.synapse.core.autoconfigure.SynapseOperationsProperties$Logging",
+      "defaultValue": false
+    }
+  ]
+}

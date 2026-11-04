@@ -1,3 +1,7 @@
 * xref:index.adoc[Overview]
+* Guides
+** xref:core.adoc[Core]
+** xref:testing.adoc[Testing]
+** xref:logging-log4j2.adoc[Log4j2 logging]
 * Reference
 ** xref:reference/configuration-properties.adoc[Configuration properties]

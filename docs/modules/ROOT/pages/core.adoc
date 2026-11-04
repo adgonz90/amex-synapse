@@ -1,0 +1,265 @@
+= Core
+
+`synapse-core` is the protocol-agnostic core. You write operations; the invocation pipeline wraps each one, so
+every caller (an API plugin, a scheduled job, a test) gets the same behaviour.
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-core</artifactId>
+</dependency>
+----
+
+== Contracts and naming
+
+[cols="2,5",options="header"]
+|===
+|Type |Meaning
+|`QueryOperation<I, O>` |Reads, no state change. Safe to retry.
+|`CommandOperation<I, O>` |Changes state.
+|`BusinessOperation<I, O>` |Business logic called by operations. Never bound to a protocol.
+|`RequestContext` |Read-only view of the request being served: `RequestContext.current()` or `find()`.
+|===
+
+`ServiceOperation` is sealed: an operation is a `QueryOperation` or a `CommandOperation`, never both, and never also a
+`BusinessOperation`.
+
+Operation classes are named `<UseCase>Operation` (`GetBookOperation`); inputs are `<UseCase>Request`, outputs are
+nouns such as `Book`. The operation name is the class name without the `Operation` suffix, in kebab-case
+(`get-book`). `@OperationName("...")` overrides it (lower-case words joined by single hyphens), and
+`@OperationGroup("books")` groups operations. Business bean names follow the same rules and must be valid and
+unique. When two operations, or two business beans, have the same name, startup fails with a message that names both
+beans and both classes; rename one with `@OperationName`.
+
+[source,java]
+----
+@Component
+public class GetBookOperation implements QueryOperation<GetBookRequest, Book> {
+
+    @Override
+    public Book execute(GetBookRequest request) {
+        return books.find(request.id())
+                .orElseThrow(() -> new SynapseException(BookErrors.BOOK_NOT_FOUND, request.id()));
+    }
+}
+----
+
+Every operation and business bean is wrapped in a class-based (CGLIB) proxy, so it can be injected by its concrete
+class. Startup fails with a `SynapseConfigurationException` when a bean cannot be proxied: a final class, a record, a
+lambda or anonymous class, a final `execute` method, a duplicate or invalid name, or Spring auto-proxying turned off
+(`spring.aop.auto=false`). Scoped beans (`@RefreshScope`, `@RequestScope`) and lazy beans are supported; a lazy bean
+that is not valid fails on its first call instead of at startup.
+
+== The pipeline
+
+Steps for a `ServiceOperation`, outermost first:
+
+. *Observation* `synapse.operation`. Nested calls produce child observations.
+. *Context.* The current `RequestContext` is used; when there is none (a `@Scheduled` method, a runner, a direct
+  call) the pipeline opens one with a generated correlation id and no principal. Nested calls reuse it.
+. *In-flight tracking and admission* (outermost call only), see <<shutdown>>.
+. *Deadline.* If the deadline has passed, the call fails with `DEADLINE_EXCEEDED` without running.
+. *Validation* of the input: Jakarta Validation (skipped for types without constraints) and the paging rules for a
+  `PageQuery`. Failure is `VALIDATION_FAILED` with violations.
+. *Payload logging* (opt-in, DEBUG, masked).
+. *Execute.* A `@Transactional` boundary sits inside the Synapse advisor; Synapse never opens transactions.
+. *Translation.* A `SynapseException` passes through; other exceptions go through the `ExceptionTranslator` beans in
+  order, and anything left becomes `INTERNAL`. JVM `Error`s are never translated.
+. *Failure logging* by the outermost call on the thread only.
+
+A `BusinessOperation` gets a reduced pipeline: validation and a `synapse.business` observation. It has no context,
+deadline, translation or logging step, and exceptions propagate unchanged. Business beans never call operations.
+
+== Request context and inbound trust
+
+`RequestContext` carries the correlation id, the principal, the locale, an optional deadline and string attributes.
+It follows the request across threads (`@Async`, executors, virtual threads) through Micrometer context propagation,
+and Synapse registers a `ContextPropagatingTaskDecorator` that backs off if you define one. Inbound edges (API
+plugins, subscribers) set the context; operations and business code only read it.
+
+Attributes and baggage sent by callers are accepted by default, within hard limits:
+
+* `synapse.context.inbound.max-entries` (16) and `synapse.context.inbound.max-size` (4KB): excess is dropped and
+  logged.
+* `synapse.context.inbound.trusted=false` drops inbound context attributes in core. A public-facing service sets it.
+  Dropping inbound baggage and restarting the trace happen at each API plugin, which sees the raw request.
+
+WARNING: Never base a security decision (tenant, roles) on an attribute or on baggage. Callers control them. Use the
+verified principal.
+
+WARN lines for a replaced correlation id and for dropped entries are limited to one per minute per kind; the rest go
+to DEBUG.
+
+== Correlation id
+
+The id is read from the header named by `synapse.correlation.header` (`X-Correlation-Id`). It is accepted only if it
+is 1 to `synapse.correlation.max-length` (128) characters of `[A-Za-z0-9._:-]`; otherwise it is replaced with a new
+UUID and the original is logged once, sanitized and truncated. It is generated when absent. It is the baggage field and
+MDC key `correlationId` and a high-cardinality tag on the operation observation.
+
+== Deadlines
+
+A deadline is an `Instant` on the `RequestContext`. `RequestContext.remaining(clock)` returns the time left, never
+negative. The pipeline fails an expired call with `DEADLINE_EXCEEDED` before `execute`. Reading deadlines from
+protocol requests (the REST `Request-Timeout` header, gRPC deadlines) is done by the API plugins. Calls without a
+context (scheduled jobs) have no deadline.
+
+[#errors]
+== Errors
+
+Throw `new SynapseException(errorDetails, args...)`. Teams implement `ErrorDetails` with an enum
+(`code()`, `messageTemplate()`, `category()`). The message is formatted from the template with `MessageFormat`;
+arguments are converted with `String.valueOf` first, so `12345` prints as given. A `MessageSource` entry keyed by the
+code overrides the template; an entry that is exactly the code (what Spring returns with
+`spring.messages.use-code-as-default-message=true`) counts as no entry, so the template is used.
+
+`synapse.errors.include-detail` controls whether callers see the message. When it is unset, the message is shown
+outside production and hidden in production (`SynapseEnvironment.isProduction()`: production unless a profile listed
+in `synapse.environment.non-production-profiles` (default `dev,local,test`) is active). With no active profile the
+application is production, so the message is hidden until you activate a non-production profile. An explicit `true`
+or `false` always wins. Stack traces and class names are never exposed.
+
+Categories: `INVALID_INPUT`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `PRECONDITION_FAILED`,
+`RATE_LIMITED`, `UNAVAILABLE`, `TIMEOUT`, `INTERNAL`.
+
+The framework's own `SynapseErrors`:
+
+[cols="2,2,4",options="header"]
+|===
+|Code |Category |Message template
+|`MALFORMED_REQUEST` |`INVALID_INPUT` |The request is malformed
+|`VALIDATION_FAILED` |`INVALID_INPUT` |The request is invalid
+|`NOT_FOUND` |`NOT_FOUND` |The resource was not found
+|`UNAUTHENTICATED` |`UNAUTHENTICATED` |Authentication is required
+|`FORBIDDEN` |`FORBIDDEN` |Access is denied
+|`CONFLICT` |`CONFLICT` |The request conflicts with the current state of the resource
+|`PRECONDITION_FAILED` |`PRECONDITION_FAILED` |A precondition failed
+|`RATE_LIMITED` |`RATE_LIMITED` |Too many requests
+|`UNAVAILABLE` |`UNAVAILABLE` |The service is unavailable
+|`DEADLINE_EXCEEDED` |`TIMEOUT` |The deadline expired
+|`INTERNAL` |`INTERNAL` |An internal error occurred
+|===
+
+Register `ExceptionTranslator` beans to map exceptions of libraries you use. Modules contribute their own; core has
+no data or security dependency. `ConstraintViolationException` is translated to `VALIDATION_FAILED`.
+
+== Paging
+
+`PageQuery` is a cursor *or* an offset, a size and a sort list. The edge fills in the default size. The pipeline checks
+it (also as a `PageQuery` record component of the input): a cursor combined with an offset, a negative offset, or a
+size below 1 or above the cap fails as `VALIDATION_FAILED`. `PageResult<T>` holds the items, the next cursor, `hasNext`
+and an optional total. With Spring Data on the classpath, `SpringDataPages.from(Page)`, `from(Slice)` and
+`pageable(PageQuery)` convert (the `Pageable` is offset-based with an exact offset; a cursor query is rejected).
+
+Defaults: `synapse.paging.default-size` 20, `synapse.paging.max-size` 100.
+
+== Masking
+
+`@Masked` on a field, accessor or record component hides the value *in logs only*. It never changes API responses,
+outbound requests, events or persisted data. Types: `ALL` (every character becomes `*`), `FIXED_LENGTH` (`***`),
+`LAST_FOUR` (keeps the last four characters; masks everything when there are four or fewer). Masking counts code
+points. A masked object, collection, map or array is written as `"***"`.
+
+Payload logging is off. Turn it on per operation:
+
+[source,properties]
+----
+synapse.operations.get-book.logging.payloads=true
+----
+
+Input and output are then logged at DEBUG on `io.americanexpress.synapse.payload` (the logger must allow DEBUG),
+masked. It is a sibling of the failure logger `io.americanexpress.synapse.operation`, not a child, so settings and
+filters on the failure logger (such as the Log4j2 burst limit) never apply to payloads.
+
+Names under `synapse.operations` that match no operation bean are listed in one WARN at startup, since their settings
+have no effect. A misspelled key under a known name (for example `logging.payload`) is not reported: like any unknown
+Boot property, it is ignored.
+
+== Observability
+
+Every operation call is a Micrometer observation named `synapse.operation`:
+
+[cols="2,5",options="header"]
+|===
+|Tag |Value
+|`operation` |Operation name, such as `get-book`
+|`kind` |`query` or `command`
+|`outcome` |`success` or `error`
+|`error.category` |The `ErrorCategory`, or `none`
+|`error.code` |The error code, or `none`
+|`error.type` |OpenTelemetry's standard error key, with the same value as `error.code`
+|`correlation.id` |High cardinality: the correlation id
+|===
+
+A JVM `Error` (such as `StackOverflowError`) propagates untranslated; its observation is tagged
+`error.category=INTERNAL` and `error.code=ERROR` (and `error.type=ERROR`), so it is not counted as a translated
+`INTERNAL`.
+
+Business calls are `synapse.business` with the tags `business`, `outcome` and `error.type`. Business exceptions are
+not translated, so `error.type` is the code of a `SynapseException`, `ERROR` for a JVM `Error`, `_OTHER` (OpenTelemetry's
+fallback value) for any other exception, and `none` on success. `synapse.observability.business` is
+`spans` (default), `metrics` (a timer, no span) or `off`. Define an `OperationObservationConvention` bean to replace
+the default convention.
+
+== Logging
+
+Synapse logs through SLF4J and never picks a backend (see xref:logging-log4j2.adoc[Log4j2 logging]). Successful calls
+log nothing. A failing call logs one line, from the outermost call on the thread, on the logger
+`io.americanexpress.synapse.operation`: WARN for every category except `INTERNAL`, which is ERROR with the stack
+trace. `UNAVAILABLE` and `TIMEOUT` failures that carry a cause (a translated downstream fault, such as a connection
+pool timeout) are WARN with the cause's stack trace; without a cause (the pipeline's own drain rejection or deadline
+check) they are one line. The line carries the key-values `operation`, `error.code`, `error.category` and
+`correlationId`.
+
+== Tracing is required
+
+Operations carry their context as tracing baggage, so the service module needs the OpenTelemetry bridge
+(`spring-boot-starter-opentelemetry`). Startup fails with a clear message when operations exist and the only tracer is
+no-op, or `management.tracing.baggage.enabled=false`. OpenTelemetry is the supported bridge.
+
+* With the OpenTelemetry Java agent, keep the starter and define an `OpenTelemetry` bean that returns
+  `GlobalOpenTelemetry.get()`, so Boot's bridge uses the agent's SDK instead of starting a second one.
+* Spring Boot maps `OTEL_*` environment variables to its properties. `OTEL_PROPAGATORS` without `baggage` turns
+  baggage off, and the startup message then names that variable. Add `baggage` to it, or configure the agent with
+  `-Dotel.propagators` and set `management.opentelemetry.map-environment-variables=false`.
+* `synapse.observability.require-tracing=false` turns the check off. Startup then logs one INFO line if tracing cannot
+  carry the context; the correlation id and context attributes then reach neither the logs nor outbound calls. You can
+  also replace the check by defining a bean named `synapseTracingRequirementCheck`.
+
+Synapse adds `correlationId` and the attribute names bound under `synapse.api.rest.context.headers` and
+`synapse.api.grpc.context.metadata` to `management.tracing.baggage.remote-fields` and
+`management.tracing.baggage.correlation.fields` (your values are kept), because Boot's bridge reads those lists only
+from properties.
+
+[#shutdown]
+== Shutdown
+
+Phases (`SynapseLifecyclePhases`) stop from high to low, each bounded by `spring.lifecycle.timeout-per-shutdown-phase`:
+
+[cols="2,3",options="header"]
+|===
+|Phase |Stops
+|`INBOUND` |Inbound edges: no new requests
+|`DRAIN` |Waits for in-flight operations
+|`PUBLISHERS` |Publishers flush
+|`CLIENTS` |Outbound clients
+|`DATA_STORES` |Data stores (they start first)
+|===
+
+During the drain a call is rejected with `UNAVAILABLE` only when the pipeline must open a new context itself (such as
+a `@Scheduled` method). A call in an existing or inherited context (an admitted request fanning out to other threads)
+is admitted and awaited. Spring waits for the drain for at most `spring.lifecycle.timeout-per-shutdown-phase`; the
+drain thread itself gives up after 10 minutes if Spring has stopped waiting, so it never lingers.
+
+== Native image and AOT
+
+Core registers runtime hints for its context accessor service file and binding reflection hints for the input and
+output types of operations and business beans (generic arguments and arrays are unwrapped). The JVM AOT mode is
+tested; a native image build is not covered yet.
+
+== Configuration
+
+All properties are in the xref:reference/configuration-properties.adoc[property reference]. Core's are
+`synapse.context.*`, `synapse.correlation.*`, `synapse.errors.*`, `synapse.paging.*`, `synapse.environment.*`,
+`synapse.observability.*` and `synapse.operations.*`.

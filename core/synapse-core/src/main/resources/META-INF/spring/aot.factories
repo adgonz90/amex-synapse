@@ -1,0 +1,5 @@
+org.springframework.aot.hint.RuntimeHintsRegistrar=\
+io.americanexpress.synapse.core.internal.aot.SynapseCoreRuntimeHints
+
+org.springframework.beans.factory.aot.BeanRegistrationAotProcessor=\
+io.americanexpress.synapse.core.internal.aot.OperationTypesAotProcessor

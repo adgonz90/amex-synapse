@@ -13,9 +13,25 @@
  */
 package io.americanexpress.synapse.core.autoconfigure;
 
+import java.net.URI;
+import java.time.Clock;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.Map;
+
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import tools.jackson.databind.json.JsonMapper;
+
+import io.americanexpress.synapse.core.environment.SynapseEnvironment;
+import io.americanexpress.synapse.core.masking.LogMasking;
+import io.americanexpress.synapse.core.masking.Masked;
+import io.americanexpress.synapse.core.observability.BusinessObservation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,19 +40,173 @@ class SynapseCoreAutoConfigurationTest {
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(SynapseCoreAutoConfiguration.class));
 
-    @Test
-    void errorDetailIsHiddenByDefault() {
-        contextRunner.run(context -> {
+    @ParameterizedTest
+    @CsvSource({"'',,false", "dev,,true", "test,,true", "prod,,false", "dev,false,false", "'',true,true",
+            "prod,true,true"})
+    void errorDetailDefaultsByEnvironmentAndAnExplicitValueWins(String profiles, @Nullable Boolean explicit,
+            boolean included) {
+        ApplicationContextRunner runner = contextRunner.withPropertyValues("spring.profiles.active=" + profiles);
+        if (explicit != null) {
+            runner = runner.withPropertyValues("synapse.errors.include-detail=" + explicit);
+        }
+        runner.run(context -> {
             SynapseErrorProperties properties = context.getBean(SynapseErrorProperties.class);
-            assertThat(properties.includeDetail()).isFalse();
+            assertThat(properties.includeDetail()).isEqualTo(explicit);
+            assertThat(properties.includeDetail(context.getBean(SynapseEnvironment.class))).isEqualTo(included);
         });
     }
 
     @Test
-    void errorDetailCanBeEnabledWithProperty() {
-        contextRunner.withPropertyValues("synapse.errors.include-detail=true").run(context -> {
-            SynapseErrorProperties properties = context.getBean(SynapseErrorProperties.class);
-            assertThat(properties.includeDetail()).isTrue();
+    void bindsDefaults() {
+        contextRunner.run(context -> {
+            assertThat(context.getBean(SynapseErrorProperties.class).typeBaseUri()).isNull();
+            SynapsePagingProperties paging = context.getBean(SynapsePagingProperties.class);
+            assertThat(paging.defaultSize()).isEqualTo(20);
+            assertThat(paging.maxSize()).isEqualTo(100);
+            assertThat(context.getBean(SynapseEnvironmentProperties.class).nonProductionProfiles())
+                    .containsExactly("dev", "local", "test");
+            assertThat(context.getBean(SynapseObservabilityProperties.class).business())
+                    .isEqualTo(BusinessObservation.SPANS);
+            assertThat(context.getBean(SynapseObservabilityProperties.class).requireTracing()).isTrue();
+            assertThat(context.getBean(SynapseOperationsProperties.class).operations()).isEmpty();
+            assertThat(context.getBean(Clock.class).getZone()).isEqualTo(ZoneOffset.UTC);
+            assertThat(context.getBean(SynapseEnvironment.class).isProduction()).isTrue();
         });
+    }
+
+    @ParameterizedTest
+    @CsvSource({"'',true", "dev,false", "prod,true", "'prod,dev',false", "DEV,true"})
+    void productionUnlessANonProductionProfileIsActive(String profiles, boolean production) {
+        contextRunner
+                .withPropertyValues("spring.profiles.active=" + profiles)
+                .run(context -> assertThat(context.getBean(SynapseEnvironment.class).isProduction())
+                        .isEqualTo(production));
+    }
+
+    @Test
+    void nonProductionProfilesAreConfigurable() {
+        contextRunner
+                .withPropertyValues("spring.profiles.active=qa", "synapse.environment.non-production-profiles=qa")
+                .run(context -> assertThat(context.getBean(SynapseEnvironment.class).isProduction()).isFalse());
+    }
+
+    @Test
+    void pagingPropertiesRejectDefaultAboveMax() {
+        contextRunner.withPropertyValues("synapse.paging.default-size=200").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure())
+                    .rootCause()
+                    .hasMessageContaining("synapse.paging.default-size")
+                    .hasMessageContaining("synapse.paging.max-size");
+        });
+    }
+
+    @Test
+    void pagingPropertiesRejectDefaultBelowOne() {
+        contextRunner
+                .withPropertyValues("synapse.paging.default-size=0")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    @Test
+    void pagingPropertiesAcceptDefaultEqualToMax() {
+        contextRunner
+                .withPropertyValues("synapse.paging.default-size=50", "synapse.paging.max-size=50")
+                .run(context -> {
+                    SynapsePagingProperties paging = context.getBean(SynapsePagingProperties.class);
+                    assertThat(paging.defaultSize()).isEqualTo(50);
+                    assertThat(paging.maxSize()).isEqualTo(50);
+                });
+        contextRunner
+                .withPropertyValues("synapse.paging.default-size=1", "synapse.paging.max-size=1")
+                .run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
+    void bindsTypeBaseUri() {
+        contextRunner
+                .withPropertyValues("synapse.errors.type-base-uri=https://errors.example.com/")
+                .run(context -> assertThat(context.getBean(SynapseErrorProperties.class).typeBaseUri())
+                        .isEqualTo(URI.create("https://errors.example.com/")));
+    }
+
+    @Test
+    void bindsObservabilityAndOperations() {
+        contextRunner
+                .withPropertyValues("synapse.observability.business=metrics",
+                        "synapse.observability.require-tracing=false",
+                        "synapse.operations.get-book.logging.payloads=true",
+                        "synapse.operations.list-books.logging.payloads=false")
+                .run(context -> {
+                    assertThat(context.getBean(SynapseObservabilityProperties.class).business())
+                            .isEqualTo(BusinessObservation.METRICS);
+                    assertThat(context.getBean(SynapseObservabilityProperties.class).requireTracing()).isFalse();
+                    Map<String, SynapseOperationsProperties.Operation> operations = context
+                            .getBean(SynapseOperationsProperties.class)
+                            .operations();
+                    assertThat(operations).containsOnlyKeys("get-book", "list-books");
+                    assertThat(operations)
+                            .extractingByKeys("get-book", "list-books")
+                            .extracting(operation -> operation.logging().payloads())
+                            .containsExactly(true, false);
+                });
+    }
+
+    @Test
+    void backsOffToUserClockAndEnvironment() {
+        Clock clock = Clock.system(ZoneId.of("Europe/Paris"));
+        SynapseEnvironment environment = () -> false;
+        contextRunner
+                .withBean(Clock.class, () -> clock)
+                .withBean(SynapseEnvironment.class, () -> environment)
+                .run(context -> {
+                    assertThat(context.getBean(Clock.class)).isSameAs(clock);
+                    assertThat(context.getBean(SynapseEnvironment.class)).isSameAs(environment);
+                });
+    }
+
+    record Person(String firstName, @Masked String ssn) {
+    }
+
+    @Test
+    void logMaskingIsPresentWithoutAJsonMapper() {
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(LogMasking.class).doesNotHaveBean(JsonMapper.class);
+            assertThat(context.getBean(LogMasking.class).toJson(new Person("Ann", "123")))
+                    .isEqualTo("{\"firstName\":\"Ann\",\"ssn\":\"***\"}");
+        });
+    }
+
+    @Test
+    void logMaskingBacksOffToUserBean() {
+        LogMasking mine = LogMasking.standard();
+        contextRunner
+                .withBean(LogMasking.class, () -> mine)
+                .run(context -> assertThat(context.getBean(LogMasking.class)).isSameAs(mine));
+    }
+
+    @Test
+    void logMaskingUsesTheStandardMapperWhenTwoMappersHaveNoPrimary() {
+        contextRunner
+                .withBean("firstMapper", JsonMapper.class, () -> JsonMapper.builder().build())
+                .withBean("secondMapper", JsonMapper.class, () -> JsonMapper.builder().build())
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(LogMasking.class).toJson(new Person("Ann", "123")))
+                            .isEqualTo("{\"firstName\":\"Ann\",\"ssn\":\"***\"}");
+                });
+    }
+
+    @Test
+    void logMaskingUsesBootsMapperCustomizationsWithoutChangingIt() {
+        contextRunner
+                .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class))
+                .withPropertyValues("spring.jackson.property-naming-strategy=SNAKE_CASE")
+                .run(context -> {
+                    assertThat(context.getBean(LogMasking.class).toJson(new Person("Ann", "123")))
+                            .isEqualTo("{\"first_name\":\"Ann\",\"ssn\":\"***\"}");
+                    assertThat(context.getBean(JsonMapper.class).writeValueAsString(new Person("Ann", "123")))
+                            .isEqualTo("{\"first_name\":\"Ann\",\"ssn\":\"123\"}");
+                });
     }
 }

@@ -1,0 +1,7 @@
+# Environment Post Processors
+org.springframework.boot.EnvironmentPostProcessor=\
+io.americanexpress.synapse.logging.log4j2.Log4j2DefaultsEnvironmentPostProcessor
+
+# Application Listeners
+org.springframework.context.ApplicationListener=\
+io.americanexpress.synapse.logging.log4j2.FailureBurstLimitListener

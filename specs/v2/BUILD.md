@@ -41,7 +41,7 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-parent` | P0 | Consumer parent; extends `spring-boot-starter-parent`. Build conventions, image build, default logging (see *Consumer parent*). |
 | `synapse-core` | P1 | Contracts, invocation pipeline, `RequestContext`, errors, correlation, deadlines, JSON conventions, `@Masked`, `Clock`, observability contract, AOT hints. |
 | `synapse-test` | P1 | Test support: operation harness and slices, ArchUnit rules, Testcontainers definitions, fixtures, AOT hint assertions. |
-| `synapse-logging-log4j2` | P1 | Log4j2 backend for consumers (synchronous by default), structured JSON, `@Masked` redaction. |
+| `synapse-logging-log4j2` | P1 | Log4j2 backend for consumers (synchronous by default), structured JSON (ECS), optional failure-log burst limit. |
 | `synapse-api-rest` | P1 (XML codec and `BinaryContent` in P4) | REST plugin: `RestBindings`, problem+json, OpenAPI via springdoc, versioning, CORS, limits. |
 | `synapse-api-grpc` | P1 | gRPC plugin on Boot's gRPC server support. |
 | `synapse-data-jpa`, `synapse-data-jdbc` | P1 | Shared data behaviour: named stores, auditing, ids, error translation, migrations per store. |
@@ -138,7 +138,8 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 - A gate diffs each module's `spring-configuration-metadata.json` against the last release: a removed or renamed
   property must be kept as `@DeprecatedConfigurationProperty` with its replacement.
 - Deprecations happen in a minor; removal only in the next major.
-- `SynapseArchitecture.rules()` includes a rule that consumer code never imports `io.americanexpress.synapse..internal..`.
+- `SynapseArchitecture.forApplication(…)` includes a rule that consumer code never imports
+  `io.americanexpress.synapse..internal..`.
 
 ---
 
@@ -181,25 +182,52 @@ app-name/
   `contract-<name>` when it exists (the business code then uses the contract enum).
 
 ### 4.3 Layering rules
-Enforced at package level by ArchUnit rules shipped in `synapse-test` (`SynapseArchitecture.rules()`; each rule is
-also available individually). The archetype and reference app contain a one-line test that applies them. A team can
-exclude one rule only with a written reason: `SynapseArchitecture.rules().except(rule, "reason")`.
+Enforced at package level by ArchUnit rules shipped in `synapse-test` (`SynapseArchitecture.forApplication(App.class)`,
+or `forRoots("com.acme.pricing")` for a module without an application class). The root is explicit, never inferred: a
+layer is the first package segment below a root (`<root>.operation..`, `<root>.business..`), so a root such as
+`com.acme.data.orders` works. Only classes under the roots are checked, and a dependency on a class outside them is
+never a layer. The archetype and reference app contain a one-line test that applies them. A team can exclude one rule
+only with a written reason: `SynapseArchitecture.forApplication(App.class).except(rule, "reason")`.
 - **Protocol-free:** `operation..`, `model..`, `business..` and contract model packages never import
   `org.springframework.web..`, `org.springframework.http..`, `jakarta.servlet..`, `io.grpc..`, `graphql..`,
   `org.springframework.graphql..`, `com.google.protobuf..`, `org.apache.kafka..`, `org.springframework.kafka..` or
   `io.americanexpress.synapse.api..`. Classes generated from `.proto` are exempt.
 - **Call directions:** `api → operation`; `operation → business | client | data | publisher` (and other operations);
-  `business → business | client | data | publisher`.
+  `business → business | client | data | publisher`. This is an allow-list: every other edge between layers is
+  forbidden (matrix below). One rule per target layer, so a team can exclude one direction; `CALL_DIRECTIONS` is all
+  of them.
 - **Forbidden:** `business → operation | api`, and `business →` the service's own `model` package except
   `model.event..` / the contract's event package.
-- **Business beans use the contract:** every Spring bean in `business..` implements `BusinessOperation`. Non-bean
-  helpers, value objects and package-private classes are exempt.
+- **Operations call business code through the contract:** an operation depends on business code only through types
+  that implement `BusinessOperation`, and calls only their `execute`. A business Spring bean, interface or abstract
+  class that isn't a `BusinessOperation` is off limits to operations; business models (everything non-bean in
+  `business.model`), sealed results, error enums, exceptions, annotations and value objects are used directly. An
+  operation calls no `execute` overload, constructs no business code other than those values (`new PriceBook()`
+  bypasses the pipeline; a non-record builder or helper in `business` can't be constructed by an operation), and calls
+  no static method of another business class (a static call whose business callee ArchUnit can't resolve, because its
+  class is not in the imported set, is not flagged). Code used only inside the business layer (helpers, strategies,
+  mappers, validators, listeners, configuration) need not implement `BusinessOperation`.
 - **No entities in the API:** the input or output type of a bound operation is never a persistence entity
   (`@Entity`, `@Document`, `@Table` or a type implementing a Synapse data capability); also checked at startup.
 - **No Synapse internals:** consumer code never imports `..internal..`.
 - **Null-marked models:** `operation..`, `model..`, `business..` and contract packages are `@NullMarked` (the archetype
   generates their `package-info.java`). Binding checks, OpenAPI `required` lists and gRPC wrapper mapping read
   JSpecify nullness; in an unmarked package every component counts as nullable.
+
+Call-direction matrix (row: the layer of a class; column: a layer it may depend on). A layer may always use itself.
+Business → `model` is allowed here and narrowed to `model.event` by the *Forbidden* rule.
+
+| from \ may use | api | operation | business | client | data | publisher | model | contract |
+|---|---|---|---|---|---|---|---|---|
+| api | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| operation | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| business | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | `model.event` | ✓ |
+| client | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| data | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| publisher | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | `model.event` | ✓ |
+| model | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| contract | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| no layer (e.g. `config`) | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ---
 
@@ -211,7 +239,7 @@ exclude one rule only with a written reason: `SynapseArchitecture.rules().except
 | `ServiceOperation<I, O>` | `O execute(I input)`. **Sealed**: `permits QueryOperation, CommandOperation`. `I` and `O` are typically records. Returning `Optional<T>` means "may be absent"; `void`/`null` means no content. |
 | `QueryOperation<I, O>` | Non-sealed. Reads, no state change. Safe to retry; REST GET/HEAD and GraphQL `Query`. |
 | `CommandOperation<I, O>` | Non-sealed. Changes state. REST POST/PUT/PATCH/DELETE and GraphQL `Mutation`. |
-| `BusinessOperation<I, O>` | `O execute(I input)`. A separate interface, never bindable to a protocol (bindings reject it at startup). Mandatory for every Spring bean in a business package. |
+| `BusinessOperation<I, O>` | `O execute(I input)`. A separate interface, never bindable to a protocol (bindings reject it at startup). Mandatory for business logic that operations call: the only way an operation calls business code. |
 | `PublisherOperation<E>` | `void publish(E event)` blocks until the broker acknowledges; `CompletableFuture<Void> publishAsync(E event)`. Broker-neutral. |
 | `RequestContext` | Read-only view: correlation id, principal (verified identity, if any), locale, deadline (optional), string attributes. `RequestContext.current()`. Never contains servlet, gRPC or GraphQL types. |
 | `PageQuery`, `PageResult<T>` | `PageQuery`: cursor **or** offset, size, sort. `PageResult<T>`: items, next cursor, optional total. One-call conversion from Spring Data `Page`/`Slice`. |
@@ -250,13 +278,24 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 ### 5.3 Context propagation
 - **Tracing is required.** `synapse-core` depends on Boot's Micrometer Tracing module; service modules add the
   OpenTelemetry bridge (`spring-boot-starter-opentelemetry`, added by the archetype). Startup fails with a clear message
-  when no tracer is present or tracing/baggage is disabled while Synapse context is in use.
-- `RequestContext` is backed by the Micrometer/OpenTelemetry context. The correlation id and allow-listed attributes
-  are Boot baggage fields (`management.tracing.baggage.remote-fields` / `.correlation.fields`, contributed by Synapse
-  auto-configuration as beans/customizers, merged with the user's own fields). The principal, locale and deadline are
-  held in a Synapse value registered with Micrometer's context-propagation library (`ThreadLocalAccessor`). All of it
-  follows the request across threads; Synapse registers a `ContextPropagatingTaskDecorator` (backs off if the user
-  defines one).
+  when no tracer is present or tracing/baggage is disabled while Synapse context is in use. The message names the
+  cause: when baggage was turned off by `OTEL_PROPAGATORS` without `baggage` (Boot maps `OTEL_*` variables to
+  properties), it names that variable and the fix; with the OpenTelemetry Java agent, the app keeps the starter and
+  defines an `OpenTelemetry` bean returning `GlobalOpenTelemetry.get()`. `synapse.observability.require-tracing=false`
+  (default `true`) turns the check off (one INFO line if tracing cannot carry the context), and a bean named
+  `synapseTracingRequirementCheck` replaces it.
+- `RequestContext` reads one Synapse context value (correlation id, allow-listed attributes, principal, locale,
+  deadline) registered with Micrometer's context-propagation library (`ThreadLocalAccessor`). Whenever Synapse opens a
+  context (an inbound edge, or the pipeline when there is none), it opens tracing baggage for the correlation id and
+  the allow-listed attributes in the same scope, so propagation and MDC go through tracing. Those are Boot baggage
+  fields (`management.tracing.baggage.remote-fields` / `.correlation.fields`); Synapse merges its field names into the
+  user's lists at startup, because Boot's OpenTelemetry bridge reads them only from properties. The context value
+  keeps `RequestContext` working where baggage is a no-op (Boot's sliced tests use a no-op `Tracer`). OpenTelemetry is
+  the supported tracing bridge. All of it follows the request across threads; Synapse registers a
+  `ContextPropagatingTaskDecorator` (it backs off only if the user defines a `ContextPropagatingTaskDecorator` or turns
+  on Boot's `spring.task.execution.propagate-context`; other `TaskDecorator` beans are composed with it).
+  `RequestContext.toString()` shows the correlation id, locale, deadline, whether a principal is present and the
+  attribute names, never the principal or the attribute values, so logging the context leaks nothing.
 - Inbound edges (API plugins, subscribers) set the context; operations and business code only read it.
 - **Inbound trust:** allow-listed attributes (`synapse.api.rest.context.headers.<attribute>=<Header>`,
   `synapse.api.grpc.context.metadata.<attribute>=<key>`) and baggage are accepted by default, within hard limits
@@ -289,40 +328,55 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 - Synapse uses Boot's `JsonMapper` and customizes it only through Jackson 3 builder customizers. Naming and other
   Jackson settings use Boot's own properties (e.g. `spring.jackson.property-naming-strategy`). Client and publisher
   bindings may declare their own wire format (see *Clients*, *Publisher*).
-- `@Masked` (with maskers: all characters, fixed length, last four, national identifier, telephone, postal code)
-  redacts fields in **API responses** (inbound plugins serialize responses with a masking writer, not Boot's shared
-  mapper) and in **everything Synapse logs** (payload logging masks before it logs, so it works with any backend). It
-  never applies to outbound client requests, published events or persisted data.
+- `@Masked` (maskers: all characters, fixed length `***`, last four) redacts fields in **everything Synapse logs**
+  (payload logging masks before it logs, so it works with any backend). Applications can use the same masking for
+  their own log lines. It never applies to API responses, outbound client requests, published events or persisted
+  data. (v1's national-identifier, telephone and postal-code serializers formatted values and are not maskers; they
+  are not carried over.)
 
 ### 5.7 Observability
 - Micrometer Observation around every operation, binding, client call and Kafka record; export through Boot's own
   OpenTelemetry/OTLP support.
 - **Metric and span contract** (stable API): `synapse.operation` with low-cardinality tags `operation`, `kind`
-  (`query`/`command`), `outcome` (`success`/`error`), `error.category` and `error.code` (bounded by the error enums).
-  Business: `synapse.business` (tag `business`), controlled by `synapse.observability.business=spans|metrics|off`
-  (default `spans`).
+  (`query`/`command`), `outcome` (`success`/`error`), `error.category`, `error.code` and `error.type` (bounded by the
+  error enums; `error.type` is OpenTelemetry's standard key and equals `error.code`; all three are `none` on success).
+  A JVM `Error` propagates untranslated and is tagged `error.category=INTERNAL`, `error.code=ERROR`.
+  Business: `synapse.business` (tags `business`, `outcome` and `error.type`), controlled by
+  `synapse.observability.business=spans|metrics|off` (default `spans`). Business exceptions are not translated, so its
+  `error.type` is the `SynapseException` code, `ERROR` for a JVM `Error`, `_OTHER` for any other exception and `none`
+  on success. `outcome` stays beside `error.type` (revisit before GA).
 - Synapse enables Spring's `@Scheduled` observation (`tasks.scheduled.execution`) by registering the
   `ObservationRegistry`.
 - The docs recommend tail sampling in the collector (Boot samples 10% by default), so error traces are kept.
 
 ### 5.8 Logging
 - Synapse jars depend only on the SLF4J API and never choose a backend.
-- Operations: failures only. Client-error categories at WARN; `INTERNAL` at ERROR with the stack trace. Each line
-  carries operation, code, category and correlation id. Payload logging is opt-in per operation
-  (`synapse.operations.<operation-name>.logging.payloads=true`) at DEBUG with `@Masked` fields redacted.
-- `synapse-logging-log4j2`: Log4j2 2.x, **synchronous** by default, Boot structured JSON logging, a burst limit on
-  failure logs (masking is done by Synapse before logging, see *JSON and masking*). Async is opt-in (add `com.lmax:disruptor` and set one documented
-  property). It ships no configuration file that would override the application's.
+- Operations: failures only, on the logger `io.americanexpress.synapse.operation`. Client-error categories at WARN;
+  `INTERNAL` at ERROR with the stack trace. `UNAVAILABLE` and `TIMEOUT` log the cause's stack trace at WARN when the
+  failure has a cause (a translated downstream fault); Synapse's own drain rejection and deadline check have none and
+  stay one line. Each line carries operation, code, category and correlation id. Payload logging is opt-in per
+  operation (`synapse.operations.<operation-name>.logging.payloads=true`) at DEBUG with `@Masked` fields redacted,
+  on the logger `io.americanexpress.synapse.payload`, a sibling of the failure logger so failure-logger filters never
+  apply to payloads.
+- `synapse-logging-log4j2`: Log4j2 2.x, **synchronous** by default, Boot structured JSON logging (defaults
+  `logging.structured.format.console=ecs` at lowest precedence), an optional burst limit on failure logs (off unless
+  `synapse.logging.failure-burst.rate` and `.max-burst` are set; a Log4j2 `BurstFilter` at ERROR on the failure logger,
+  so WARN and ERROR failure lines are limited and FATAL never is). Masking is done by Synapse before logging (see *JSON
+  and masking*). Async is opt-in (add `com.lmax:disruptor` and set one documented property). It ships no
+  configuration file that would override the application's.
 
 ### 5.9 Inbound load and shutdown
 - **Concurrency limit:** every inbound plugin caps concurrent in-flight work (`synapse.api.rest.max-concurrent-requests`,
   `synapse.api.grpc.max-concurrent-calls`, `synapse.api.graphql.max-concurrent-requests`; Kafka is bounded by its
   concurrency). When full, it answers `UNAVAILABLE` (REST 503 with `Retry-After`) without running the operation.
   Defaults are sized in the P1 plan. (With virtual threads, Boot's thread-pool settings no longer limit concurrency.)
-- **Shutdown order** (each phase bounded by Boot's `spring.lifecycle.timeout-per-shutdown-phase`): stop inbound
+- **Shutdown order** (Spring waits for each phase at most `spring.lifecycle.timeout-per-shutdown-phase`): stop inbound
   (HTTP, gRPC, GraphQL, Kafka consumers, schedulers) → drain in-flight operations (the pipeline counts them) → flush
-  publishers (`publishAsync` futures) → close clients and pools. The docs give the Kubernetes formula (preStop delay
-  plus the phases < `terminationGracePeriodSeconds`).
+  publishers (`publishAsync` futures) → close clients and pools. The drain thread itself waits at most 10 minutes, so a
+  phase Spring has stopped waiting for does not leave it waiting forever. During the drain the pipeline rejects with
+  `UNAVAILABLE` only an outermost call that finds no `RequestContext` (a `@Scheduled` method or runner); a call in an
+  existing or inherited context (an admitted request fanning out to other threads) is admitted and awaited. The docs give the Kubernetes formula
+  (preStop delay plus the phases < `terminationGracePeriodSeconds`).
 
 ### 5.10 Health
 - Spring Boot Actuator probes. Liveness reflects internal state only. **Readiness reflects the application's own
@@ -366,8 +420,12 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 | INTERNAL | 500 | INTERNAL | INTERNAL_ERROR |
 
 - **Error exposure:** responses always include the code, the correlation id and validation violations; the formatted
-  detail only when `synapse.errors.include-detail=true` (default false). Never stack traces, exception class names or
-  internal messages. Full detail and cause are logged server-side.
+  detail (the formatted message) by environment: `synapse.errors.include-detail` unset means shown outside production
+  and hidden in production; an explicit `true` or `false` always wins. A run with no active profile is production (see
+  *Non-production rails*), so detail is off until a non-production profile (default `dev,local,test`) is active.
+  A `MessageSource` entry that equals the code (Boot's `use-code-as-default-message`) counts as no entry. Never stack
+  traces (encrypted or not), exception class names or internal messages. The problem body's RFC 9457 `instance` is a
+  URN built from the correlation id (REST plan). Full detail and cause are logged server-side.
 - **Protocol-only failures** never reach an operation; the plugin answers them in the same error shape with fixed
   codes: REST `ROUTE_NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405 (+ `Allow`), `NOT_ACCEPTABLE` 406,
   `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400; gRPC `UNIMPLEMENTED` and
@@ -410,8 +468,8 @@ types. Values are converted with Spring's `ConversionService`; validation runs o
 **Paging safety:** sort keys must be allow-listed per route (`.sortable(SearchBooksRequest.SortKey.class)` or a set of
 names); unknown keys are `INVALID_INPUT`. Offsets are capped (`synapse.api.rest.paging.max-offset`); cursors are opaque
 and HMAC-signed (key from `synapse.api.rest.paging.cursor-secret`, generated per start if unset, with a startup WARN
-in production profiles). Page size defaults to `synapse.paging.default-size` and is capped by `synapse.paging.max-size`
-(proposed 20 and 100; confirmed in the P1 plan).
+in production profiles). Page size defaults to `synapse.paging.default-size` (20) and is capped by
+`synapse.paging.max-size` (100).
 
 **Response mapping:**
 
@@ -720,11 +778,11 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 | Tool | Phase | Behaviour |
 |---|---|---|
 | `SynapseOperations.invoke(op, input)`, `RequestContexts.with(...).run(...)` | P1 | Runs the real pipeline around a plain instance without Spring; works for `BusinessOperation` too. |
-| `@SynapseOperationTest` | P1 | Boots operations, business beans and the pipeline only; replaces client interfaces and `PublisherOperation`s with fakes or mocks. |
+| `@SynapseOperationTest` | P1 (client fakes P2, publisher fakes P3) | Boots operations, business beans and the pipeline only; replaces client interfaces and `PublisherOperation`s with fakes or mocks. |
 | `assertThatSynapseException(...)` | P1 | `.hasCode(...)`, `.hasCategory(...)`, `.hasViolation(field)`. |
 | `@SynapseRestTest`, `@SynapseGrpcTest` | P1 | Plugin plus the app's bindings with operations mocked; Boot 4's MVC test client (`MockMvcTester` or `RestTestClient`, chosen in the P1 plan) and grpc-java's in-process server. |
 | `@SynapseDataTest("<store>")` | P1 | Starts only that store's repositories, migrations and auditing, against shared Testcontainers with per-name `@ServiceConnection`. |
-| `SynapseArchitecture.rules()` | P1 | The layering rules (section 4.3). |
+| `SynapseArchitecture.forApplication(…)` | P1 | The layering rules (section 4.3). |
 | Mutable test `Clock`, JSON fixture loaders | P1 | |
 | `@SynapseClientTest("<client>")` | P2 | `MockRestServiceServer` bound to the client's builder by default; `server = STUB` starts WireMock in-JVM and points the client's `base-url` at it (WireMock's Boot 4 fit verified in the P2 plan). gRPC clients test against an in-process server. |
 | `@SynapseKafkaTest`, publisher capture, in-memory `PublisherOperation` fake | P3 | Kafka-only slice against a shared Testcontainers Kafka; helpers to send records with `ce_*` headers, await results, read DLTs. |
@@ -864,8 +922,8 @@ over REST and gRPC on Postgres with Flyway.
    needs an explicit `.map(...)`. The ArchUnit rules fail on a probe class in `operation..` importing
    `org.springframework.web`.
 3. `SynapseException(BookErrors.BOOK_NOT_FOUND, id)` yields REST 404 problem+json with `code` and `correlationId`, no
-   `detail` by default (present with `include-detail=true`), `type` `about:blank` and the status-phrase title (a
-   per-code `type` when `type-base-uri` is set); gRPC `NOT_FOUND` with `ErrorInfo.reason` = code. A per-operation
+   `detail` in production (present outside production or with `include-detail=true`), `type` `about:blank` and the
+   status-phrase title (a per-code `type` when `type-base-uri` is set); gRPC `NOT_FOUND` with `ErrorInfo.reason` = code. A per-operation
    override changes the REST status for one operation only, configured with a bracketed key.
 4. Validation failures yield REST 400 with `violations[]` and gRPC `INVALID_ARGUMENT` with `BadRequest`.
 5. An unexpected exception yields 500/`INTERNAL`; no stack trace or class name in any response.
@@ -879,7 +937,7 @@ over REST and gRPC on Postgres with Flyway.
    startup; `spring.datasource.url` set logs a warning. Auditing fills timestamps and user for `Auditable` entities
    (base class or custom columns); `@Version` conflicts raise `CONFLICT`; UUIDv7 ids are generated before insert and
    `Persistable.isNew` works; `ddl-auto=update` in a production profile fails startup.
-9. `@Masked` fields are masked in JSON responses and log output.
+9. `@Masked` fields are masked in payload log output and appear unmasked in responses.
 10. Every auto-configuration passes the context-runner rules; every module passes its AOT hint tests.
 11. Service model: a nested operation call produces a child span and reuses the correlation id; a `@Transactional`
     operation that throws rolls back; an expired gRPC deadline fails with `DEADLINE_EXCEEDED` before `execute`; a
@@ -887,8 +945,9 @@ over REST and gRPC on Postgres with Flyway.
     nested call logs exactly one line (outermost); a page size above the cap is `INVALID_INPUT`; an operation that is
     neither Query nor Command can't compile; binding a `CommandOperation` to GET fails at startup. Business: a
     `BusinessOperation` call produces a `synapse.business` span and validates input; a `@Transactional` business bean
-    joins the operation's transaction; binding a `BusinessOperation` fails at startup; the ArchUnit rules catch a
-    business bean not implementing `BusinessOperation` and a `business..` class importing `operation..`.
+    joins the operation's transaction; binding a `BusinessOperation` fails at startup; the ArchUnit rules catch an
+    operation that calls a business bean that isn't a `BusinessOperation` (or a method other than `execute`) and a
+    `business..` class importing `operation..`.
 12. Input binding and response mapping: `UpdateBookRequest` receives its id from the path, `version` from `If-Match`, a
     `WriteOptions` component from the query string via `RestConventions`, and the rest from the body; a mismatched
     body id returns 400; `PageQuery` binds on GET and POST; an unknown sort key is 400; a cursor that was tampered
@@ -907,9 +966,38 @@ over REST and gRPC on Postgres with Flyway.
 18. The reference app's ITs pass on JDK 21 and 25 against Testcontainers Postgres; the reference app builds and passes
     its ITs as a native image (nightly).
 19. The reference app's tests use `SynapseOperations.invoke`, `@SynapseOperationTest`, `@SynapseRestTest`,
-    `@SynapseGrpcTest`, `@SynapseDataTest` and `SynapseArchitecture.rules()`.
+    `@SynapseGrpcTest`, `@SynapseDataTest` and `SynapseArchitecture.forApplication(…)`.
 20. With a fixed test `Clock`, auditing timestamps, deadlines and UUIDv7 ids follow it; an operation invoked from
     `@Scheduled` gets a generated correlation id and no principal.
+
+**Done (plan 1, core):** `synapse-core`, `synapse-test` and `synapse-logging-log4j2` are built and documented. They
+cover acceptance items 2 (ArchUnit probe), 6 (core part), 9, 10 (core modules), 11 (core part), 13 (core part), 19
+(`SynapseOperations.invoke`, `@SynapseOperationTest`, `SynapseArchitecture.forApplication(…)`) and 20. REST, gRPC,
+data and the reference app come in later plans.
+
+**Carried to later P1 plans (plan 1 settled the core side):**
+- Plan 2 (REST):
+  - The edge opens the Synapse scope inside the server observation's span, with an IT asserting MDC and baggage on an
+    `@Async` thread.
+  - Reject an allow-listed attribute named `correlationId`.
+  - Edges close their scopes on the opening thread; a scope closed out of order or on another thread logs a WARN.
+  - `ContextBinder.open` needs a span in scope: the edge opens the Synapse scope inside the server observation, or
+    there is no same-thread MDC and no async baggage.
+  - Slices that mock operations (`@WebMvcTest`-style) rely on the test-double exemption (`@MockitoBean` replacements
+    are not checked for the pipeline proxy).
+  - Edges overwrite or strip inbound baggage for `correlationId` and for the Synapse attribute fields.
+  - `inbound.trusted=false` (trace restart) and outbound stripping of non-allow-listed baggage must work under the
+    OpenTelemetry Java agent as well as the starter, acting on the OpenTelemetry context, not on headers; tests cover
+    both.
+  - Problem responses carry an RFC 9457 `instance` URN built from the correlation id, and never a stack trace.
+  - Verify the `INBOUND` shutdown phase against `WebServerGracefulShutdownLifecycle`.
+- Plan 5 (archetype, parent, reference app):
+  - The OpenTelemetry Java agent recipe: `management.opentelemetry.map-environment-variables` and `-Dotel.*`
+    guidance, an archetype profile that defines the `GlobalOpenTelemetry` `OpenTelemetry` bean, and an agent IT.
+  - Later, a Synapse agent extension (`synapse-opentelemetry-agent-extension`). Whether the `OTEL_*` mapping is on by
+    default and a JVM-wide baggage propagator in that extension are open questions (DESIGN.md *Open questions*).
+- Later phase, own branch: a rate-limited failure-log policy (a one-line WARN on every occurrence, the stack once per
+  window, the translator WARN included, and a "dropped N" summary for the burst limit).
 
 ### P2: Clients (M2)
 **Scope:** `synapse-client-core`, `synapse-client-rest`, `synapse-client-grpc`, `synapse-client-auth-oauth2`, client
