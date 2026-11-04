@@ -32,6 +32,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import tools.jackson.databind.JsonNode;
@@ -236,6 +237,23 @@ class RestRoutesIT {
             Result deleteBook = call(nestedClient.delete().uri("/books/404"));
             assertThat(deleteBook.status()).isEqualTo(404);
             assertThat(deleteBook.json().get("code").asString()).isEqualTo("BOOK_NOT_FOUND");
+        }
+    }
+
+    @Nested
+    @ActiveProfiles("dev")
+    class OutsideProduction {
+
+        @Autowired
+        private RestTestClient nestedClient;
+
+        @Test
+        void notFoundDetailHasThePathValue() {
+            Result result = call(nestedClient.get().uri("/books/404"));
+
+            assertThat(result.status()).isEqualTo(404);
+            assertThat(result.json().get("code").asString()).isEqualTo("BOOK_NOT_FOUND");
+            assertThat(result.json().get("detail").asString()).isEqualTo("Book 404 was not found");
         }
     }
 

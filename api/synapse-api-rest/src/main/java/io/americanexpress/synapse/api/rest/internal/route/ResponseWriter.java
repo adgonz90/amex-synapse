@@ -55,8 +55,9 @@ import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
  * <li>Status: {@code .status(int)} or {@code .status(fn)} when declared; otherwise 202 with {@code .accepted(fn)},
  * 201 with {@code .created(fn)}, 204 on {@code DELETE}, and 200. A {@code null} output (a {@code void} operation) is
  * 204, or the declared {@code .status(int)}.</li>
- * <li>An empty {@code Optional} throws the route's {@code .notFound} error ({@code NOT_FOUND} by default), or answers
- * the {@code .emptyAs} status with no body.</li>
+ * <li>An empty {@code Optional} throws the route's {@code .notFound} error ({@code NOT_FOUND} by default), with the
+ * route's path variable values in template order as its message arguments, or answers the {@code .emptyAs} status
+ * with no body.</li>
  * <li>{@code .created(fn)} sets {@code Location}; {@code .accepted(fn)} sets {@code Location} and
  * {@code Link: <url>; rel="status"}.</li>
  * <li>Output headers are written from their components, formatted by the conversion service, and the components are
@@ -105,7 +106,7 @@ public final class ResponseWriter {
             // An operation that returns null for an Optional output means empty.
             Optional<?> present = result instanceof Optional<?> optional ? optional : Optional.empty();
             if (present.isEmpty()) {
-                return empty(rules);
+                return empty(route, request);
             }
             value = present.get();
         }
@@ -138,13 +139,20 @@ public final class ResponseWriter {
                 });
     }
 
-    private static ServerResponse empty(ResponseRules rules) {
+    /**
+     * Answers an empty {@code Optional}: the {@code .emptyAs} status, or the not-found error with the route's path
+     * variable values (as the request carries them, in template order) as its message arguments.
+     */
+    private static ServerResponse empty(RouteDefinition route, ServerRequest request) {
+        ResponseRules rules = route.response();
         Integer emptyAs = rules.emptyAs();
         if (emptyAs != null) {
             return ServerResponse.status(emptyAs).build();
         }
         ErrorDetails notFound = rules.notFound();
-        throw new SynapseException(notFound != null ? notFound : SynapseErrors.NOT_FOUND);
+        Map<String, String> values = request.pathVariables();
+        Object[] args = route.pathVariables().stream().filter(values::containsKey).map(values::get).toArray();
+        throw new SynapseException(notFound != null ? notFound : SynapseErrors.NOT_FOUND, args);
     }
 
     private static int status(RouteDefinition route, Object output, @Nullable Object result) {

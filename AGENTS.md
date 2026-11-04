@@ -83,6 +83,7 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 | `core/synapse-test` | Test support: `SynapseOperations`, `@SynapseOperationTest`, architecture rules, AOT assertions |
 | `core/synapse-logging-log4j2` | Prescriptive Log4j2 logging: ECS JSON default, optional failure-log burst limit |
 | `api/` | API plugins and their test slices (synapse-api-rest, synapse-test-rest) |
+| `samples/` | Runnable samples; never published |
 | `docs/` | Documentation site (Antora, AsciiDoc); property tables are generated from configuration metadata |
 | `tests/` | Tests of the build itself (maven-invoker projects for the Enforcer rules); never published |
 | `specs/` | Design specifications |

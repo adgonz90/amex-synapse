@@ -310,7 +310,10 @@ public final class RouteSpec<I, O> {
     }
 
     /**
-     * Sets the error for an empty {@code Optional} output (by default {@code NOT_FOUND}).
+     * Sets the error for an empty {@code Optional} output (by default {@code NOT_FOUND}). Its message arguments are
+     * the values of the route's path variables as the request carries them, in template order: on
+     * {@code /books/{id}}, {@code "Book {0} was not found"} reads {@code Book 42 was not found}. On a route without
+     * path variables there are no arguments, so use a code whose message has no placeholders.
      *
      * @param code the error
      * @return this route

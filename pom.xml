@@ -64,6 +64,8 @@
         <module>core/synapse-logging-log4j2</module>
         <module>api/synapse-api-rest</module>
         <module>api/synapse-test-rest</module>
+        <!-- Runnable samples; never published. -->
+        <module>samples/rest-books</module>
         <!-- Build-rule tests; never published. -->
         <module>tests/synapse-build-rules-tests</module>
     </modules>

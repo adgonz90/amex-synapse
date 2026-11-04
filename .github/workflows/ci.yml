@@ -47,6 +47,7 @@ jobs:
           path: |
             **/target/*.jar
             !**/target/*-tests.jar
+            !**/target/synapse-sample-*.jar
           retention-days: 14
           if-no-files-found: error
 

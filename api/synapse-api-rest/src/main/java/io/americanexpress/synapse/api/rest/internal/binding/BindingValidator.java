@@ -24,7 +24,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.jspecify.annotations.Nullable;
@@ -66,8 +65,6 @@ public final class BindingValidator {
 
     /** Response headers Synapse writes itself, in lower case: an output component can't be mapped to them. */
     private static final Set<String> RESERVED_HEADERS = Set.of("location", "link", "content-type", "content-length");
-
-    private static final Pattern VARIABLE = Pattern.compile("\\{\\*?([A-Za-z_$][\\w$]*)");
 
     private static final Pattern ANY_VARIABLE = Pattern.compile("\\{[^/}]*}");
 
@@ -351,12 +348,7 @@ public final class BindingValidator {
                 throw fail(route, "'" + route.path() + "' is not a valid path template (" + ex.getMessage() + ")",
                         "Fix the path template; variables are written {name}.");
             }
-            List<String> variables = new ArrayList<>();
-            Matcher matcher = VARIABLE.matcher(route.path());
-            while (matcher.find()) {
-                variables.add(matcher.group(1));
-            }
-            return variables;
+            return route.pathVariables();
         }
 
         private void declare(RouteDeclaration declaration, List<String> variables) {

@@ -204,6 +204,11 @@ Several `RestConventions` beans are merged. Two rules that bind the same compone
 |Empty list |200 with `[]` |
 |===
 
+The error of an empty `Optional` (`.notFound(...)` or the default `NOT_FOUND`) gets the values of the route's path
+variables, as the request carries them and in template order, as its message arguments: with the template
+`+Book {0} was not found+` on `+/books/{id}+`, `GET /books/42` reads `Book 42 was not found`. On a route without path
+variables there are no arguments, so give its `.notFound` a code whose message has no placeholders.
+
 The functions passed to `.status`, `.created` and `.accepted` receive the output exactly as the operation returned
 it. The body is the output serialized with the application's `JsonMapper` as `application/json`; there is no response
 envelope. The caller's `Accept` must be absent or admit `application/json`, otherwise the answer is `NOT_ACCEPTABLE`

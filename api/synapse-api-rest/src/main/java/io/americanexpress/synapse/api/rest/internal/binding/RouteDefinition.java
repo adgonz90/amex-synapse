@@ -13,8 +13,11 @@
  */
 package io.americanexpress.synapse.api.rest.internal.binding;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.core.ResolvableType;
@@ -43,6 +46,9 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
 public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?, ?> operation, String operationName,
         Class<?> inputType, Class<?> outputType, List<InputSource> sources, ResponseRules response,
         List<RouteDeclaration> declarations) {
+
+    /** A template variable, {@code {name}} or a catch-all {@code {*name}}: group 1 is the name. */
+    private static final Pattern VARIABLE = Pattern.compile("\\{\\*?([A-Za-z_$][\\w$]*)");
 
     /**
      * Creates the definition.
@@ -89,6 +95,21 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
      */
     public Class<?> outputValueType() {
         return unwrap(generic(operationClass(operation), 1)).resolve(Object.class);
+    }
+
+    /**
+     * Returns the names of the path template's variables, in template order ({@code /shelves/{shelf}/books/{id}} gives
+     * {@code shelf}, {@code id}).
+     *
+     * @return the variable names
+     */
+    public List<String> pathVariables() {
+        List<String> variables = new ArrayList<>();
+        Matcher matcher = VARIABLE.matcher(path);
+        while (matcher.find()) {
+            variables.add(matcher.group(1));
+        }
+        return List.copyOf(variables);
     }
 
     /**

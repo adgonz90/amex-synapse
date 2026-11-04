@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.api.rest.internal.route;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import org.jspecify.annotations.Nullable;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.format.support.DefaultFormattingConversionService;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.web.servlet.function.RouterFunctions;
 import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
 import tools.jackson.databind.JsonNode;
@@ -50,8 +52,11 @@ import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PurgeBoo
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.Quota;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.SubmitJobOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.TaggedBook;
+import io.americanexpress.synapse.core.error.ErrorCategory;
+import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.operation.QueryOperation;
 
 import static io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.BOOK;
 import static io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.route;
@@ -362,6 +367,67 @@ class ResponseWriterTest {
     }
 
     @Test
+    void notFoundMessageGetsThePathValues() {
+        RouteDefinition find = route(RestBindings
+                .builder()
+                .get("/books/{id}", new FindBookOperation())
+                .notFound(BookErrors.BOOK_NOT_FOUND)
+                .build());
+
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> write(writer, find, Optional.empty(), "GET", Map.of("id", "42")))
+                .satisfies(e -> {
+                    assertThat(e.getMessage()).isEqualTo("Book 42 was not found");
+                    assertThat(e.args()).containsExactly("42");
+                });
+    }
+
+    @Test
+    void defaultNotFoundGetsThePathValuesToo() {
+        RouteDefinition find = route(RestBindings.builder().get("/books/{id}", new FindBookOperation()).build());
+
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> write(writer, find, Optional.empty(), "GET", Map.of("id", "42")))
+                .satisfies(e -> {
+                    assertThat(e.details()).isEqualTo(SynapseErrors.NOT_FOUND);
+                    assertThat(e.args()).containsExactly("42");
+                });
+    }
+
+    @Test
+    void notFoundArgumentsFollowTheTemplateOrder() {
+        RouteDefinition find = route(RestBindings
+                .builder()
+                .get("/shelves/{shelf}/books/{id}", new FindShelvedBookOperation())
+                .notFound(ShelfErrors.NOT_ON_SHELF)
+                .build());
+
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> write(writer, find, Optional.empty(), "GET",
+                        Map.of("id", "7", "shelf", "fiction")))
+                .satisfies(e -> {
+                    assertThat(e.getMessage()).isEqualTo("Book 7 is not on shelf fiction");
+                    assertThat(e.args()).containsExactly("fiction", "7");
+                });
+    }
+
+    @Test
+    void notFoundOnARouteWithoutPathVariablesHasNoArguments() {
+        RouteDefinition latest = route(RestBindings
+                .builder()
+                .get("/books/latest", new FindLatestBookOperation())
+                .notFound(BookErrors.BOOK_NOT_FOUND)
+                .build());
+
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> write(writer, latest, Optional.empty(), "GET", Map.of()))
+                .satisfies(e -> {
+                    assertThat(e.args()).isEmpty();
+                    assertThat(e.getMessage()).isEqualTo("Book {0} was not found");
+                });
+    }
+
+    @Test
     void nullResultOnAnOptionalRouteIsEmpty() {
         RouteDefinition find = route(RestBindings.builder().get("/books/{id}", new FindBookOperation()).build());
 
@@ -422,11 +488,57 @@ class ResponseWriterTest {
 
     private static Written write(ResponseWriter writer, RouteDefinition route, @Nullable Object result,
             String method) throws Exception {
+        return write(writer, route, result, method, Map.of());
+    }
+
+    /** Writes with the path variables that routing would have put on the request. */
+    private static Written write(ResponseWriter writer, RouteDefinition route, @Nullable Object result,
+            String method, Map<String, String> pathVariables) throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest(method, "/");
+        request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, pathVariables);
         ServerResponse response = writer.write(route, result, ServerRequest.create(request, List.of()));
         MockHttpServletResponse servletResponse = new MockHttpServletResponse();
         response.writeTo(request, servletResponse, List::of);
         return new Written(servletResponse.getStatus(), servletResponse, servletResponse.getContentAsString());
+    }
+
+    /** Identifies a book on a shelf; the template names the shelf first. */
+    record ShelvedBookId(String shelf, long id) {
+    }
+
+    static class FindShelvedBookOperation implements QueryOperation<ShelvedBookId, Optional<Book>> {
+        @Override
+        public Optional<Book> execute(ShelvedBookId input) {
+            return Optional.empty();
+        }
+    }
+
+    static class FindLatestBookOperation implements QueryOperation<Void, Optional<Book>> {
+        @Override
+        public Optional<Book> execute(Void input) {
+            return Optional.empty();
+        }
+    }
+
+    /** A message whose placeholders are not in template order. */
+    enum ShelfErrors implements ErrorDetails {
+
+        NOT_ON_SHELF;
+
+        @Override
+        public String code() {
+            return name();
+        }
+
+        @Override
+        public String messageTemplate() {
+            return "Book {1} is not on shelf {0}";
+        }
+
+        @Override
+        public ErrorCategory category() {
+            return ErrorCategory.NOT_FOUND;
+        }
     }
 
     /** The JSON of a value, read back as a tree, so number nodes compare like a parsed body's. */
