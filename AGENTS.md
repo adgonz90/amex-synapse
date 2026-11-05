@@ -40,7 +40,7 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 - **Formatting:** Spotless with the Synapse Eclipse profile in `.config/synapse-java-format.xml`, plus import order, LF line endings and the license header. Local builds format files automatically; CI only checks.
   - Don't hand-format against the profile.
   - The formatter engine version (`eclipse-formatter.version`) is pinned. Bump it only in its own commit.
-- **Static analysis:** Error Prone and NullAway (JSpecify mode). Every package has a `package-info.java` annotated `@NullMarked`, and nullable types are marked `@Nullable`.
+- **Static analysis:** Error Prone and NullAway (JSpecify mode). Every package has a `package-info.java` annotated `@NullMarked`, and nullable types are marked `@Nullable`. A test package with the same name as a main package has no `package-info.java` of its own: the main one covers it, and a second copy is a duplicate type in IDEs that compile main and test sources together.
 - **Dependencies:** the Maven Enforcer bans some dependencies (see the root `pom.xml`) and requires dependency convergence. Test libraries must stay in test scope (except `synapse-test` and the `synapse-test-<plugin>` slices).
 - **Tests:**
   - Unit tests (`*Test`, surefire) and integration tests (`*IT`, failsafe) are never skipped. Pull requests run all of them on JDK 25, and unit tests plus each module's smoke integration tests on JDK 21; the full JDK 21 run is nightly. Oracle and SQL Server integration tests run nightly, on release, and on PRs that change those modules.
