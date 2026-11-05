@@ -47,6 +47,11 @@
                     <!-- An isolated repository that reads from the developer's/CI's local repository (see settings.xml). -->
                     <localRepositoryPath>${project.build.directory}/it-repo</localRepositoryPath>
                     <settingsFile>src/it/settings.xml</settingsFile>
+                    <properties>
+                        <!-- Reads dependencies in place from the main local repository instead of copying them. -->
+                        <maven.repo.local.tail>${settings.localRepository}</maven.repo.local.tail>
+                    </properties>
+                    <parallelThreads>1C</parallelThreads>
                     <postBuildHookScript>verify</postBuildHookScript>
                     <streamLogsOnFailures>true</streamLogsOnFailures>
                 </configuration>
