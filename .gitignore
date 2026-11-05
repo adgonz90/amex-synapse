@@ -14,6 +14,13 @@
 *.ppf
 *.paf
 
+# Editor and AI-assistant files are each contributor's own (AGENTS.md: no IDE settings in the repo).
+.vscode/
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.superpowers/
+
 
 ######################
 ###### Mac OS X ######
