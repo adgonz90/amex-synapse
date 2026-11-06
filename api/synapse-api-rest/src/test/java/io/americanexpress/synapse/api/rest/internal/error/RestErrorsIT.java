@@ -143,12 +143,12 @@ class RestErrorsIT {
 
     @Test
     void invalidRequestParameterIsValidationFailed() {
-        Result result = call(client.get().uri("/items?limit=abc"));
+        Result result = call(client.get().uri("/items?limit=xyz-qz"));
 
         assertThat(result.status()).isEqualTo(400);
         assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
         assertThat(result.json().get("violations").get(0).get("field").asString()).isEqualTo("limit");
-        assertThat(result.body()).doesNotContain("Exception").doesNotContain("abc");
+        assertThat(result.body()).doesNotContain("Exception").doesNotContain("xyz-qz");
     }
 
     @Test
