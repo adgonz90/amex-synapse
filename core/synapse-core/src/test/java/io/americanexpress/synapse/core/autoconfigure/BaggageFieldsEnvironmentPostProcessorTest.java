@@ -29,6 +29,7 @@ import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.io.support.SpringFactoriesLoader;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.internal.environment.ConfigSources;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,6 +50,14 @@ class BaggageFieldsEnvironmentPostProcessorTest {
         assertThat(list(REMOTE_FIELDS)).containsExactly("correlationId");
         assertThat(list(CORRELATION_FIELDS)).containsExactly("correlationId");
         assertThat(environment.getPropertySources().iterator().next().getName()).isEqualTo("synapseBaggageFields");
+    }
+
+    @Test
+    void startupReportLabelsTheSource() {
+        assertThat(ConfigSources
+                .label(new MapPropertySource(BaggageFieldsEnvironmentPostProcessor.PROPERTY_SOURCE_NAME,
+                        Map.of("a", "b"))))
+                .isEqualTo("Synapse baggage fields");
     }
 
     @Test

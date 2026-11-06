@@ -32,8 +32,9 @@ OperationInvoker invoker = SynapseOperations.with()
 
 == RequestContexts
 
-Opens a context as an inbound edge does, with the production limits (16 entries, 4KB, 128-character ids). Attributes
-keep the order they were added in, and the ones past the limits are dropped. It is closed afterwards, also on failure.
+Opens a context as an inbound edge does, with the application's default limits (16 entries, 4KB, 128-character
+ids). Attributes keep the order they were added in, and the ones past the limits are dropped. It is closed afterwards,
+also on failure.
 
 [source,java]
 ----
@@ -63,8 +64,12 @@ assertThatSynapseException(() -> SynapseOperations.invoke(operation, new CreateB
 A slice that starts only operation and business beans with the real pipeline: validation, observation, tracing,
 translation and context. It has no web server, binding, data store or other component. It includes the OpenTelemetry
 bridge (no exporters), so the tracing requirement is met, and the transaction auto-configuration when it is on the
-classpath. Replace collaborators with `@MockitoBean` or a `@TestConfiguration`. The `test` profile is active and a
-`MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you define a `Clock`.
+classpath. Replace collaborators with `@MockitoBean` or a `@TestConfiguration`. A `MutableClock` fixed at
+`2026-01-01T00:00:00Z` is registered unless you define a `Clock`.
+
+The slice activates the `test` environment and turns nothing else on, so the module needs
+`src/test/resources/application-test.yaml` (it may hold only a comment), and test settings go there (see
+xref:environments.adoc#tests[Tests]).
 
 The slice finds operation and business beans by type (`ServiceOperation`, `BusinessOperation`), not by package. A
 business helper bean that isn't a `BusinessOperation` (a strategy, mapper, validator or listener in the `business`
@@ -111,8 +116,9 @@ It starts the xref:rest.adoc[REST plugin] (routes, edge filters, problem respons
 together with the classes that declare a `RestBindings` or `RestConventions` `@Bean`, and the application's
 controllers, controller advice, `WebMvcConfigurer`s, converters and servlet filters. Operations, business beans and
 every other component are left out. Calls are made with the autowired `RestTestClient`, which is bound to `MockMvc`.
-As in `@SynapseOperationTest`, the `test` profile is active (so problem responses carry their `detail`) and a
-`MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you define a `Clock`.
+As in `@SynapseOperationTest`, the `test` environment is active, the module needs `application-test.yaml`, and a
+`MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you define a `Clock`. Problem responses carry
+their `detail` only when `application-test.yaml` sets `synapse.errors.include-detail: true`.
 
 Declare a `@MockitoBean` (or a `@TestBean`) for each operation the bindings use:
 

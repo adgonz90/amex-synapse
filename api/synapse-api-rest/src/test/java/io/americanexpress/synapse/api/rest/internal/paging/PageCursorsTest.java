@@ -163,23 +163,23 @@ class PageCursorsTest {
     }
 
     @Test
-    void generatedKeyWarnsInProductionOnlyForPagedRoutes() {
+    void generatedKeyWarnsInEveryEnvironmentOnlyForPagedRoutes() {
         PageCursors generated = new PageCursors(codec(null), digest, PagingSettings.defaults());
         RouteDefinition plain = route(RestBindings.builder().get("/plain", new PlainOperation()).build());
 
-        assertThat(captured(() -> generated.reportGeneratedKey(List.of(plain, search), () -> true)))
+        assertThat(captured(() -> generated.reportGeneratedKey(List.of(plain, search))))
                 .singleElement()
                 .satisfies(line -> {
                     assertThat(line.getLevel()).isEqualTo(Level.WARN);
                     assertThat(line.getLoggerName()).isEqualTo("io.americanexpress.synapse.api.rest");
                     assertThat(line.getFormattedMessage()).isEqualTo(GENERATED_KEY_TEXT);
                 });
-        assertThat(captured(() -> generated.reportGeneratedKey(List.of(plain), () -> true))).isEmpty();
-        assertThat(captured(() -> generated.reportGeneratedKey(List.of(), () -> true))).isEmpty();
-        assertThat(captured(() -> generated.reportGeneratedKey(List.of(all), () -> false)))
+        assertThat(captured(() -> generated.reportGeneratedKey(List.of(plain)))).isEmpty();
+        assertThat(captured(() -> generated.reportGeneratedKey(List.of()))).isEmpty();
+        assertThat(captured(() -> generated.reportGeneratedKey(List.of(all))))
                 .singleElement()
                 .satisfies(line -> {
-                    assertThat(line.getLevel()).isEqualTo(Level.INFO);
+                    assertThat(line.getLevel()).isEqualTo(Level.WARN);
                     assertThat(line.getFormattedMessage()).isEqualTo(GENERATED_KEY_TEXT);
                 });
     }
@@ -198,9 +198,9 @@ class PageCursorsTest {
             }
         };
 
-        assertThat(captured(() -> cursors.reportGeneratedKey(List.of(search), () -> true))).isEmpty();
+        assertThat(captured(() -> cursors.reportGeneratedKey(List.of(search)))).isEmpty();
         assertThat(captured(() -> new PageCursors(other, digest, PagingSettings.defaults())
-                .reportGeneratedKey(List.of(search), () -> true))).isEmpty();
+                .reportGeneratedKey(List.of(search)))).isEmpty();
     }
 
     @Test

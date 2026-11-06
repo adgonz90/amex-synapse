@@ -1,0 +1,391 @@
+= Environments
+
+A run of a Synapse service has exactly one environment: the one active Spring profile. Settings that differ per
+environment live in files: the service's `application-<env>.yaml` and, in each library module,
+`META-INF/synapse/config-<env>.yaml`. `synapse-core` checks the rules while Boot prepares the environment, before any
+bean is created, and logs at startup which files configured the run. It has no notion of production: no API, property
+or log level depends on the environment's name.
+
+[#environment]
+== The environment
+
+Each service maps the platform's variable in its `application.yaml`:
+
+[source,yaml]
+----
+spring:
+  profiles:
+    active: ${ENV}
+----
+
+* Synapse never reads `ENV`; Boot resolves the placeholder. `SPRING_PROFILES_ACTIVE`, `--spring.profiles.active` and
+  `@ActiveProfiles` work as usual, and the highest source wins: `SPRING_PROFILES_ACTIVE=e3` replaces `+${ENV}+`, it is
+  not a second profile.
+* The environment is the value of `spring.profiles.active` (placeholders resolved, values trimmed, blank values
+  dropped) plus the profiles added with `SpringApplication.setAdditionalProfiles` (or
+  `SpringApplicationBuilder.profiles`), without duplicates. `spring.profiles.default`, `spring.profiles.include` and profile groups never count, so feature
+  profiles go in `include` or a group.
+* There must be exactly one. There is no default and no fallback: local runs use `local` and tests use `test` (see
+  <<local-runs>> and <<tests>>).
+* Names are case-sensitive, and Synapse does no case handling. `ENV=E2` with only `application-e2.yaml` fails when the
+  service runs from a jar, and on a case-sensitive file system such as Linux. In an IDE on a case-insensitive file
+  system (Windows, and macOS by default) the service's resources are a directory, so `ENV=E2` can still load
+  `application-e2.yaml` and start. Use the case of the file name everywhere.
+
+=== Startup failures
+
+Each of these stops the service with Boot's `APPLICATION FAILED TO START` report:
+
+[cols="2,4,4",options="header"]
+|===
+|Case |Description |Action
+|`+${ENV}+` has no value
+|`+No environment is set: spring.profiles.active is '${ENV}', and ENV has no value.+`
+|`+Set ENV to the name of the environment (the service has an application-<env>.yaml for each). Run locally with -Dspring-boot.run.profiles=local or an IDE run configuration; Synapse's test slices activate test; other Spring Boot tests declare @ActiveProfiles("test").+`
+|A default in the placeholder, such as `+${ENV:local}+`, whether or not `ENV` is set
+|`+spring.profiles.active is '${ENV:local}', which falls back to a default environment when ENV has no value.+`
+|`+Remove the default, for example spring.profiles.active: ${ENV}, and set ENV on the platform. Synapse uses no default environment.+`
+|No value (blank, or not set)
+|`No environment is set: spring.profiles.active has no value.` When `spring.profiles.default` is set, the description
+adds `spring.profiles.default (<value>) does not count.`
+|`+Set exactly one environment, for example ENV=e2 when application.yaml maps spring.profiles.active: ${ENV}. Run locally with -Dspring-boot.run.profiles=local or an IDE run configuration; Synapse's test slices activate test; other Spring Boot tests declare @ActiveProfiles("test").+`
+|More than one
+|`Exactly one environment must be active, but there are 2: test, e2.`
+|`Keep one environment in spring.profiles.active and move feature profiles to spring.profiles.include or a profile group.`
+|No file for the environment
+|`The environment 'e9' has no file in the service: none of application-e9.yaml, application-e9.yml, application-e9.properties was loaded or found on the classpath. Environment names are case-sensitive.`
+|`Add application-e9.yaml to the service (it may be empty), or set the environment to the name of an existing file.`
+|An `on-profile` document
+|`application.yaml (document #1) sets spring.config.activate.on-profile.`
+|`+Move the document's settings to application-<env>.yaml. Synapse uses one file per environment and no on-profile documents.+`
+|===
+
+The first row names the variable of the placeholder: with `+active: ${APP_ENV}+` it says `APP_ENV`. Boot itself
+rejects the unresolved placeholder as a profile name, and Synapse's failure analyzer explains that error. It does so
+only for `spring.profiles.active`: an unset placeholder in `spring.profiles.include`, `spring.profiles.default` or a
+profile group keeps Boot's own message, which names that property. The second row names the variable of the first
+placeholder with a default. An environment without a file is treated exactly like no environment. Started without `ENV`, a service prints:
+
+[source,text]
+----
+***************************
+APPLICATION FAILED TO START
+***************************
+
+Description:
+
+No environment is set: spring.profiles.active is '${ENV}', and ENV has no value.
+
+Action:
+
+Set ENV to the name of the environment (the service has an application-<env>.yaml for each). Run locally with -Dspring-boot.run.profiles=local or an IDE run configuration; Synapse's test slices activate test; other Spring Boot tests declare @ActiveProfiles("test").
+----
+
+[#service-files]
+== Service files
+
+The service has `application.yaml` and one `application-<env>.yaml` per environment, `application-local.yaml`
+included. Its tests have `src/test/resources/application-test.yaml`.
+
+* An environment is valid only when the service has a file for it: `application-<env>.yaml`, `.yml` or `.properties`.
+  The file counts when Boot loaded it from any location (the classpath, `./config/`,
+  `spring.config.additional-location` and so on), or when it is on the classpath at `classpath:/` or
+  `classpath:/config/`, even when it is empty or holds only comments. A file with nothing to set is fine: it says the
+  environment exists.
+* A file outside the classpath (in `./config/`, or a mounted ConfigMap under `spring.config.additional-location`) counts
+  only when it sets at least one key. Boot creates no property source for an empty or comment-only file, so Synapse
+  can't see it, and startup fails with the *No file for the environment* message. Put a key in it, or ship the file in
+  the service.
+* With `spring.config.name` set, the files are named after it: `spring.config.name=books` means `books.yaml` and
+  `books-<env>.yaml`. With a list of names, a file for any of them counts, and the message names the first.
+* A module's `config-<env>.yaml` never makes an environment valid.
+* No config document may set `spring.config.activate.on-profile`, whether or not it would be active. Synapse re-reads
+  every local file behind Boot's config sources, and the classpath `+application.*+` and `+application-<env>.*+` files,
+  because Boot never adds an inactive document to the environment. A remote import (such as `https:`) is not fetched
+  again. Documents are numbered as Boot numbers them, from `(document #0)`, and only in a file that has more than
+  one. A file Synapse can't read or parse fails with
+  `Synapse could not read <file> to check it for spring.config.activate.on-profile.` The message names the file and
+  quotes none of it. The parser's own error can quote the file, so Synapse keeps it only as the exception's cause,
+  which Boot logs at `DEBUG` (logger `org.springframework.boot.diagnostics.LoggingFailureAnalysisReporter`) and never
+  prints in the startup message.
+
+[#module-files]
+== Module files
+
+Each library module of a consumer project (`+client-*+`, `+data-*+`, `+publisher-*+`, `+business-*+`) ships its own
+settings:
+
+* `src/main/resources/META-INF/synapse/config.yaml` for every environment;
+* `src/main/resources/META-INF/synapse/config-<env>.yaml` for values that differ per environment, where they do.
+
+`.properties` files are read too (`config.properties`, `config-<env>.properties`); `.yml` is not. The service
+references nothing: the module's jar on the classpath is enough. A module may set any key except those listed under
+<<module-checks>>, for example `logging.level` for its own packages.
+
+Synapse finds the files with `ClassLoader.getResources` on these fixed names, one set per jar or directory, without
+scanning for other names. It reads them only from local files and jars, Boot's nested jars in an executable jar
+included. A module file at any other URL fails startup with
+`<origin> (<file>) is not a local file or jar, so Synapse cannot read it.` (action
+`Put the module on the classpath as a jar or directory.`), and a file that can't be read or parsed fails with
+`Synapse could not read <file> (<origin>).` As for the service's files, the parser's error, which can quote the file,
+is only the exception's cause: it reaches Boot's `DEBUG` log, never the startup message.
+
+=== Precedence
+
+Lowest first:
+
+[cols="1,4",options="header"]
+|===
+|# |Source
+|1 |Module `config.yaml`
+|2 |Module `config-<env>.yaml`
+|3 |Service `application.yaml`
+|4 |Service `application-<env>.yaml`
+|5 |Environment variables and the command line
+|===
+
+Module files sit below every config file Boot loaded and above Boot's default properties. The service always wins over
+a module, silently. In a multi-document module file, later documents win, as in Boot.
+
+[#module-checks]
+=== Checks
+
+Startup fails when:
+
+[cols="2,4,3",options="header"]
+|===
+|Case |Description |Action
+|Two modules set the same key
+|`<key> is set by two modules: <origin A> (<file A>) and <origin B> (<file B>).`
+|`Set it in one module only. The service's application files can override any module value.`
+|A module file sets `+spring.profiles.*+`, `+spring.config.*+` or `+synapse.environment.*+`
+|`+<origin> (<file>) sets <key>. Module files may not set spring.profiles.*, spring.config.* or synapse.environment.*.+`
+|`Remove it from the module; the service decides the run.`
+|A jar or directory that ships `META-INF/synapse/` also ships `+application.*+` or `+application-<env>.*+` at its root
+|`<origin> ships META-INF/synapse/ and also <file> at its root, which can hide the service's own file.`
+|`+Move the module's settings to META-INF/synapse/config.yaml or config-<env>.yaml and remove <file>.+`
+|A module ships the same file as `.yaml` and `.properties`
+|`<origin> ships both <file>.yaml and <file>.properties.`
+|`Keep one of them.`
+|===
+
+* Keys are compared as Boot's canonical property names, so `base-url` and `baseUrl` collide. Messages print the key
+  in dashed form (`base-url`).
+* A list collides as a whole: `allowed-hosts[0]` in one module and `allowed-hosts[1]` in another collide on
+  `allowed-hosts`, because Boot binds a list from one source only. Map entries with different keys, such as
+  `logging.level[com.a]` and `logging.level[com.b]`, don't collide.
+* A module's `config.yaml` and its own `config-<env>.yaml` may set the same key: that is the override.
+* The forbidden keys are also caught in bracket form, such as `spring[profiles].active`.
+* The root file check uses the service's config names (`application` by default). For the same reason, a module's own
+  tests put their settings in `src/test/resources/application-test.yaml`, never in
+  `src/test/resources/META-INF/synapse/`: the test classes directory would then ship both.
+
+`<origin>` names where a file comes from: a jar by its file name (the inner jar inside an executable jar), a Maven
+module's `target/classes` directory by the module's name, its `target/test-classes` directory by the module's name and
+`(test)`, and any other directory by its path. When two jars or directories have the same name, both are named by
+their full location.
+
+=== Example
+
+A service and two library modules:
+
+[source,text]
+----
+service-books/src/main/resources/
+  application.yaml
+  application-e2.yaml
+client-accounts/src/main/resources/META-INF/synapse/
+  config.yaml
+  config-e2.yaml
+data-books/src/main/resources/META-INF/synapse/
+  config.yaml
+  config-e2.yaml
+----
+
+[source,yaml]
+----
+# service-books: application.yaml
+spring.profiles.active: ${ENV}
+synapse.client.accounts.timeout: 3s
+synapse.data.stores.books.pool-size: 8
+
+# service-books: application-e2.yaml
+synapse.client.accounts.timeout: 4s
+
+# client-accounts: META-INF/synapse/config.yaml
+synapse:
+  client:
+    accounts:
+      base-url: http://accounts-base
+      max-connections: 10
+      timeout: 1s
+      retries: 3
+
+# client-accounts: META-INF/synapse/config-e2.yaml
+synapse.client.accounts.base-url: http://accounts-e2
+synapse.client.accounts.timeout: 2s
+
+# data-books: META-INF/synapse/config.yaml
+synapse.data.stores.books.url: jdbc:postgresql://base/books
+synapse.data.stores.books.pool-size: 5
+
+# data-books: META-INF/synapse/config-e2.yaml
+synapse.data.stores.books.url: jdbc:postgresql://e2/books
+----
+
+Run with `ENV=e2`, `SYNAPSE_CLIENT_ACCOUNTS_MAXCONNECTIONS=99`, `SYNAPSE_DATA_STORES_BOOKS_PASSWORD` set and
+`--synapse.client.accounts.base-url=http://cmdline`, the values are:
+
+[cols="3,2,3",options="header"]
+|===
+|Key |Value |From
+|`synapse.client.accounts.base-url` |`http://cmdline` |The command line
+|`synapse.client.accounts.max-connections` |`99` |An environment variable
+|`synapse.data.stores.books.password` |The variable's value |An environment variable
+|`synapse.client.accounts.timeout` |`4s` |`application-e2.yaml`
+|`synapse.data.stores.books.pool-size` |`8` |`application.yaml`
+|`synapse.data.stores.books.url` |`jdbc:postgresql://e2/books` |`config-e2.yaml` of `data-books`
+|`synapse.client.accounts.retries` |`3` |`config.yaml` of `client-accounts`
+|===
+
+The client and store keys only show the precedence here: clients and named stores come with their own modules.
+
+[#safe-defaults]
+== Safe defaults
+
+Every safety setting defaults to its safe value, in every environment, and an environment file turns a convenience on.
+Synapse never branches on the environment's name.
+
+[source,yaml]
+----
+# application-local.yaml
+synapse:
+  errors:
+    include-detail: true
+----
+
+* `synapse.errors.include-detail` is `false`: problem responses carry no `detail` unless a file turns it on (see
+  xref:core.adoc#errors[Errors]).
+* A cursor key generated at startup is reported at WARN in every environment (see
+  xref:rest.adoc#paging[REST paging]).
+
+Later modules follow the same model: gRPC server reflection is off by default, a store allows `ddl-auto` only through
+its own switch, and a CORS `+*+` origin logs a WARN.
+
+[#keys-without-defaults]
+== Keys without defaults
+
+Keys that say where to connect, or who to connect as, have no Synapse default: a client's `base-url`, and a store's
+`url`, `username` and `password` (they come with the client and data modules). A module that forgot a value for an
+environment then fails binding at startup instead of calling the wrong target. Tuning keys (timeouts, retries, pools,
+logging) keep safe defaults.
+
+Credentials come from the platform's environment variables, never from a file in the repository: Boot maps
+`SYNAPSE_DATA_STORES_BOOKS_PASSWORD` to `synapse.data.stores.books.password`, or a file refers to a variable with a
+placeholder, such as `+password: ${BOOKS_DB_PASSWORD}+`.
+
+[#local-runs]
+== Local runs
+
+Local runs use the `local` environment and its `application-local.yaml`:
+
+* *Maven:* set the plugin's property in the service's `pom.xml`, so `./mvnw spring-boot:run` runs as `local`;
+  `-Dspring-boot.run.profiles=e2` picks another environment.
++
+[source,xml]
+----
+<properties>
+    <spring-boot.run.profiles>local</spring-boot.run.profiles>
+</properties>
+----
+* *IDE:* set `ENV=local` in the run configuration's environment, or `local` as its active profile.
+* *A jar:* `ENV=local java -jar service-books.jar`.
+
+[#tests]
+== Tests
+
+Tests run as `test`. Synapse's slices (`@SynapseOperationTest`, `@SynapseRestTest`) activate it and turn nothing else
+on; a `@SpringBootTest` class declares `@ActiveProfiles("test")` itself. Every module whose tests start a Spring Boot
+context therefore has `src/test/resources/application-test.yaml`. It may hold only a comment; test conveniences go
+there:
+
+[source,yaml]
+----
+# src/test/resources/application-test.yaml
+synapse:
+  errors:
+    include-detail: true
+----
+
+To run a test class in another environment, give it its own `@ActiveProfiles`, and have the matching
+`application-<env>.yaml` on the test classpath:
+
+* On a class annotated with the slice, `@ActiveProfiles("e2")` replaces `test`.
+* On a subclass of such a class, `@ActiveProfiles("e2")` adds to the inherited `test`, and startup fails with
+  `Exactly one environment must be active, but there are 2: test, e2.` Use
+  `@ActiveProfiles(value = "e2", inheritProfiles = false)`.
+
+[#startup-report]
+== Startup report
+
+Once the application has started, Synapse logs one INFO event on the logger `io.americanexpress.synapse.environment`.
+Its first line names the environment and where it was set: `spring.profiles.active=` with the value as written (so
+`+${ENV}+` stays) and the source that holds it, or `SpringApplication additional profiles`. Then it lists every
+property source, highest priority first, by name and, for files, the jar or directory they come from. For the example
+above:
+
+[source,text]
+----
+Synapse environment: e2 (spring.profiles.active=${ENV}, application.yaml)
+Configuration, highest priority first:
+  1. Synapse baggage fields
+  2. command line arguments
+  3. Java system properties
+  4. environment variables
+  5. application-e2.yaml  service-books-1.0.jar
+  6. application.yaml     service-books-1.0.jar
+  7. config-e2.yaml       client-accounts-1.4.0.jar
+  8. config-e2.yaml       data-books-1.4.0.jar
+  9. config.yaml          client-accounts-1.4.0.jar
+  10. config.yaml          data-books-1.4.0.jar
+  11. logCorrelation
+  12. applicationInfo
+----
+
+* It never prints a value. URLs in names and locations lose their user info, query and fragment, so no credential or
+  token appears.
+* Sources added during startup are listed too, in their real place, such as Boot's `server.ports` of a web server.
+  `Synapse baggage fields` is Synapse's own source for the baggage field lists (see
+  xref:core.adoc#tracing[Tracing is required]). Boot's and spring-test's fixed sources have readable names:
+  `command line arguments`, `Java system properties`, `environment variables`, `defaults`, `@ActiveProfiles` and
+  `test properties`. Any other source keeps its own name.
+* Config files are named by their file, with `(document #<n>)` for each document of a multi-document file.
+* Boot's `configurationProperties` view, the `random` source and empty sources are left out.
+* The report is skipped when the logger doesn't allow INFO, for example with
+  `logging.level.io.americanexpress.synapse.environment=warn`.
+
+[#aot]
+== AOT and native images
+
+* The environment is never used in a `@Conditional`, and environment files change values only: AOT processing
+  evaluates conditions at build time.
+* The set of clients and stores (the `<name>` under `synapse.client.<name>`, except `defaults`, and under
+  `synapse.data.stores.<name>`) belongs in files that don't depend on the environment: a module's `config.yaml` or the
+  service's `application.yaml`. When the application runs with AOT-generated artifacts, startup fails when an
+  environment file (a module's `config-<env>.yaml` or the service's `application-<env>.yaml`) adds such a name; names
+  are compared as canonical property names, and environment variables and the command line are not checked:
++
+[cols="4,3",options="header"]
+|===
+|Description |Action
+|`config-e2.yaml (client-accounts-1.4.0.jar) adds the client 'payments', which no environment-independent file declares. In AOT mode the set of clients and stores is fixed at build time.`
+|`Declare synapse.client.payments in config.yaml or application.yaml, and set only its values per environment.`
+|===
+* `synapse-core` registers resource hints for `+META-INF/synapse/config*.yaml+` and
+  `+META-INF/synapse/config*.properties+`.
+* AOT processing (`process-aot`) and the AOT cache training run of `build-image` start the application to prepare it,
+  so they need an environment too.
+
+Not verified yet: in a native image, that `ClassLoader.getResources` returns one URL per jar for the module files,
+that Boot names its config sources as it does on the JVM, and that the service's `application-<env>.yaml` is found.
+There is no native test yet.

@@ -30,15 +30,14 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
 import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.context.RequestContext;
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.error.SynapseException;
 
 /**
  * Writes a {@link SynapseException} as an {@code application/problem+json} response (RFC 9457). The body carries the
  * code, the correlation id and the validation violations; the detail message only when
- * {@link SynapseErrorProperties#includeDetail(SynapseEnvironment)} allows it. The title and detail are resolved in
- * the locale of the caller's {@code Accept-Language}, or in the root locale when it sent none. Stack traces,
+ * {@link SynapseErrorProperties#includeDetail()} is {@code true}. The title and detail are resolved in the locale of
+ * the caller's {@code Accept-Language}, or in the root locale when it sent none. Stack traces,
  * exception class names and internal messages are never written.
  */
 public final class ProblemWriter {
@@ -53,8 +52,6 @@ public final class ProblemWriter {
 
     private final SynapseErrorProperties properties;
 
-    private final SynapseEnvironment environment;
-
     private final JsonMapper mapper;
 
     private final String correlationHeader;
@@ -68,18 +65,15 @@ public final class ProblemWriter {
      * @param messages resolves the detail message
      * @param titles resolves the category titles
      * @param properties the error settings
-     * @param environment tells production from non-production
      * @param mapper serializes the body
      * @param correlationHeader the response header that echoes the correlation id
      */
     public ProblemWriter(RestErrorStatuses statuses, ErrorMessages messages, ProblemTitles titles,
-            SynapseErrorProperties properties, SynapseEnvironment environment, JsonMapper mapper,
-            String correlationHeader) {
+            SynapseErrorProperties properties, JsonMapper mapper, String correlationHeader) {
         this.statuses = statuses;
         this.messages = messages;
         this.titles = titles;
         this.properties = properties;
-        this.environment = environment;
         this.mapper = mapper;
         this.correlationHeader = correlationHeader;
     }
@@ -107,7 +101,7 @@ public final class ProblemWriter {
             type = URI.create((base.endsWith("/") ? base : base + "/") + error.code());
             title = titles.title(error.category(), locale);
         }
-        String detail = properties.includeDetail(environment) ? messages.detail(error, locale) : null;
+        String detail = properties.includeDetail() ? messages.detail(error, locale) : null;
         String correlationId = correlationId(request);
         ProblemBody body = new ProblemBody(type, title, status, detail, error.code(), correlationId,
                 error.violations());

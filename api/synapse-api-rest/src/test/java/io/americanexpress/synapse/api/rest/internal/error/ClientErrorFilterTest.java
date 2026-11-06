@@ -66,7 +66,7 @@ class ClientErrorFilterTest {
     private static ProblemWriter writer(Map<String, Integer> statuses) {
         StaticMessageSource messages = new StaticMessageSource();
         return new ProblemWriter(new RestErrorStatuses(statuses, Map.of()), new ErrorMessages(messages),
-                new ProblemTitles(messages), new SynapseErrorProperties(null, null), () -> false, MAPPER,
+                new ProblemTitles(messages), new SynapseErrorProperties(false, null), MAPPER,
                 "X-Correlation-Id");
     }
 

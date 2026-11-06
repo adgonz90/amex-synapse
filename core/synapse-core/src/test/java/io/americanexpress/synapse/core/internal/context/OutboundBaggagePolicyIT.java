@@ -37,6 +37,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.client.RestClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,6 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.tracing.baggage.remote-fields=tenant,secret",
         "management.logging.export.otlp.enabled=false", "management.tracing.export.otlp.enabled=false",
         "management.otlp.metrics.export.enabled=false"})
+@ActiveProfiles("test")
 class OutboundBaggagePolicyIT {
 
     private static final AtomicReference<@Nullable Map<String, String>> RECORDED = new AtomicReference<>();

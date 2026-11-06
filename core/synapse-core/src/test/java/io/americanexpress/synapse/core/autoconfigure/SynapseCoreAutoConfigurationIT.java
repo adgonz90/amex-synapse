@@ -28,8 +28,8 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.core.task.TaskDecorator;
 import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
+import org.springframework.test.context.ActiveProfiles;
 
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.ContextScope;
 import io.americanexpress.synapse.core.internal.context.InboundContext;
@@ -45,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "synapse.api.rest.context.headers.tenant=X-Tenant",
         "management.logging.export.otlp.enabled=false", "management.tracing.export.otlp.enabled=false",
         "management.otlp.metrics.export.enabled=false"})
+@ActiveProfiles("test")
 class SynapseCoreAutoConfigurationIT {
 
     @Autowired
@@ -54,14 +55,15 @@ class SynapseCoreAutoConfigurationIT {
     private Environment environment;
 
     @Test
+    void runsInTheTestEnvironment() {
+        assertThat(environment.getActiveProfiles()).containsExactly("test");
+    }
+
+    @Test
     void coreAutoConfigurationIsAppliedThroughImportsFile() {
         assertThat(context.getBeansOfType(SynapseCoreAutoConfiguration.class)).hasSize(1);
         assertThat(context.getBeansOfType(SynapseContextAutoConfiguration.class)).hasSize(1);
-        assertThat(context.getBean(SynapseErrorProperties.class).includeDetail()).isNull();
-        assertThat(context
-                .getBean(SynapseErrorProperties.class)
-                .includeDetail(context.getBean(SynapseEnvironment.class))).isFalse();
-        assertThat(context.getBean(SynapseEnvironment.class).isProduction()).isTrue();
+        assertThat(context.getBean(SynapseErrorProperties.class).includeDetail()).isFalse();
         assertThat(context.getBean(TaskDecorator.class)).isInstanceOf(ContextPropagatingTaskDecorator.class);
     }
 

@@ -56,7 +56,7 @@ class RouteCompilerTest {
             new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
             new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
                     RouteFixtures.etags()),
-            RouteFixtures.cursors(), () -> true);
+            RouteFixtures.cursors());
 
     @Test
     void mostSpecificTemplateWinsRegardlessOfDeclarationOrder() {
@@ -143,11 +143,10 @@ class RouteCompilerTest {
     @Test
     void generatedCursorKeyIsReportedOnceAfterValidation() {
         PageCursors generated = RouteFixtures.cursors(null);
-        RouteCompiler production = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
+        RouteCompiler generatedKeyCompiler = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
                 new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
                 new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), generated, RouteFixtures.etags()),
-                generated,
-                () -> true);
+                generated);
         RestBindings paged = RestBindings
                 .builder()
                 .get("/books", new PagedBooksOperation())
@@ -159,9 +158,9 @@ class RouteCompilerTest {
                 .get("/books", new PagedBooksOperation())
                 .build();
 
-        List<ILoggingEvent> compiled = warnings(() -> production.compile(List.of(paged), List.of()));
+        List<ILoggingEvent> compiled = warnings(() -> generatedKeyCompiler.compile(List.of(paged), List.of()));
         List<ILoggingEvent> failed = warnings(() -> assertThatExceptionOfType(SynapseConfigurationException.class)
-                .isThrownBy(() -> production.compile(List.of(broken), List.of())));
+                .isThrownBy(() -> generatedKeyCompiler.compile(List.of(broken), List.of())));
         List<ILoggingEvent> configured = warnings(() -> compiler.compile(List.of(paged), List.of()));
 
         assertThat(compiled)
@@ -175,18 +174,17 @@ class RouteCompilerTest {
     @Test
     void generatedCursorKeyIsNotReportedWhenABindabilityCheckFails() {
         PageCursors generated = RouteFixtures.cursors(null);
-        RouteCompiler production = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
+        RouteCompiler generatedKeyCompiler = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
                 new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
                 new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), generated, RouteFixtures.etags()),
-                generated,
-                () -> true);
+                generated);
         RestBindings unconvertible = RestBindings.builder().get("/pairs/{pair}", new PairPageOperation()).build();
         // The route passes the binding rules; only the bindability check, which runs after them, fails it.
         assertThat(new BindingValidator(PagingSettings.defaults()).validate(unconvertible.routes(), List.of()))
                 .hasSize(1);
 
         List<ILoggingEvent> failed = warnings(() -> assertThatExceptionOfType(SynapseConfigurationException.class)
-                .isThrownBy(() -> production.compile(List.of(unconvertible), List.of()))
+                .isThrownBy(() -> generatedKeyCompiler.compile(List.of(unconvertible), List.of()))
                 .satisfies(e -> assertThat(e.description()).contains("can't be converted from a string")));
 
         assertThat(failed).isEmpty();

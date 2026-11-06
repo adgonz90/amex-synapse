@@ -38,6 +38,21 @@ public class SynapseConfigurationException extends RuntimeException {
     }
 
     /**
+     * Creates the exception with the failure that caused it, such as a file's parser failure. The cause is for
+     * diagnosis only: it is never shown to API callers, and Boot's failure reporter logs it only at {@code DEBUG}, while
+     * the startup message prints the description and action. The exception's message is the description alone.
+     *
+     * @param description what is wrong
+     * @param action what to do about it
+     * @param cause the failure that caused it
+     */
+    public SynapseConfigurationException(String description, String action, Throwable cause) {
+        super(description, cause);
+        this.description = description;
+        this.action = action;
+    }
+
+    /**
      * Returns what is wrong.
      *
      * @return the description

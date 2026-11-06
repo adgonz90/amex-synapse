@@ -13,6 +13,8 @@
  */
 package io.americanexpress.synapse.core.autoconfigure;
 
+import java.io.IOException;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.boot.diagnostics.FailureAnalysis;
@@ -34,6 +36,22 @@ class SynapseConfigurationFailureAnalyzerTest {
                 .isNotNull()
                 .extracting(FailureAnalysis::getDescription, FailureAnalysis::getAction, FailureAnalysis::getCause)
                 .containsExactly("what is wrong", "what to do", failure);
+    }
+
+    @Test
+    void passesTheExceptionWithItsCauseToTheReporter() {
+        // As Boot's own analyzers do, the analysis carries the exception it matched; Boot's reporter logs it, with its
+        // cause chain, only at DEBUG, and prints only the description and action at ERROR.
+        IOException parserFailure = new IOException("parser text");
+        SynapseConfigurationException failure = new SynapseConfigurationException("what is wrong", "what to do",
+                parserFailure);
+        assertThat(analyzer.analyze(new BeanCreationException("bean", failure)))
+                .isNotNull()
+                .satisfies(analysis -> {
+                    assertThat(analysis.getDescription()).isEqualTo("what is wrong");
+                    assertThat(analysis.getAction()).isEqualTo("what to do");
+                    assertThat(analysis.getCause()).isSameAs(failure).cause().isSameAs(parserFailure);
+                });
     }
 
     @Test

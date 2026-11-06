@@ -43,6 +43,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import org.springframework.util.unit.DataSize;
@@ -66,6 +67,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.otlp.metrics.export.enabled=false"})
 @AutoConfigureRestTestClient
 @ExtendWith(OutputCaptureExtension.class)
+@ActiveProfiles("test")
 class RestLimitsIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();

@@ -18,7 +18,7 @@ Code paths are under `src/main/java/io/americanexpress/synapse/samples/books/`.
 | Paging: a `PageQuery` in the input, a `.sortable(...)` allow-list, a `PageResult` output written as a page object with `Link: rel="next"`, and cursors the edge encrypts | `model/SearchBooksRequest.java`, `operation/SearchBooksOperation.java`, [Pages and sorting](#pages-and-sorting) |
 | Versions and conditional requests: `.etag(...)` (`ETag`, 304), `If-Match` bound to a `version` component (412), `.requireIfMatch()` (428), and `STALE_VERSION` from a compare-and-set in the store (409 without `If-Match`) | `data/InMemoryBookStore.java`, `business/ReviseBook.java`, [Conditional requests](#conditional-requests) |
 | A stand-in data store (thread-safe, in memory) with its own model | `data/` |
-| Problem responses (RFC 9457 `application/problem+json`) with `code`, `correlationId` and `violations`; `detail` only outside production | [Errors](#errors) |
+| Problem responses (RFC 9457 `application/problem+json`) with `code`, `correlationId` and `violations`; `detail` only when `include-detail` is on (local) | [Errors](#errors) |
 | The correlation id: read from `X-Correlation-Id` or generated, echoed on every response, written to the logs of the request | [Correlation id](#correlation-id) |
 | ECS JSON logs; a failing operation logs one line, a successful one logs nothing | [Logs](#what-to-look-for-in-the-logs) |
 | Tests: the REST slice (`@SynapseRestTest`), the operation slice (`@SynapseOperationTest`), `SynapseOperations.invoke`, an end-to-end test on a real server, and the layering rules | `src/test/java` |
@@ -55,22 +55,64 @@ You need JDK 25 to build (Synapse's build requires it; the service itself runs o
 
 ```bash
 ./mvnw -pl samples/rest-books -am package -DskipTests
-java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar --spring.profiles.active=dev
+ENV=local java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar
 ```
 
 The first command builds the sample and the Synapse modules it uses, without running the tests (`./mvnw verify` runs
-them). The service listens on port 8080; stop it with Ctrl+C. At startup the REST plugin logs one line per route, for
-example:
+them). The second runs the `local` environment: `application.yaml` maps `spring.profiles.active: ${ENV}`, and
+`application-local.yaml` turns on `detail` in problem responses (`synapse.errors.include-detail: true`).
+`spring-boot:run` runs this module as `local` too: the pom sets `spring-boot.run.profiles` to `local`, and
+`-Dspring-boot.run.profiles=<env>` picks another. It runs the sample alone, so it takes the Synapse modules from your
+local Maven repository: install them first (again after you change them):
+
+```bash
+./mvnw -pl samples/rest-books -am install -DskipTests
+./mvnw -pl samples/rest-books spring-boot:run
+```
+
+`-DskipTests` only saves time on the install step; it is not a test run.
+
+The service listens on port 8080; stop it with Ctrl+C. At startup it logs which environment it runs and where its
+configuration comes from (see [What to look for in the logs](#what-to-look-for-in-the-logs)), and the REST plugin logs
+one line per route, for example:
 
 ```text
 {"@timestamp":"2026-11-04T20:51:44.689895800Z","log":{"level":"INFO","logger":"io.americanexpress.synapse.api.rest"},"process":{"pid":5868,"thread":{"name":"main"}},"service":{"name":"rest-books","node":{}},"message":"Synapse REST exposes GET /books/{id} -> get-book on port 8080","ecs":{"version":"8.11"}}
 ```
 
-It also logs, at INFO, that `synapse.api.rest.paging.cursor.key` is not set; in production that line is a WARN (see
-[Production mode](#production-mode)).
+It also logs a WARN that `synapse.api.rest.paging.cursor.key` is not set (see [Safe defaults](#safe-defaults)).
 
-The `dev` profile makes problem responses carry `detail`. Without a profile the service counts as production and
-leaves `detail` out.
+The service needs an environment. Started without `ENV`, it stops before anything else runs:
+
+```text
+***************************
+APPLICATION FAILED TO START
+***************************
+
+Description:
+
+No environment is set: spring.profiles.active is '${ENV}', and ENV has no value.
+
+Action:
+
+Set ENV to the name of the environment (the service has an application-<env>.yaml for each). Run locally with -Dspring-boot.run.profiles=local or an IDE run configuration; Synapse's test slices activate test; other Spring Boot tests declare @ActiveProfiles("test").
+```
+
+An environment without its own file (here `ENV=e9`; the sample ships only `application-local.yaml`) stops it too:
+
+```text
+***************************
+APPLICATION FAILED TO START
+***************************
+
+Description:
+
+The environment 'e9' has no file in the service: none of application-e9.yaml, application-e9.yml, application-e9.properties was loaded or found on the classpath. Environment names are case-sensitive.
+
+Action:
+
+Add application-e9.yaml to the service (it may be empty), or set the environment to the name of an existing file.
+```
 
 ## Endpoints
 
@@ -502,7 +544,7 @@ that wins between that read and the store's compare-and-set still fails: the sto
 book at an older version.
 
 `DELETE` requires `If-Match` (`.requireIfMatch()`). Without it the answer is 428, and the violation says how to retry,
-in production too:
+with `detail` off too:
 
 ```bash
 curl -s -i -X DELETE http://localhost:8080/books/00000000-0000-0000-0000-000000000001
@@ -534,6 +576,25 @@ Date: Wed, 04 Nov 2026 20:52:04 GMT
 
 The console shows one JSON object per line, in the Elastic Common Schema (from `synapse-logging-log4j2`).
 
+* At startup, one INFO event on `io.americanexpress.synapse.environment` names the environment and where it was set,
+  then every configuration source, highest priority first, with the module or jar it comes from. It never prints a
+  value. Its `message`, with `ENV=local`:
+
+  ```text
+  Synapse environment: local (spring.profiles.active=${ENV}, application.yaml)
+  Configuration, highest priority first:
+    1. server.ports
+    2. Synapse baggage fields
+    3. Java system properties
+    4. environment variables
+    5. application-local.yaml  synapse-sample-rest-books-2.0.0-SNAPSHOT.jar
+    6. application.yaml        synapse-sample-rest-books-2.0.0-SNAPSHOT.jar
+    7. logCorrelation
+    8. applicationInfo
+    9. defaults
+    10. Management Server
+  ```
+
 * Successful calls log nothing.
 * A failing operation logs one WARN line on `io.americanexpress.synapse.operation` (ERROR with the stack trace for an
   internal error), with `operation`, `error.code`, `error.category`, `correlationId` and the trace and span ids, plus
@@ -550,22 +611,24 @@ The console shows one JSON object per line, in the Elastic Common Schema (from `
   doesn't bind, a sort key, offset or cursor the plugin rejects, a weak `If-Match` (412), and a `DELETE` without
   `If-Match` (428).
 
-## Production mode
+## Safe defaults
 
-Stop the service and start it without the profile:
+Synapse's defaults are the same in every environment; only `application-local.yaml` turns `detail` on. Stop the
+service and start it with that setting turned off again:
 
 ```bash
-java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar
+ENV=local java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar \
+  --synapse.errors.include-detail=false
 ```
 
-No cursor key is set, so the plugin generates one at startup and warns that tokens won't survive a restart or work on
-another instance:
+No cursor key is set, so the plugin generates one at startup and warns, at every start, that tokens won't survive a
+restart or work on another instance:
 
 ```text
 {"@timestamp":"2026-11-04T20:52:28.497836700Z","log":{"level":"WARN","logger":"io.americanexpress.synapse.api.rest"},"process":{"pid":776,"thread":{"name":"main"}},"service":{"name":"rest-books","node":{}},"message":"synapse.api.rest.paging.cursor.key is not set, so paging cursors are encrypted with a key generated at startup: a cursor fails with 400 after a restart or on another instance. Set the same base64 256-bit key on every instance (for example: openssl rand -base64 32).","ecs":{"version":"8.11"}}
 ```
 
-Problem responses now leave out `detail`:
+Problem responses leave out `detail`:
 
 ```bash
 curl -s http://localhost:8080/books/00000000-0000-0000-0000-000000000099
@@ -593,7 +656,7 @@ To silence the WARN, give the service a key. Stop it and start it with one (a re
 every instance, from the environment or a secret store; see `application.yaml`):
 
 ```bash
-java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar \
+ENV=local java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar \
   --synapse.api.rest.paging.cursor.key=$(openssl rand -base64 32)
 ```
 
@@ -617,7 +680,7 @@ sample.
 | `operation/BookOperationsTest` | `@SynapseOperationTest`: operations and business beans with the real pipeline (validation, error codes, versions, paging and sorting) |
 | `business/ReviseBookTest` | `SynapseOperations.invoke`: business operations through their pipeline, without Spring, including the races that end in `STALE_VERSION` |
 | `data/InMemoryBookStoreTest` | The store, as a plain unit test: the compare-and-set |
-| `BooksApplicationIT` | The whole service on a real port, without a profile (production): cursors and `Link`, offsets, 304, 412, 409 with a `@MockitoSpyBean` store, 428; tagged `smoke` |
+| `BooksApplicationIT` | The whole service on a real port, as `test` with `synapse.errors.include-detail=false` (the safe defaults: no `detail`): cursors and `Link`, offsets, 304, 412, 409 with a `@MockitoSpyBean` store, 428; tagged `smoke` |
 | `ArchitectureTest` | The layering rules |
 
 ## Not here yet

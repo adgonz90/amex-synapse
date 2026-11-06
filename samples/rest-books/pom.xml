@@ -40,6 +40,9 @@
         <maven.deploy.skip>true</maven.deploy.skip>
         <maven.source.skip>true</maven.source.skip>
         <maven.javadoc.skip>true</maven.javadoc.skip>
+        <!-- ./mvnw spring-boot:run runs the local environment (application-local.yaml);
+             -Dspring-boot.run.profiles=<env> picks another. -->
+        <spring-boot.run.profiles>local</spring-boot.run.profiles>
     </properties>
 
     <dependencies>

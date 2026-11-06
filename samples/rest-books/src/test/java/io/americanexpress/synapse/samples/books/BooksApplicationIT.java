@@ -25,6 +25,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import tools.jackson.databind.JsonNode;
@@ -39,16 +40,18 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.willAnswer;
 
 /**
- * The whole service on a real server, as it runs in production: no profile is active, so problem responses carry no
- * {@code detail}.
+ * The whole service on a real server in the {@code test} environment, with {@code synapse.errors.include-detail=false}
+ * pinned so it checks the safe defaults: problem responses carry no {@code detail}. (The sample's
+ * {@code application-test.yaml} turns detail on for the slice tests.)
  *
  * <p>
  * The tests share the catalog (one Spring context). The searches expect the three seeded books, so every test that
  * adds a book deletes it, and no test changes a seeded book.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "synapse.errors.include-detail=false")
 @AutoConfigureRestTestClient
 @Tag("smoke")
+@ActiveProfiles("test")
 class BooksApplicationIT {
 
     private static final String DUNE = "/books/00000000-0000-0000-0000-000000000001";
@@ -343,7 +346,7 @@ class BooksApplicationIT {
     }
 
     @Test
-    void anUnknownBookIsBookNotFoundWithoutDetailInProduction() {
+    void anUnknownBookIsBookNotFoundWithoutDetailByDefault() {
         client
                 .get()
                 .uri("/books/00000000-0000-0000-0000-000000000099")

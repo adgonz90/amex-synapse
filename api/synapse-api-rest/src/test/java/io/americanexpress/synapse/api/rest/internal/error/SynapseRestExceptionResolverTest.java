@@ -92,7 +92,7 @@ class SynapseRestExceptionResolverTest {
 
     private final SynapseRestExceptionResolver resolver = new SynapseRestExceptionResolver(
             new ProblemWriter(new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages),
-                    new ProblemTitles(messages), new SynapseErrorProperties(null, null), () -> false, MAPPER,
+                    new ProblemTitles(messages), new SynapseErrorProperties(false, null), MAPPER,
                     "X-Correlation-Id"));
 
     private JsonNode resolve(Exception ex) {

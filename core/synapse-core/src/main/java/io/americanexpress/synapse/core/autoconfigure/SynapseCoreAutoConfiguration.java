@@ -14,27 +14,24 @@
 package io.americanexpress.synapse.core.autoconfigure;
 
 import java.time.Clock;
-import java.util.Arrays;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import org.springframework.core.env.Environment;
 import tools.jackson.databind.json.JsonMapper;
 
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.masking.LogMasking;
 
 /**
- * Auto-configuration for the Synapse core: its properties, the application {@link Clock}, the
- * {@link SynapseEnvironment} and the {@link LogMasking}. Registered in
+ * Auto-configuration for the Synapse core: its properties, the application {@link Clock} and the
+ * {@link LogMasking}. Registered in
  * {@code META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}.
  */
 @AutoConfiguration(afterName = "org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration")
 @EnableConfigurationProperties({SynapseErrorProperties.class, SynapsePagingProperties.class,
-        SynapseEnvironmentProperties.class, SynapseObservabilityProperties.class, SynapseOperationsProperties.class})
+        SynapseObservabilityProperties.class, SynapseOperationsProperties.class})
 public class SynapseCoreAutoConfiguration {
 
     /**
@@ -46,21 +43,6 @@ public class SynapseCoreAutoConfiguration {
     @ConditionalOnMissingBean
     Clock clock() {
         return Clock.systemUTC();
-    }
-
-    /**
-     * The environment, production unless a non-production profile is active.
-     *
-     * @param environment the Spring environment
-     * @param properties the environment properties
-     * @return the Synapse environment
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    SynapseEnvironment synapseEnvironment(Environment environment, SynapseEnvironmentProperties properties) {
-        return SynapseEnvironment
-                .fromProfiles(Arrays.asList(environment.getActiveProfiles()),
-                        properties.nonProductionProfiles());
     }
 
     /**

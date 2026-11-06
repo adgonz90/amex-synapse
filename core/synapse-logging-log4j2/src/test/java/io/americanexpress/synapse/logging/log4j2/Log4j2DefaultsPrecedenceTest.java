@@ -51,6 +51,7 @@ class Log4j2DefaultsPrecedenceTest {
     private static SpringApplication application(String configName) {
         SpringApplication application = new SpringApplication(Empty.class);
         application.setWebApplicationType(WebApplicationType.NONE);
+        application.setAdditionalProfiles("test");
         application.setBannerMode(org.springframework.boot.Banner.Mode.OFF);
         System.setProperty("spring.config.name", configName);
         return application;

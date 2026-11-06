@@ -1,7 +1,13 @@
 # Environment Post Processors
 org.springframework.boot.EnvironmentPostProcessor=\
-io.americanexpress.synapse.core.autoconfigure.BaggageFieldsEnvironmentPostProcessor
+io.americanexpress.synapse.core.autoconfigure.BaggageFieldsEnvironmentPostProcessor,\
+io.americanexpress.synapse.core.autoconfigure.SynapseEnvironmentPostProcessor
 
 # Failure Analyzers
 org.springframework.boot.diagnostics.FailureAnalyzer=\
-io.americanexpress.synapse.core.autoconfigure.SynapseConfigurationFailureAnalyzer
+io.americanexpress.synapse.core.autoconfigure.SynapseConfigurationFailureAnalyzer,\
+io.americanexpress.synapse.core.autoconfigure.UnresolvedEnvironmentFailureAnalyzer
+
+# Application Listeners
+org.springframework.context.ApplicationListener=\
+io.americanexpress.synapse.core.autoconfigure.ConfigurationReportListener

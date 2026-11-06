@@ -52,7 +52,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.context.RequestContext;
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.ContextScope;
 import io.americanexpress.synapse.core.internal.context.CorrelationIdPolicy;
@@ -84,7 +83,6 @@ class SynapseContextAutoConfigurationTest {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(ContextBinder.class);
             assertThat(context).hasSingleBean(CorrelationIdPolicy.class);
-            assertThat(context).hasSingleBean(SynapseEnvironment.class);
             assertThat(context.getBean(TaskDecorator.class)).isInstanceOf(ContextPropagatingTaskDecorator.class);
             assertThat(context.getBean("synapseContextPropagatingTaskDecorator"))
                     .isInstanceOf(ContextPropagatingTaskDecorator.class);
@@ -103,7 +101,6 @@ class SynapseContextAutoConfigurationTest {
     void backsOffToUserBeans() {
         contextRunner.withUserConfiguration(UserBeans.class).run(context -> {
             assertThat(context.getBean(Clock.class)).isSameAs(UserBeans.CLOCK);
-            assertThat(context.getBean(SynapseEnvironment.class)).isSameAs(UserBeans.ENVIRONMENT);
             assertThat(context.getBean(CorrelationIdPolicy.class)).isSameAs(UserBeans.POLICY);
             assertThat(context.getBean(ContextBinder.class)).isSameAs(UserBeans.BINDER);
         });
@@ -427,18 +424,12 @@ class SynapseContextAutoConfigurationTest {
     static class UserBeans {
 
         static final Clock CLOCK = FIXED;
-        static final SynapseEnvironment ENVIRONMENT = () -> false;
         static final CorrelationIdPolicy POLICY = new CorrelationIdPolicy(10);
         static final ContextBinder BINDER = new ContextBinder(Tracer.NOOP, POLICY, true, 1, 10);
 
         @Bean
         Clock userClock() {
             return CLOCK;
-        }
-
-        @Bean
-        SynapseEnvironment userEnvironment() {
-            return ENVIRONMENT;
         }
 
         @Bean

@@ -71,7 +71,6 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseContextProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 
 /**
@@ -258,15 +257,14 @@ public class SynapseRestAutoConfiguration {
      * @param binder binds the inputs
      * @param writer writes the responses
      * @param cursors unwraps the cursor tokens, and reports a cursor key generated at startup
-     * @param environment tells whether this is production, for the level of that report
      * @return the compiler
      */
     @Bean
     @ConditionalOnBean(RestBindings.class)
     @ConditionalOnMissingBean
     RouteCompiler routeCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer,
-            PageCursors cursors, SynapseEnvironment environment) {
-        return new RouteCompiler(validator, binder, writer, cursors, environment);
+            PageCursors cursors) {
+        return new RouteCompiler(validator, binder, writer, cursors);
     }
 
     /**

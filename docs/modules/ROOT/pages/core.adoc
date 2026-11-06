@@ -121,11 +121,9 @@ arguments are converted with `String.valueOf` first, so `12345` prints as given.
 code overrides the template; an entry that is exactly the code (what Spring returns with
 `spring.messages.use-code-as-default-message=true`) counts as no entry, so the template is used.
 
-`synapse.errors.include-detail` controls whether callers see the message. When it is unset, the message is shown
-outside production and hidden in production (`SynapseEnvironment.isProduction()`: production unless a profile listed
-in `synapse.environment.non-production-profiles` (default `dev,local,test`) is active). With no active profile the
-application is production, so the message is hidden until you activate a non-production profile. An explicit `true`
-or `false` always wins. Stack traces and class names are never exposed.
+`synapse.errors.include-detail` (default `false`) controls whether callers see the message. It is hidden in every
+environment until an environment file turns it on, such as `application-local.yaml` (see
+xref:environments.adoc#safe-defaults[Safe defaults]). Stack traces and class names are never exposed.
 
 Categories: `INVALID_INPUT`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `PRECONDITION_FAILED`,
 `RATE_LIMITED`, `UNAVAILABLE`, `TIMEOUT`, `INTERNAL`.
@@ -287,12 +285,15 @@ the default 30.
 
 == Native image and AOT
 
-Core registers runtime hints for its context accessor service file and binding reflection hints for the input and
-output types of operations and business beans (generic arguments and arrays are unwrapped). The JVM AOT mode is
-tested; a native image build is not covered yet.
+Core registers runtime hints for its context accessor service file, for the modules' configuration files
+(`META-INF/synapse/config*.yaml` and `config*.properties`) and binding reflection hints for the input and output types
+of operations and business beans (generic arguments and arrays are unwrapped). The JVM AOT mode is tested; a native
+image build is not covered yet. Environment files under AOT have their own rules: see
+xref:environments.adoc#aot[AOT and native images].
 
 == Configuration
 
 All properties are in the xref:reference/configuration-properties.adoc[property reference]. Core's are
-`synapse.context.*`, `synapse.correlation.*`, `synapse.errors.*`, `synapse.paging.*`, `synapse.environment.*`,
-`synapse.observability.*` and `synapse.operations.*`.
+`synapse.context.*`, `synapse.correlation.*`, `synapse.errors.*`, `synapse.paging.*`, `synapse.observability.*` and
+`synapse.operations.*`. The environment and the configuration files of the service and its modules are described in
+xref:environments.adoc[Environments].

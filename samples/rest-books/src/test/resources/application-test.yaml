@@ -1,0 +1,5 @@
+# Settings for the tests: Synapse's test slices activate the test profile, which loads this file.
+# Error detail is off by default in every environment; turning it on here lets the tests check the detail message.
+synapse:
+  errors:
+    include-detail: true

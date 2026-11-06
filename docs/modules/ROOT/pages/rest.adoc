@@ -451,7 +451,7 @@ synapse.api.rest.paging.cursor.key=${CURSOR_KEY}
   startup with a message that names the property, never the value.
 * An unset or blank key (`${CURSOR_KEY:}` without the variable) makes the plugin generate a key at startup. Cursors
   then fail with 400 after a restart and on another instance. When at least one route returns `PageResult`, startup
-  logs once on `io.americanexpress.synapse.api.rest`, at WARN in production and at INFO otherwise:
+  logs once on `io.americanexpress.synapse.api.rest`, at WARN in every environment:
 +
 ----
 synapse.api.rest.paging.cursor.key is not set, so paging cursors are encrypted with a key generated at startup: a
@@ -639,8 +639,8 @@ missing. `.from(...)` alone doesn't count as binding the header, so the request 
   `PRECONDITION_FAILED`, and the operation is not called: the precondition can't be verified, and ignoring it would
   turn a conditional write into an unconditional one. On `GET` and `HEAD`, an `If-Match` is ignored.
 * `.requireIfMatch()` answers 428 `PRECONDITION_REQUIRED` to a request without `If-Match`. The problem carries the
-  violation `{If-Match, is required; send the ETag from a GET of this resource}`, so it says how to retry also in
-  production, where `detail` is hidden. `If-Match: *` satisfies it. It is allowed only on `POST`, `PUT` and `DELETE`
+  violation `{If-Match, is required; send the ETag from a GET of this resource}`, so it says how to retry also when
+  `detail` is hidden, as it is by default. `If-Match: *` satisfies it. It is allowed only on `POST`, `PUT` and `DELETE`
   routes that bind `If-Match`; otherwise startup fails.
 * `If-Unmodified-Since` and `If-Modified-Since` are ignored: Synapse sends no `Last-Modified`.
 
@@ -688,8 +688,8 @@ Every error is an RFC 9457 `application/problem+json` response:
 
 * `code` and `correlationId` are always present, and the correlation id is also echoed in the correlation header.
   There is no `instance` member: `correlationId` is the lookup key.
-* `detail` is the formatted message, shown or hidden by `synapse.errors.include-detail` and the environment (see
-  xref:core.adoc#errors[Errors]): by default it is shown outside production and hidden in production.
+* `detail` is the formatted message, shown only when `synapse.errors.include-detail` is `true` (default `false`, in
+  every environment; see xref:core.adoc#errors[Errors]).
 * `violations` is omitted when empty.
 * With `synapse.errors.type-base-uri` unset, `type` is `about:blank` and `title` is the HTTP status phrase. When it is
   set, `type` is the base URI, `/` and the code, and `title` is the category's title, which the `MessageSource` key

@@ -35,6 +35,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import tools.jackson.databind.JsonNode;
@@ -61,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.logging.export.otlp.enabled=false", "management.tracing.export.otlp.enabled=false",
         "management.otlp.metrics.export.enabled=false"})
 @AutoConfigureRestTestClient
+@ActiveProfiles("test")
 class RestConditionalIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
@@ -367,7 +369,7 @@ class RestConditionalIT {
         assertThat(required.json().get("violations").get(0).get("field").asString()).isEqualTo("If-Match");
         assertThat(required.json().get("violations").get(0).get("message").asString())
                 .isEqualTo("is required; send the ETag from a GET of this resource");
-        // No active profile is production: the detail is hidden, and the violation still says how to retry.
+        // Detail is hidden by default; the violation still says how to retry.
         assertThat(required.json().has("detail")).isFalse();
         assertThat(deleteBook.inputs()).isEmpty();
 

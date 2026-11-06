@@ -36,6 +36,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.test.context.ActiveProfiles;
 
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.SynapseErrors;
@@ -52,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(classes = SynapseOperationIT.TestApplication.class, properties = {
         "management.logging.export.otlp.enabled=false", "management.tracing.export.otlp.enabled=false",
         "management.otlp.metrics.export.enabled=false"})
+@ActiveProfiles("test")
 class SynapseOperationIT {
 
     @Autowired

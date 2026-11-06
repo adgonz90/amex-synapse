@@ -32,6 +32,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -52,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.tracing.export.otlp.enabled=false", "management.otlp.metrics.export.enabled=false"})
 @AutoConfigureRestTestClient
 @ExtendWith(OutputCaptureExtension.class)
+@ActiveProfiles("test")
 class InboundPropagationIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();

@@ -35,6 +35,7 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -49,10 +50,11 @@ import io.americanexpress.synapse.core.error.SynapseException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(classes = RestErrorsIT.TestApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
-        "spring.profiles.active=dev", "management.logging.export.otlp.enabled=false",
+        "synapse.errors.include-detail=true", "management.logging.export.otlp.enabled=false",
         "management.tracing.export.otlp.enabled=false", "management.otlp.metrics.export.enabled=false"})
 @AutoConfigureRestTestClient
 @ExtendWith(OutputCaptureExtension.class)
+@ActiveProfiles("test")
 class RestErrorsIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();

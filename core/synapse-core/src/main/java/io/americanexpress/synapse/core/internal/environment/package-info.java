@@ -12,9 +12,10 @@
  * the License.
  */
 /**
- * The environment a Synapse application runs in, used to switch on non-production behaviour fail-safe.
+ * Environments: the one active profile that names the run, and the labels of the configuration sources it is
+ * reported against.
  */
 @NullMarked
-package io.americanexpress.synapse.core.environment;
+package io.americanexpress.synapse.core.internal.environment;
 
 import org.jspecify.annotations.NullMarked;

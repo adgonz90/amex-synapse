@@ -543,7 +543,7 @@ class SynapseRestAutoConfigurationTest {
         ResponseWriter writer = new ResponseWriter(mapper, conversions, cursors, etags);
         BindingValidator validator = new BindingValidator(PagingSettings.defaults());
         RequestBinder binder = new RequestBinder(mapper, conversions, PagingSettings.defaults());
-        RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors, () -> true);
+        RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors);
         ExposureInventory inventory = new ExposureInventory(new StaticListableBeanFactory()
                 .getBeanProvider(
                         ResolvableType.forClassWithGenerics(RouterFunction.class, ServerResponse.class)));
@@ -877,8 +877,8 @@ class SynapseRestAutoConfigurationTest {
     private static ProblemWriter problemWriter() {
         StaticMessageSource messages = new StaticMessageSource();
         return new ProblemWriter(new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages),
-                new ProblemTitles(messages), new SynapseErrorProperties(null, null), () -> false,
-                JsonMapper.builder().build(), "X-Correlation-Id");
+                new ProblemTitles(messages), new SynapseErrorProperties(false, null), JsonMapper.builder().build(),
+                "X-Correlation-Id");
     }
 
     private static FilterRegistrationBean<?> inboundRegistration(AssertableWebApplicationContext context) {

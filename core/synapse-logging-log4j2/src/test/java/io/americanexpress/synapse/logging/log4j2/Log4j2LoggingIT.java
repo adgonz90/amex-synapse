@@ -125,6 +125,7 @@ class Log4j2LoggingIT {
 
     private static ConfigurableApplicationContext run(String... arguments) {
         return new SpringApplicationBuilder(TestApplication.class)
+                .profiles("test")
                 .web(WebApplicationType.NONE)
                 .run(arguments);
     }

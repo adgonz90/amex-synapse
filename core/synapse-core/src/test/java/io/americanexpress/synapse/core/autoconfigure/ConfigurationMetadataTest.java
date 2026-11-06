@@ -60,6 +60,12 @@ class ConfigurationMetadataTest {
         });
     }
 
+    @Test
+    void hasNoEnvironmentProperties() throws IOException {
+        List<String> names = JsonPath.read(synapseMetadata(), "$.properties[*].name");
+        assertThat(names).noneMatch(name -> name.startsWith("synapse.environment."));
+    }
+
     private static String synapseMetadata() throws IOException {
         for (URL url : Collections.list(ConfigurationMetadataTest.class.getClassLoader().getResources(METADATA))) {
             try (InputStream in = url.openStream()) {

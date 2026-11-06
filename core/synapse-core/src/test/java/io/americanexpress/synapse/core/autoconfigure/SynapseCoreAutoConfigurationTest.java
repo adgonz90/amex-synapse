@@ -28,7 +28,6 @@ import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import tools.jackson.databind.json.JsonMapper;
 
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.masking.LogMasking;
 import io.americanexpress.synapse.core.masking.Masked;
 import io.americanexpress.synapse.core.observability.BusinessObservation;
@@ -41,19 +40,16 @@ class SynapseCoreAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(SynapseCoreAutoConfiguration.class));
 
     @ParameterizedTest
-    @CsvSource({"'',,false", "dev,,true", "test,,true", "prod,,false", "dev,false,false", "'',true,true",
-            "prod,true,true"})
-    void errorDetailDefaultsByEnvironmentAndAnExplicitValueWins(String profiles, @Nullable Boolean explicit,
+    @CsvSource({"'',,false", "dev,,false", "test,,false", "local,,false", "prod,true,true", "dev,false,false"})
+    void errorDetailIsHiddenUnlessIncludeDetailIsTrue(String profiles, @Nullable Boolean explicit,
             boolean included) {
         ApplicationContextRunner runner = contextRunner.withPropertyValues("spring.profiles.active=" + profiles);
         if (explicit != null) {
             runner = runner.withPropertyValues("synapse.errors.include-detail=" + explicit);
         }
-        runner.run(context -> {
-            SynapseErrorProperties properties = context.getBean(SynapseErrorProperties.class);
-            assertThat(properties.includeDetail()).isEqualTo(explicit);
-            assertThat(properties.includeDetail(context.getBean(SynapseEnvironment.class))).isEqualTo(included);
-        });
+        runner
+                .run(context -> assertThat(context.getBean(SynapseErrorProperties.class).includeDetail())
+                        .isEqualTo(included));
     }
 
     @Test
@@ -63,31 +59,12 @@ class SynapseCoreAutoConfigurationTest {
             SynapsePagingProperties paging = context.getBean(SynapsePagingProperties.class);
             assertThat(paging.defaultSize()).isEqualTo(20);
             assertThat(paging.maxSize()).isEqualTo(100);
-            assertThat(context.getBean(SynapseEnvironmentProperties.class).nonProductionProfiles())
-                    .containsExactly("dev", "local", "test");
             assertThat(context.getBean(SynapseObservabilityProperties.class).business())
                     .isEqualTo(BusinessObservation.SPANS);
             assertThat(context.getBean(SynapseObservabilityProperties.class).requireTracing()).isTrue();
             assertThat(context.getBean(SynapseOperationsProperties.class).operations()).isEmpty();
             assertThat(context.getBean(Clock.class).getZone()).isEqualTo(ZoneOffset.UTC);
-            assertThat(context.getBean(SynapseEnvironment.class).isProduction()).isTrue();
         });
-    }
-
-    @ParameterizedTest
-    @CsvSource({"'',true", "dev,false", "prod,true", "'prod,dev',false", "DEV,true"})
-    void productionUnlessANonProductionProfileIsActive(String profiles, boolean production) {
-        contextRunner
-                .withPropertyValues("spring.profiles.active=" + profiles)
-                .run(context -> assertThat(context.getBean(SynapseEnvironment.class).isProduction())
-                        .isEqualTo(production));
-    }
-
-    @Test
-    void nonProductionProfilesAreConfigurable() {
-        contextRunner
-                .withPropertyValues("spring.profiles.active=qa", "synapse.environment.non-production-profiles=qa")
-                .run(context -> assertThat(context.getBean(SynapseEnvironment.class).isProduction()).isFalse());
     }
 
     @Test
@@ -153,16 +130,11 @@ class SynapseCoreAutoConfigurationTest {
     }
 
     @Test
-    void backsOffToUserClockAndEnvironment() {
+    void backsOffToUserClock() {
         Clock clock = Clock.system(ZoneId.of("Europe/Paris"));
-        SynapseEnvironment environment = () -> false;
         contextRunner
                 .withBean(Clock.class, () -> clock)
-                .withBean(SynapseEnvironment.class, () -> environment)
-                .run(context -> {
-                    assertThat(context.getBean(Clock.class)).isSameAs(clock);
-                    assertThat(context.getBean(SynapseEnvironment.class)).isSameAs(environment);
-                });
+                .run(context -> assertThat(context.getBean(Clock.class)).isSameAs(clock));
     }
 
     record Person(String firstName, @Masked String ssn) {

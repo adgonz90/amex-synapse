@@ -49,11 +49,11 @@ class ProblemWriterTest {
 
     private final MockHttpServletResponse response = new MockHttpServletResponse();
 
-    private ProblemWriter writer(@Nullable Boolean includeDetail, @Nullable String typeBaseUri, boolean production) {
+    private ProblemWriter writer(boolean includeDetail, @Nullable String typeBaseUri) {
         SynapseErrorProperties properties = new SynapseErrorProperties(includeDetail,
                 typeBaseUri == null ? null : URI.create(typeBaseUri));
         return new ProblemWriter(new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages),
-                new ProblemTitles(messages), properties, () -> production, MAPPER, "X-Correlation-Id");
+                new ProblemTitles(messages), properties, MAPPER, "X-Correlation-Id");
     }
 
     private JsonNode write(ProblemWriter writer, SynapseException error) {
@@ -63,7 +63,7 @@ class ProblemWriterTest {
 
     @Test
     void aboutBlankWithStatusPhraseByDefault() {
-        JsonNode body = write(writer(null, null, false), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
+        JsonNode body = write(writer(false, null), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
 
         assertThat(response.getStatus()).isEqualTo(404);
         assertThat(response.getContentType()).startsWith("application/problem+json");
@@ -78,14 +78,14 @@ class ProblemWriterTest {
 
     @Test
     void typeFromBaseUriAndCategoryTitle() {
-        JsonNode body = write(writer(null, "https://errors.example.com/", false),
+        JsonNode body = write(writer(false, "https://errors.example.com/"),
                 new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
 
         assertThat(body.get("type").asString()).isEqualTo("https://errors.example.com/BOOK_NOT_FOUND");
         assertThat(body.get("title").asString()).isEqualTo("Not Found");
 
         MockHttpServletResponse second = new MockHttpServletResponse();
-        writer(null, "https://errors.example.com", false)
+        writer(false, "https://errors.example.com")
                 .write(request, second, new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
         assertThat(MAPPER.readTree(second.getContentAsByteArray()).get("type").asString())
                 .isEqualTo("https://errors.example.com/BOOK_NOT_FOUND");
@@ -95,7 +95,7 @@ class ProblemWriterTest {
     void categoryTitleOverriddenByMessageSource() {
         messages.addMessage("synapse.category.NOT_FOUND", Locale.ENGLISH, "Introuvable");
         request.addHeader("Accept-Language", "en");
-        JsonNode body = write(writer(null, "https://errors.example.com", false),
+        JsonNode body = write(writer(false, "https://errors.example.com"),
                 new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
 
         assertThat(body.get("title").asString()).isEqualTo("Introuvable");
@@ -109,7 +109,7 @@ class ProblemWriterTest {
         messages.addMessage("BOOK_NOT_FOUND", Locale.ENGLISH, "Livre {0} introuvable");
         messages.addMessage("BOOK_NOT_FOUND", Locale.ROOT, "Book {0} is missing");
 
-        JsonNode body = write(writer(true, "https://errors.example.com", false),
+        JsonNode body = write(writer(true, "https://errors.example.com"),
                 new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
 
         assertThat(body.get("title").asString()).isEqualTo("Missing");
@@ -117,32 +117,18 @@ class ProblemWriterTest {
     }
 
     @Test
-    void detailHiddenInProduction() {
-        JsonNode body = write(writer(null, null, true), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
-
-        assertThat(body.has("detail")).isFalse();
-    }
-
-    @Test
-    void detailShownOutsideProduction() {
-        JsonNode body = write(writer(null, null, false), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
-
+    void detailOnlyWhenIncludeDetailIsTrue() {
+        JsonNode body = write(writer(true, null), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
         assertThat(body.get("detail").asString()).isEqualTo("Book 42 was not found");
-    }
-
-    @Test
-    void explicitIncludeDetailWins() {
-        assertThat(write(writer(true, null, true), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42)).has("detail"))
-                .isTrue();
 
         MockHttpServletResponse second = new MockHttpServletResponse();
-        writer(false, null, false).write(request, second, new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
+        writer(false, null).write(request, second, new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
         assertThat(MAPPER.readTree(second.getContentAsByteArray()).has("detail")).isFalse();
     }
 
     @Test
     void violationsAlwaysIncluded() {
-        JsonNode body = write(writer(null, null, true), SynapseException
+        JsonNode body = write(writer(false, null), SynapseException
                 .ofViolations(SynapseErrors.VALIDATION_FAILED, List.of(new Violation("title", "must not be blank"))));
 
         assertThat(response.getStatus()).isEqualTo(400);
@@ -154,7 +140,7 @@ class ProblemWriterTest {
     @Test
     void correlationIdFromRequestAttributeAndEchoed() {
         request.setAttribute(RestRequestAttributes.CORRELATION_ID, "c-1");
-        JsonNode body = write(writer(null, null, false), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
+        JsonNode body = write(writer(false, null), new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
 
         assertThat(body.get("correlationId").asString()).isEqualTo("c-1");
         assertThat(response.getHeader("X-Correlation-Id")).isEqualTo("c-1");
@@ -162,7 +148,7 @@ class ProblemWriterTest {
 
     @Test
     void unauthenticatedCarriesBearerChallenge() {
-        write(writer(null, null, false), new SynapseException(SynapseErrors.UNAUTHENTICATED));
+        write(writer(false, null), new SynapseException(SynapseErrors.UNAUTHENTICATED));
 
         assertThat(response.getStatus()).isEqualTo(401);
         assertThat(response.getHeader("WWW-Authenticate")).isEqualTo("Bearer");
@@ -171,14 +157,14 @@ class ProblemWriterTest {
     @Test
     void existingChallengeIsKept() {
         response.setHeader("WWW-Authenticate", "Basic");
-        write(writer(null, null, false), new SynapseException(SynapseErrors.UNAUTHENTICATED));
+        write(writer(false, null), new SynapseException(SynapseErrors.UNAUTHENTICATED));
 
         assertThat(response.getHeaders("WWW-Authenticate")).containsExactly("Basic");
     }
 
     @Test
     void protocolExceptionHeadersAreSet() {
-        write(writer(null, null, false),
+        write(writer(false, null),
                 new RestProtocolException(RestErrors.METHOD_NOT_ALLOWED, Map.of("Allow", "GET, PUT")));
 
         assertThat(response.getStatus()).isEqualTo(405);
@@ -208,7 +194,7 @@ class ProblemWriterTest {
             }
         };
 
-        writer(null, null, false).write(request, failing, new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
+        writer(false, null).write(request, failing, new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
         assertThat(failing.getStatus()).isEqualTo(404);
     }
 
@@ -218,8 +204,8 @@ class ProblemWriterTest {
         ProblemWriter writer = new ProblemWriter(
                 new RestErrorStatuses(Map.of("BOOK_NOT_FOUND", 423),
                         Map.of("get-book", Map.of("BOOK_NOT_FOUND", 410))),
-                new ErrorMessages(messages), new ProblemTitles(messages), new SynapseErrorProperties(null, null),
-                () -> false, MAPPER, "X-Correlation-Id");
+                new ErrorMessages(messages), new ProblemTitles(messages), new SynapseErrorProperties(false, null),
+                MAPPER, "X-Correlation-Id");
         JsonNode body = write(writer, new SynapseException(BookErrors.BOOK_NOT_FOUND, 42));
 
         assertThat(response.getStatus()).isEqualTo(410);

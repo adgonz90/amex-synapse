@@ -149,8 +149,8 @@ class SynapseRestErrorAutoConfigurationTest {
                         new io.americanexpress.synapse.core.error.ErrorMessages(
                                 new org.springframework.context.support.StaticMessageSource()),
                         new ProblemTitles(new org.springframework.context.support.StaticMessageSource()),
-                        new io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties(null, null),
-                        () -> false, tools.jackson.databind.json.JsonMapper.builder().build(), "X-Correlation-Id"));
+                        new io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties(false, null),
+                        tools.jackson.databind.json.JsonMapper.builder().build(), "X-Correlation-Id"));
 
         @Bean
         SynapseRestExceptionResolver userResolver() {
@@ -173,7 +173,7 @@ class SynapseRestErrorAutoConfigurationTest {
                 new io.americanexpress.synapse.core.error.ErrorMessages(
                         new org.springframework.context.support.StaticMessageSource()),
                 new ProblemTitles(new org.springframework.context.support.StaticMessageSource()),
-                new io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties(null, null), () -> false,
+                new io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties(false, null),
                 tools.jackson.databind.json.JsonMapper.builder().build(), "X-Correlation-Id");
 
         @Bean

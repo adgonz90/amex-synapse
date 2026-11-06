@@ -40,7 +40,6 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguratio
 import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 
 /**
@@ -90,7 +89,6 @@ public class SynapseRestErrorAutoConfiguration {
      * @param messages the error messages
      * @param titles the category titles
      * @param errorProperties the error settings
-     * @param environment the Synapse environment
      * @param jsonMapper Boot's mapper, if there is one; otherwise a default mapper is used
      * @param correlation the correlation settings, for the header that echoes the id
      * @return the writer
@@ -98,10 +96,9 @@ public class SynapseRestErrorAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     ProblemWriter problemWriter(RestErrorStatuses statuses, ErrorMessages messages, ProblemTitles titles,
-            SynapseErrorProperties errorProperties, SynapseEnvironment environment,
-            ObjectProvider<JsonMapper> jsonMapper,
+            SynapseErrorProperties errorProperties, ObjectProvider<JsonMapper> jsonMapper,
             SynapseCorrelationProperties correlation) {
-        return new ProblemWriter(statuses, messages, titles, errorProperties, environment,
+        return new ProblemWriter(statuses, messages, titles, errorProperties,
                 jsonMapper.getIfAvailable(() -> JsonMapper.builder().build()), correlation.header());
     }
 

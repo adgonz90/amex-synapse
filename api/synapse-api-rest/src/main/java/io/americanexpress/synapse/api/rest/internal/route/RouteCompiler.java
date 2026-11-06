@@ -36,7 +36,6 @@ import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 
 /**
  * Compiles the REST bindings into functional routes at startup. It resolves and checks every route (including the
@@ -64,8 +63,6 @@ public final class RouteCompiler {
 
     private final PageCursors cursors;
 
-    private final SynapseEnvironment environment;
-
     /**
      * Creates the compiler.
      *
@@ -73,15 +70,12 @@ public final class RouteCompiler {
      * @param binder checks and binds the inputs
      * @param writer writes the responses
      * @param cursors unwraps the cursor tokens, and reports a generated cursor key
-     * @param environment tells whether this is production, for the level of that report
      */
-    public RouteCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer, PageCursors cursors,
-            SynapseEnvironment environment) {
+    public RouteCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer, PageCursors cursors) {
         this.validator = validator;
         this.binder = binder;
         this.writer = writer;
         this.cursors = cursors;
-        this.environment = environment;
     }
 
     /**
@@ -108,7 +102,7 @@ public final class RouteCompiler {
         // HEAD is served by each GET route's handler, after every declared route so a declared HEAD route wins.
         getRoutes.forEach((route, handler) -> builder.route(predicate(HttpMethod.HEAD, route), handler));
         // Every route is checked: a startup that fails on a binding mistake reports nothing.
-        cursors.reportGeneratedKey(routes, environment);
+        cursors.reportGeneratedKey(routes);
         return builder.build();
     }
 

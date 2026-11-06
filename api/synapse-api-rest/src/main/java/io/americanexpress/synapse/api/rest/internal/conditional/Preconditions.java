@@ -41,7 +41,7 @@ import io.americanexpress.synapse.core.error.Violation;
  * <li>a weak tag in a bound {@code If-Match}, which never matches under strong comparison (§13.1.1), or a bound
  * {@code If-Match} that doesn't parse (binding answers that 400 first; this fails closed regardless): 412;</li>
  * <li>no {@code If-Match} on a route that declares {@code .requireIfMatch()}: 428 {@code PRECONDITION_REQUIRED}, with
- * a violation that says how to retry (RFC 6585 §3), so production responses still carry it.</li>
+ * a violation that says how to retry (RFC 6585 §3), so responses still carry it when detail is hidden.</li>
  * </ul>
  * Reads ({@code GET}, {@code HEAD}) are not checked: there {@code If-None-Match} decides a 304, and an unbound
  * {@code If-Match} is ignored. {@code If-Unmodified-Since} is ignored everywhere, as §13.1.4 allows a server that

@@ -16,6 +16,8 @@ package io.americanexpress.synapse.core.internal.aot;
 import java.lang.invoke.SerializedLambda;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
@@ -56,6 +58,17 @@ class SynapseCoreRuntimeHintsTest {
                 .filter(hint -> hint.getType().getName().equals(SerializedLambda.class.getName()))
                 .flatMap(hint -> hint.getMemberCategories().stream()))
                 .contains(MemberCategory.INVOKE_DECLARED_METHODS);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"META-INF/synapse/config.yaml", "META-INF/synapse/config-e2.yaml",
+            "META-INF/synapse/config.properties", "META-INF/synapse/config-e2.properties"})
+    void registersModuleConfigResources(String resource) {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseCoreRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        assertThat(RuntimeHintsPredicates.resource().forResource(resource)).accepts(hints);
     }
 
     @Test

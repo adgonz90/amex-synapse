@@ -65,7 +65,7 @@ class SynapseErrorControllerTest {
 
     private final SynapseErrorController controller = new SynapseErrorController(
             new ProblemWriter(new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages),
-                    new ProblemTitles(messages), new SynapseErrorProperties(null, null), () -> false, MAPPER,
+                    new ProblemTitles(messages), new SynapseErrorProperties(false, null), MAPPER,
                     "X-Correlation-Id"));
 
     private JsonNode errorWithStatus(@Nullable Object status, MockHttpServletResponse response) {
@@ -199,7 +199,7 @@ class SynapseErrorControllerTest {
     void dispatchExceptionGetsTheResolversCodeStatusAndLogLevel() throws Exception {
         SynapseRestExceptionResolver resolver = new SynapseRestExceptionResolver(new ProblemWriter(
                 new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages), new ProblemTitles(messages),
-                new SynapseErrorProperties(null, null), () -> false, MAPPER, "X-Correlation-Id"));
+                new SynapseErrorProperties(false, null), MAPPER, "X-Correlation-Id"));
         List<Exception> failures = List
                 .of(new HttpMessageNotReadableException("unreadable", new MockHttpInputMessage(new byte[0])),
                         new HttpMediaTypeNotSupportedException("text/plain"),

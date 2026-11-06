@@ -23,19 +23,29 @@ import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import io.americanexpress.synapse.core.internal.context.ContextValueAccessor;
 
 /**
- * Registers what a native image needs for the core's own types: the service file through which Micrometer's context
- * propagation finds the {@link ContextValueAccessor}, and the accessor's constructor, which the service loader calls
- * reflectively, and the serialized form of a component reference, which Synapse reads to find the component it
- * names. Listed in {@code META-INF/spring/aot.factories}.
+ * Registers what a native image needs for the core: the service file through which Micrometer's context propagation
+ * finds the {@link ContextValueAccessor}, and the accessor's constructor, which the service loader calls
+ * reflectively; the serialized form of a component reference, which Synapse reads to find the component it names;
+ * and the modules' configuration files ({@code META-INF/synapse/config.yaml}, {@code config-<env>.yaml} and their
+ * {@code .properties} forms), which the environment post-processor reads at startup. Listed in
+ * {@code META-INF/spring/aot.factories}.
  */
 public final class SynapseCoreRuntimeHints implements RuntimeHintsRegistrar {
 
     /** The service file that registers the {@link ContextValueAccessor} with Micrometer's context propagation. */
     static final String THREAD_LOCAL_ACCESSOR_SERVICES = "META-INF/services/io.micrometer.context.ThreadLocalAccessor";
 
+    /** The modules' YAML configuration files, for every environment. */
+    static final String MODULE_CONFIG_YAML = "META-INF/synapse/config*.yaml";
+
+    /** The modules' properties configuration files, for every environment. */
+    static final String MODULE_CONFIG_PROPERTIES = "META-INF/synapse/config*.properties";
+
     @Override
     public void registerHints(RuntimeHints hints, @Nullable ClassLoader classLoader) {
         hints.resources().registerPattern(THREAD_LOCAL_ACCESSOR_SERVICES);
+        hints.resources().registerPattern(MODULE_CONFIG_YAML);
+        hints.resources().registerPattern(MODULE_CONFIG_PROPERTIES);
         hints.reflection().registerType(ContextValueAccessor.class, MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS);
         hints.reflection().registerType(SerializedLambda.class, MemberCategory.INVOKE_DECLARED_METHODS);
     }

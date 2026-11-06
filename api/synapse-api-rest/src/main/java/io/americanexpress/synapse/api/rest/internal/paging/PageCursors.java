@@ -30,7 +30,6 @@ import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.paging.CursorCodec;
 import io.americanexpress.synapse.api.rest.paging.CursorScope;
 import io.americanexpress.synapse.api.rest.paging.InvalidCursorException;
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
@@ -166,22 +165,17 @@ public final class PageCursors {
     }
 
     /**
-     * Logs, once, that the cursor key was generated at startup, when at least one route returns {@code PageResult}:
-     * at WARN in production and at INFO otherwise. Nothing is logged for a configured key or another codec.
+     * Logs, once and at WARN, that the cursor key was generated at startup, when at least one route returns
+     * {@code PageResult}. Nothing is logged for a configured key or another codec.
      *
      * @param routes the resolved routes
-     * @param environment tells whether this is production
      */
-    public void reportGeneratedKey(List<RouteDefinition> routes, SynapseEnvironment environment) {
+    public void reportGeneratedKey(List<RouteDefinition> routes) {
         if (!(codec instanceof AesGcmCursorCodec aes) || !aes.keyGenerated()
                 || routes.stream().noneMatch(RouteDefinition::pagedOutput)) {
             return;
         }
-        if (environment.isProduction()) {
-            LOG.warn(GENERATED_KEY);
-        } else {
-            LOG.info(GENERATED_KEY);
-        }
+        LOG.warn(GENERATED_KEY);
     }
 
     private CursorScope scope(RouteDefinition route, @Nullable Object input, @Nullable PageQuery page) {

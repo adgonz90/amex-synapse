@@ -54,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.otlp.metrics.export.enabled=false"})
 @AutoConfigureRestTestClient
 @ExtendWith(OutputCaptureExtension.class)
+@ActiveProfiles("test")
 class RestRoutesIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
@@ -241,8 +242,8 @@ class RestRoutesIT {
     }
 
     @Nested
-    @ActiveProfiles("dev")
-    class OutsideProduction {
+    @TestPropertySource(properties = "synapse.errors.include-detail=true")
+    class WithDetail {
 
         @Autowired
         private RestTestClient nestedClient;

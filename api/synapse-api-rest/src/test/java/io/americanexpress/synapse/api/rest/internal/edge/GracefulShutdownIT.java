@@ -132,6 +132,7 @@ class GracefulShutdownIT {
 
     private static ConfigurableApplicationContext start() {
         return new SpringApplicationBuilder(TestApplication.class)
+                .profiles("test")
                 .properties("server.port=0", "management.logging.export.otlp.enabled=false",
                         "management.tracing.export.otlp.enabled=false", "management.otlp.metrics.export.enabled=false")
                 .run();

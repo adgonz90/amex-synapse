@@ -25,7 +25,6 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.test.operation.RequestContexts;
 import io.americanexpress.synapse.test.operation.SynapseOperationTest;
@@ -57,9 +56,6 @@ class SynapseOperationTestIT {
     @Autowired
     Environment environment;
 
-    @Autowired
-    SynapseEnvironment synapseEnvironment;
-
     @Test
     void bootsOperationsAndBusinessBeansWithThePipeline() {
         given(repository.findTitle("1")).willReturn(Optional.of(" dune "));
@@ -79,8 +75,7 @@ class SynapseOperationTestIT {
 
     @Test
     void activatesTestProfile() {
-        assertThat(environment.getActiveProfiles()).contains("test");
-        assertThat(synapseEnvironment.isProduction()).isFalse();
+        assertThat(environment.getActiveProfiles()).containsExactly("test");
     }
 
     @Test

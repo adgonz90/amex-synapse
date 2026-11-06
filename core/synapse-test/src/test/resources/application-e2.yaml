@@ -1,0 +1,3 @@
+# The e2 environment, for the tests that run a slice in another environment (SynapseOperationTestProfilesIT).
+fixture:
+  environment: e2

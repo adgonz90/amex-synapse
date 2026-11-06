@@ -30,6 +30,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.Ordered;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -51,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.logging.export.otlp.enabled=false", "management.tracing.export.otlp.enabled=false",
         "management.otlp.metrics.export.enabled=false"})
 @AutoConfigureRestTestClient
+@ActiveProfiles("test")
 class EscapeHatchRoutesIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();

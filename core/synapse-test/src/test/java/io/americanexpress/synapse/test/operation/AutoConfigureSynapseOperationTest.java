@@ -25,7 +25,6 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.transaction.autoconfigure.TransactionAutoConfiguration;
 import org.springframework.context.annotation.Configuration;
 
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.test.time.MutableClock;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,7 +62,6 @@ class AutoConfigureSynapseOperationTest {
         try {
             runner.withClassLoader(hiding).run(context -> {
                 assertThat(context).hasNotFailed();
-                assertThat(context).hasSingleBean(SynapseEnvironment.class);
                 assertThat(context.getBean(Clock.class)).isInstanceOf(MutableClock.class);
             });
         } finally {

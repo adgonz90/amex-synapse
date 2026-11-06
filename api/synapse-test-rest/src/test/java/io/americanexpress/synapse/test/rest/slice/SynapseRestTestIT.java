@@ -28,7 +28,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.client.RestTestClient;
 
-import io.americanexpress.synapse.core.environment.SynapseEnvironment;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.paging.PageResult;
 import io.americanexpress.synapse.test.rest.SynapseRestTest;
@@ -52,9 +51,6 @@ class SynapseRestTestIT {
 
     @Autowired
     Environment environment;
-
-    @Autowired
-    SynapseEnvironment synapseEnvironment;
 
     @MockitoBean
     GetBookOperation getBook;
@@ -157,8 +153,7 @@ class SynapseRestTestIT {
     void activatesTestProfile() {
         willThrow(new SynapseException(BookErrors.BOOK_NOT_FOUND, 1)).given(getBook).execute(any());
 
-        assertThat(environment.getActiveProfiles()).contains("test");
-        assertThat(synapseEnvironment.isProduction()).isFalse();
+        assertThat(environment.getActiveProfiles()).containsExactly("test");
         client
                 .get()
                 .uri("/books/1")

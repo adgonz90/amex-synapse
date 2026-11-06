@@ -62,7 +62,7 @@ class SynapseRestContextFilterTest {
 
     private final Tracer tracer = otelTracer();
 
-    /** The OpenTelemetry bridge, as in production, so baggage closes with its scope. */
+    /** The OpenTelemetry bridge, as in a running application, so baggage closes with its scope. */
     private static Tracer otelTracer() {
         OtelCurrentTraceContext current = new OtelCurrentTraceContext();
         OtelBaggageManager baggage = new OtelBaggageManager(current, List.of("correlationId", "tenant"), List.of());

@@ -40,7 +40,8 @@ import io.americanexpress.synapse.core.internal.context.InboundContext;
  */
 public final class RequestContexts {
 
-    // The production defaults: synapse.context.inbound.max-entries=16, max-size=4KB; correlation ids up to 128.
+    // The application's default limits: synapse.context.inbound.max-entries=16 and max-size=4KB, and correlation
+    // ids up to 128 characters.
     private static final int MAX_CORRELATION_LENGTH = 128;
 
     private static final int MAX_ENTRIES = 16;

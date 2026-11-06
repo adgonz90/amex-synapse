@@ -60,13 +60,14 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 - **No hidden wiring.**
   - No `@ComponentScan` or `@Import` of framework packages.
   - No `@EnableWebMvc` / `@EnableWebFlux`.
-  - No `application.properties` or logging configuration shipped inside library jars.
+  - No `application.properties`, `META-INF/synapse/` files or logging configuration shipped inside Synapse's own library jars. (A consumer's library modules ship their settings in `META-INF/synapse/config.yaml` and `config-<env>.yaml`; see BUILD.md 3.6.)
 - **Every auto-configuration has `ApplicationContextRunner` tests:** it activates under its conditions, backs off when the user defines the bean, binds its properties, and stays absent when its condition isn't met.
 - **Layering:**
   - Operation and business code (`ServiceOperation`/`BusinessOperation` beans and their models) never imports protocol code (servlet, gRPC, GraphQL, Synapse API plugins). In consumer projects, protocol bindings live in the service module's `api.<protocol>` packages. Business code never calls operations and never uses the service's own models, except its events and the contract models of the services it calls (see BUILD.md, *Layering rules*).
   - Protocol concerns, such as HTTP status codes, live only in API plugins.
 - **Logging:** SLF4J API only. Library code never chooses a logging backend. The prescriptive default, synchronous Log4j2 (`synapse-logging-log4j2`), is managed by `synapse-parent` and declared only by consumers' bootable `service-*` modules.
-- **Errors:** never expose stack traces, exception class names or internal messages to callers. Error detail is shown outside production and hidden in production (a run with no active profile counts as production); an explicit `synapse.errors.include-detail` always wins.
+- **Errors:** never expose stack traces, exception class names or internal messages to callers. Error detail is hidden unless `synapse.errors.include-detail` is true.
+- **Environments:** the environment is the one active Spring profile (BUILD.md 3.6). Synapse has no production concept: every safety setting defaults to its safe value in every environment, and an environment file turns a convenience on. Never branch on the environment's name or use it in a `@Conditional`.
 - **Java:** the code must compile with `--release 21`, so don't use Java 22+ APIs. Prefer records for data carriers.
 - **Bug fixes** start with a failing test that reproduces the bug.
 - **Dependency versions** are managed in the root `pom.xml`. Overriding a version that Spring Boot manages is allowed only as a documented CVE pin, with a removal condition and the advisory ID.

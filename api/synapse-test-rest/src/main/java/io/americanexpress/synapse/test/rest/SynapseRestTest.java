@@ -41,7 +41,8 @@ import org.springframework.test.context.junit.jupiter.SpringExtension;
  * with the {@code RestTestClient}, which is bound to {@code MockMvc} (the same client works against a running
  * server). The slice registers a {@link io.americanexpress.synapse.test.time.MutableClock} fixed at
  * {@code 2026-01-01T00:00:00Z} unless the test defines its own {@link java.time.Clock}, and activates the {@code test}
- * profile, so problem responses carry their detail.
+ * profile; test settings such as {@code synapse.errors.include-detail} go in the module's
+ * {@code application-test.yaml}.
  *
  * @see AutoConfigureSynapseRest
  */

@@ -50,8 +50,8 @@ class ConcurrencyLimitFilterTest {
     private final StaticMessageSource messages = new StaticMessageSource();
 
     private final ProblemWriter writer = new ProblemWriter(new RestErrorStatuses(Map.of(), Map.of()),
-            new ErrorMessages(messages), new ProblemTitles(messages), new SynapseErrorProperties(null, null),
-            () -> false, MAPPER, "X-Correlation-Id");
+            new ErrorMessages(messages), new ProblemTitles(messages), new SynapseErrorProperties(false, null),
+            MAPPER, "X-Correlation-Id");
 
     private final AtomicInteger chainCalls = new AtomicInteger();
 

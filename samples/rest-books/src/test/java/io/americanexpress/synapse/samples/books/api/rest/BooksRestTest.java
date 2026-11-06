@@ -148,7 +148,7 @@ class BooksRestTest {
                 .expectBody()
                 .jsonPath("$.code")
                 .isEqualTo("BOOK_NOT_FOUND")
-                // The test profile shows detail; .notFound fills the template with the path value.
+                // application-test.yaml turns detail on; .notFound fills the template with the path value.
                 .jsonPath("$.detail")
                 .isEqualTo("Book " + ID + " was not found");
     }

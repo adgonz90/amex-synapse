@@ -58,6 +58,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.core.Ordered;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -84,6 +85,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.tracing.export.otlp.enabled=false", "management.otlp.metrics.export.enabled=false"})
 @AutoConfigureRestTestClient
 @ExtendWith(OutputCaptureExtension.class)
+@ActiveProfiles("test")
 class RestEdgeIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();

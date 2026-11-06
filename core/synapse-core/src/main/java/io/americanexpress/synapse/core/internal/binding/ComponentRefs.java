@@ -107,7 +107,7 @@ public final class ComponentRefs {
         } catch (InaccessibleObjectException ex) {
             throw new SynapseConfigurationException("A component reference could not be read, because the package of "
                     + ref.getClass().getName() + " is not open to Synapse.",
-                    "Open that package to the io.americanexpress.synapse.core module, or to all unnamed modules.");
+                    "Open that package to the io.americanexpress.synapse.core module, or to all unnamed modules.", ex);
         } catch (InvocationTargetException ex) {
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
             throw notAComponent("reading it failed (" + cause.getClass().getSimpleName() + ")");

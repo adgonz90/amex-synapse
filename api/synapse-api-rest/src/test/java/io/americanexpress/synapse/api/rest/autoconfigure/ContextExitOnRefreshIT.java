@@ -50,7 +50,7 @@ class ContextExitOnRefreshIT {
         Path output = directory.resolve("output.log");
 
         Process process = new ProcessBuilder(java, "@" + arguments, "-Dspring.context.exit=onRefresh",
-                ExitApplication.class.getName(), "--server.port=0")
+                ExitApplication.class.getName(), "--server.port=0", "--spring.profiles.active=test")
                 .redirectErrorStream(true)
                 .redirectOutput(output.toFile())
                 .start();

@@ -39,7 +39,7 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 |---|---|---|
 | `synapse-bom` | P0 | Versions of every Synapse artifact and the third-party libraries Synapse adds or pins (see *Dependency management*). Does not import Boot's BOM. |
 | `synapse-parent` | P0 | Consumer parent; extends `spring-boot-starter-parent`. Build conventions, image build, default logging (see *Consumer parent*). |
-| `synapse-core` | P1 | Contracts, invocation pipeline, `RequestContext`, errors, correlation, deadlines, JSON conventions, `@Masked`, `Clock`, observability contract, AOT hints. |
+| `synapse-core` | P1 | Contracts, invocation pipeline, `RequestContext`, errors, correlation, deadlines, JSON conventions, `@Masked`, `Clock`, observability contract, environment checks and module configuration files, AOT hints. |
 | `synapse-test` | P1 | Test support: operation harness and slices, ArchUnit rules, Testcontainers definitions, fixtures, AOT hint assertions. |
 | `synapse-test-rest` | P1 | @SynapseRestTest: the REST slice. Depends on synapse-test and synapse-api-rest. (gRPC and data slices get their own synapse-test-<plugin> artifacts in their plans.) |
 | `synapse-logging-log4j2` | P1 | Log4j2 backend for consumers (synchronous by default), structured JSON (ECS), optional failure-log burst limit. |
@@ -86,7 +86,9 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   Synapse library jars depend on those modules, not on starters, and order themselves against the relocated
   auto-configuration classes.
 - No `@ComponentScan` or `@Import` of framework packages, no `@EnableWebMvc`/`@EnableWebFlux`, no
-  `configureMessageConverters` replacement, no `application.properties` or logging configuration in library jars.
+  `configureMessageConverters` replacement, no `application.properties`, `META-INF/synapse/` files or logging
+  configuration in Synapse's own library jars. (A consumer's library modules ship their settings in
+  `META-INF/synapse/config*.yaml`; see *Environments and module configuration*.)
 - Every auto-configuration has `ApplicationContextRunner` tests: it activates under its conditions, backs off when the
   user defines the bean, binds its properties, and stays absent when its condition isn't met.
 
@@ -103,10 +105,8 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   name `defaults` reserved for `synapse.client.defaults.*` (startup fails if a client is named `defaults`).
 - Map keys that contain characters other than letters, digits, `-` and `.` (such as error codes) are written in
   brackets: `synapse.api.rest.errors.status.[BOOK_NOT_FOUND]=423`. Docs and examples always use this form.
-- Non-production rails ("dev/test only" behaviour) key off the active profiles listed in
-  `synapse.environment.non-production-profiles` (default `dev,local,test`). **Fail-safe:** a run counts as production
-  unless one of its active profiles is in that list (an IDE run with no profile is production). `synapse-test` slices
-  activate the `test` profile.
+- There is no production concept. Every safety setting defaults to its safe value in every environment, and an
+  environment file turns a convenience on explicitly (see *Environments and module configuration*).
 
 ### 3.3 Startup and AOT
 - **No remote I/O during bean creation.** Checks that need infrastructure (topics, schema validation, connectivity)
@@ -123,6 +123,12 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 - **Native image:** officially supported and tested (nightly) for core, REST, gRPC and AWS functions; best effort for
   other modules until each gets its own native test. Properties that decide which beans exist are fixed at AOT build
   time; the property reference marks them *build-time*.
+- **Environments under AOT:** the environment is never used in a `@Conditional`, and environment files change values
+  only. The set of clients and stores (the `<name>` keys under `synapse.client` and `synapse.data.stores`) belongs in
+  files that don't depend on the environment (`config.yaml`, `application.yaml`). In AOT mode, startup fails when an
+  environment file adds such a name. Synapse ships resource hints for `META-INF/synapse/config*.yaml` and
+  `config*.properties`. AOT processing (`process-aot`) and the AOT-cache training run of `build-image` prepare the
+  environment too, so they need an environment as well; the archetype and parent pass one (plan 5).
 
 ### 3.4 Dependency management
 - Versions live in the root `pom.xml`. Overriding a Boot-managed version is allowed only as a CVE pin with the
@@ -142,6 +148,57 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 - Deprecations happen in a minor; removal only in the next major.
 - `SynapseArchitecture.forApplication(…)` includes a rule that consumer code never imports
   `io.americanexpress.synapse..internal..`.
+
+### 3.6 Environments and module configuration
+- **The environment is the one active Spring profile.** Each service's `application.yaml` maps the platform's
+  variable: `spring.profiles.active: ${ENV}`. Synapse code never reads `ENV`. `SPRING_PROFILES_ACTIVE`,
+  `--spring.profiles.active` and `@ActiveProfiles` work as usual, and the highest source wins. The environment is the
+  value of `spring.profiles.active` plus any profile added with `SpringApplication.setAdditionalProfiles`. Feature
+  profiles go in `spring.profiles.include` or profile groups, which don't count.
+- **No default and no fallback.** Local runs use `local` (`spring-boot.run.profiles=local` for the Maven plugin, or the
+  IDE run configuration). Tests use `test`: the Synapse slices activate it, and every module whose tests start a
+  Spring Boot context has `src/test/resources/application-test.yaml`, which may be empty.
+- **Names are case-sensitive.** Synapse does no case handling.
+- **An environment is valid only when the service has a file for it:** `application-<env>.yaml`, `.yml` or
+  `.properties` (`<name>-<env>.*` when `spring.config.name` is set). The file counts when Boot loaded it from any
+  location, or when it is on the classpath (`classpath:/` or `classpath:/config/`), even when it is empty. Module
+  `config-<env>` files are optional and never make a name valid.
+- **Startup fails** when:
+  - there is no environment: `ENV` unset (Synapse explains Boot's raw "Profile '${ENV}' must contain a letter..."
+    error), a blank value, or only `spring.profiles.default`;
+  - the value of `spring.profiles.active` in the source that sets it falls back to a default, such as `${ENV:local}`
+    (even when `ENV` is set);
+  - there is more than one;
+  - the environment is not valid. This is treated exactly like no environment. The message names the files looked for
+    and says that names are case-sensitive;
+  - any config document sets `spring.config.activate.on-profile`. The message says to use `application-<env>.yaml`
+    instead.
+- **Module-owned configuration.** Each library module of a consumer project (`client-*`, `data-*`, `publisher-*`,
+  `business-*`) ships its settings in `META-INF/synapse/config.yaml` and, for values that differ per environment,
+  `META-INF/synapse/config-<env>.yaml` (`.properties` is read too; `.yml` is not). The service references nothing.
+  One `EnvironmentPostProcessor` in `synapse-core` runs right after Boot's config data, finds these files with
+  `ClassLoader.getResources` on the fixed names (no pattern scanning), and adds them below all of Boot's config data and
+  above Boot's default properties.
+- **Precedence**, lowest first: module `config.yaml` < module `config-<env>.yaml` < service `application.yaml` <
+  service `application-<env>.yaml` < environment variables and the command line. The service always wins over a
+  module, silently.
+- **Module checks** (startup fails):
+  - two modules set the same key. Keys are compared as Boot's canonical property names, so `base-url` and `baseUrl`
+    collide. A module's `config.yaml` and its own `config-<env>.yaml` may overlap: that is the override;
+  - a module file sets `spring.profiles.*`, `spring.config.*` or `synapse.environment.*`;
+  - a jar or directory that ships `META-INF/synapse/` also ships a root `application.*`;
+  - a module ships the same file as both `.yaml` and `.properties`.
+- **Safe in every environment.** Every safety setting defaults to its safe value, and an environment file turns a
+  convenience on (for example `synapse.errors.include-detail: true` in `application-local.yaml`). Synapse never
+  branches on the environment's name.
+- **Startup report.** After startup, Synapse logs one INFO block. The first line names the environment and where it was
+  set (`Synapse environment: e2 (spring.profiles.active=${ENV}, application.yaml)`). Then it lists every property
+  source, highest priority first, by name and origin: command line, environment variables, each config file with the
+  service or the module jar or directory it came from, defaults. It never logs values.
+- **Keys without defaults.** Keys that say *where* to connect or *who* to connect as have no Synapse default: a
+  client's `base-url`; a store's `url`, `username` and `password`. A module that forgets an environment file then
+  fails binding at startup. Credentials come from platform environment variables. Tuning keys (timeouts, retries,
+  pools, logging) keep safe defaults.
 
 ---
 
@@ -171,6 +228,13 @@ app-name/
                     with the downstream's contract-<name> models
   publisher-<name>  publisher bindings for a service's events (event records come from its contract-<name>)
 ```
+
+Configuration files (see *Environments and module configuration*):
+- `service-<name>`: `application.yaml` (with `spring.profiles.active: ${ENV}`) and one `application-<env>.yaml` per
+  environment, including `application-local.yaml`.
+- `business-`, `data-`, `client-` and `publisher-` modules: `META-INF/synapse/config.yaml` and, where values differ
+  per environment, `META-INF/synapse/config-<env>.yaml`. Never a root `application.*`.
+- Every module whose tests start a Spring Boot context: `src/test/resources/application-test.yaml`.
 
 ### 4.2 Model ownership
 - **Every module owns its model, and a caller uses the callee's model and does any mapping itself.**
@@ -428,11 +492,9 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 | TIMEOUT | 504 | DEADLINE_EXCEEDED | INTERNAL_ERROR |
 | INTERNAL | 500 | INTERNAL | INTERNAL_ERROR |
 
-- **Error exposure:** responses always include the code, the correlation id and validation violations; the formatted
-  detail (the formatted message) by environment: `synapse.errors.include-detail` unset means shown outside production
-  and hidden in production; an explicit `true` or `false` always wins. A run with no active profile is production (see
-  *Non-production rails*), so detail is off until a non-production profile (default `dev,local,test`) is active.
-  A `MessageSource` entry that equals the code (Boot's `use-code-as-default-message`) counts as no entry. Never stack
+- **Error exposure:** responses always include the code, the correlation id and validation violations. The detail
+  (the formatted message) is included only when `synapse.errors.include-detail` is `true` (default `false`, in every
+  environment; `application-local.yaml` and test files turn it on). A `MessageSource` entry that equals the code (Boot's `use-code-as-default-message`) counts as no entry. Never stack
   traces (encrypted or not), exception class names or internal messages. Problem bodies carry no RFC 9457 `instance`;
   the `correlationId` member is the lookup key. Full detail and cause are logged server-side.
 - **Protocol-only failures** never reach an operation; the plugin answers them in the same error shape with fixed
@@ -487,7 +549,7 @@ inputs (not the size), with a key id and an issue time. A tampered, foreign, mis
 
 The key comes from `synapse.api.rest.paging.cursor.key` (base64, 256 bits). `cursor.previous-keys` are accepted for
 decryption during rotation. `cursor.max-age` is unset by default (no expiry). When no key is set, one is generated per
-start, with a startup WARN in production profiles that cursors then fail across restarts and instances. An operation's
+start, with a startup WARN (in every environment) that cursors then fail across restarts and instances. An operation's
 raw cursor never reaches the client.
 
 **Response mapping:**
@@ -543,8 +605,8 @@ Deprecated versions emit Spring's deprecation/sunset headers.
 
 **CORS:** off by default. `synapse.api.rest.cors.allowed-origins`, `.allowed-methods`, `.allowed-headers`,
 `.exposed-headers`, `.allow-credentials`, `.max-age`, applied to all routes through a `CorsConfigurationSource` bean
-(which Spring Security also uses when present). Startup fails on `*` with credentials and warns on `*` in production
-profiles.
+(which Spring Security also uses when present). Startup fails on `*` with credentials and warns on `*` in every
+environment.
 
 **Limits:** request body 1 MB (`synapse.api.rest.max-request-size`; per route `.maxRequestSize(...)`), rejected with
 413 without reading the whole body. Header size uses Boot's `server.max-http-request-header-size`; Synapse sets its
@@ -579,7 +641,8 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   nullable components, enums by name, repeated ↔ `List`, maps, nested messages. `oneof` fields and renamed fields use
   an explicit override in the binding (`.map(...)`).
 - Errors: status per the table; the Synapse code travels as `google.rpc.ErrorInfo` (`reason` = code) in the status
-  details, plus `google.rpc.BadRequest` for violations. Server reflection is enabled only in non-production profiles.
+  details, plus `google.rpc.BadRequest` for violations. Server reflection is off by default: Synapse defaults Boot's
+  reflection switch to off at lowest precedence (key verified in plan 3), and an environment file turns it on.
 
 ### 6.4 GraphQL (`synapse-api-graphql`, P4)
 - Spring for GraphQL, schema-first. `GraphQlBindings` with `.query("bookById", getBook)`, `.mutation(...)` and
@@ -637,9 +700,11 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
 `synapse.client.<name>.*` is the single place for a Synapse client (defaults inherited from `synapse.client.defaults.*`;
 the name `defaults` is reserved). Keys: `base-url`, `connect-timeout`, `read-timeout`, `max-connections`, `ssl.bundle`,
 `auth.type` and `auth.*`, `retry.*`, `logging.level`, `propagate`, `dynamic-target`, `allowed-hosts`, `json.*`,
-`health.readiness`. Synapse provides sensible defaults for every key (sized in the P2 plan). Boot's per-name client
-keys (`spring.http.serviceclient.<name>.*`, `spring.grpc.client.channel.<name>.*`) don't apply to Synapse clients;
-startup warns when one is set for a Synapse client name.
+`health.readiness`. Synapse provides safe defaults for the tuning keys (sized in the P2 plan). `base-url` has no
+default (see *Keys without defaults* in 3.6): a client module sets it in its `config-<env>.yaml` files, and its
+`config.yaml` holds the rest. Boot's per-name client keys (`spring.http.serviceclient.<name>.*`,
+`spring.grpc.client.channel.<name>.*`) don't apply to Synapse clients; startup warns when one is set for a Synapse
+client name.
 
 ### 7.3 Behaviour
 - **Wire format:** the binding owns it (`.json(...)` naming and Jackson settings), applied through a client-specific
@@ -689,6 +754,9 @@ startup warns when one is set for a Synapse client name.
   settings, migrations, `primary`, `health.readiness`). A data module declares its store with
   `@SynapseDataStore("books")` on a configuration class; entity and repository packages derive from that class's
   package.
+- A store's `url`, `username` and `password` have no default (see *Keys without defaults* in 3.6). A data module sets
+  `url` in its `config-<env>.yaml` files; credentials come from environment variables
+  (`SYNAPSE_DATA_STORES_<NAME>_PASSWORD`). Pool and vendor settings keep safe defaults in `config.yaml`.
 - Synapse builds each store, including a single one, with Boot's builders: DataSource (Hikari), EntityManagerFactory
   or JDBC infrastructure, transaction manager, repositories, health contributor, metrics. Boot's single-DataSource
   auto-configuration backs off; `spring.datasource.*` is not used (startup warns if set).
@@ -698,7 +766,9 @@ startup warns when one is set for a Synapse client name.
 - **Migrations per store:** Flyway by default (Liquibase supported), run by Synapse per store from
   `db/migration/<store>` in `SmartLifecycle.start()`, followed by schema validation against the entities (Hibernate's
   schema validator), before any inbound plugin starts. When a migration tool is present, Synapse sets `ddl-auto=validate`, and startup fails if
-  `ddl-auto` is `create`, `create-drop` or `update` outside non-production profiles. Teams that migrate in a separate
+  `ddl-auto` is `create`, `create-drop` or `update` unless the store allows it explicitly
+  (`synapse.data.stores.<name>.allow-ddl-auto=true`, name confirmed in plan 4), which belongs in
+  `application-local.yaml` or a test file. Teams that migrate in a separate
   job disable it per store.
 - Startup logs the connection budget (stores × pool size) to help size databases.
 
@@ -828,6 +898,10 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 | `@SynapseGraphQlTest` | P4 | |
 | Native/AOT assertions | P1 | Helpers for `RuntimeHintsPredicates` tests. |
 
+The slices activate the `test` profile and turn nothing else on. The module's `src/test/resources/application-test.yaml`
+must exist (see *Environments and module configuration*); test conveniences such as `synapse.errors.include-detail: true`
+go there.
+
 ---
 
 ## 13. Consumer parent (`synapse-parent`)
@@ -837,6 +911,10 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
   archetype adds it), so published library modules (contract, client, data, publisher, business) stay backend-free.
   Teams that don't add it keep Boot's Logback; Synapse masking works with either.
 - **Tracing:** the archetype adds `spring-boot-starter-opentelemetry` to `service-*` modules.
+- **Environments:** the archetype maps `spring.profiles.active: ${ENV}` in each service's `application.yaml`, sets
+  `spring-boot.run.profiles=local`, and generates `application-local.yaml` (local conveniences turned on, such as
+  `synapse.errors.include-detail: true`), `src/test/resources/application-test.yaml` in every module with Spring Boot
+  tests, and `META-INF/synapse/config.yaml` in each library module (see *Environments and module configuration*).
 - **Version pins:** because a parent's inherited dependency management (Boot's) wins over an imported BOM, the parent
   declares Synapse's runtime pins directly in its own `dependencyManagement` (kept identical to `synapse-bom` by the
   CI sync check, proven by an invoker test with an effective-POM assertion). BOM-only users import `synapse-bom` before
@@ -961,7 +1039,7 @@ over REST and gRPC on Postgres with Flyway.
    needs an explicit `.map(...)`. The ArchUnit rules fail on a probe class in `operation..` importing
    `org.springframework.web`.
 3. `SynapseException(BookErrors.BOOK_NOT_FOUND, id)` yields REST 404 problem+json with `code` and `correlationId`, no
-   `detail` in production (present outside production or with `include-detail=true`), `type` `about:blank` and the
+   `detail` unless `include-detail=true`, `type` `about:blank` and the
    status-phrase title (a per-code `type` when `type-base-uri` is set); gRPC `NOT_FOUND` with `ErrorInfo.reason` = code. A per-operation
    override changes the REST status for one operation only, configured with a bracketed key.
 4. Validation failures yield REST 400 with `violations[]` and gRPC `INVALID_ARGUMENT` with `BadRequest`.
@@ -975,7 +1053,7 @@ over REST and gRPC on Postgres with Flyway.
    `@Transactional("legacy")` targets the right one; an unqualified `@Transactional` without a primary fails at
    startup; `spring.datasource.url` set logs a warning. Auditing fills timestamps and user for `Auditable` entities
    (base class or custom columns); `@Version` conflicts raise `STALE_VERSION` (`CONFLICT`); UUIDv7 ids are generated before insert and
-   `Persistable.isNew` works; `ddl-auto=update` in a production profile fails startup.
+   `Persistable.isNew` works; `ddl-auto=update` fails startup unless the store allows it.
 9. `@Masked` fields are masked in payload log output and appear unmasked in responses.
 10. Every auto-configuration passes the context-runner rules; every module passes its AOT hint tests.
 11. Service model: a nested operation call produces a child span and reuses the correlation id; a `@Transactional`
@@ -1006,6 +1084,11 @@ over REST and gRPC on Postgres with Flyway.
     `@SynapseGrpcTest`, `@SynapseDataTest` and `SynapseArchitecture.forApplication(…)`.
 20. With a fixed test `Clock`, auditing timestamps, deadlines and UUIDv7 ids follow it; an operation invoked from
     `@Scheduled` gets a generated correlation id and no principal.
+21. Environments: with `spring.profiles.active: ${ENV}` and `ENV` unset, startup fails with Synapse's explanation;
+    `ENV=e2` without an `application-e2.*` file fails, and so does `ENV=E2` with only `application-e2.yaml` in a jar;
+    two active profiles fail; an `on-profile` document fails. Module `config.yaml` and `config-<env>.yaml` files from
+    two jars load below the service's files with the documented precedence, under environment variables and the command
+    line; the same key in two modules fails. The startup report lists every source by name and origin, never a value.
 
 **Done (plan 1, core):** `synapse-core`, `synapse-test` and `synapse-logging-log4j2` are built and documented. They
 cover acceptance items 2 (ArchUnit probe), 6 (core part), 9, 10 (core modules), 11 (core part), 13 (core part), 19
@@ -1029,6 +1112,17 @@ unknown sort key, tampered cursors and cursors replayed for another operation or
 `If-Match`, 304 also on HEAD, 412 including a race lost after the read, 409, a weak `If-Match`, 428) and 10 (REST: the
 new beans' context-runner tests and AOT hint tests). Plan 2c covers 7 (OpenAPI), API versioning and CORS.
 
+**Done (environments plan):** the environment as the one active profile and its startup checks (exactly one, a
+service file for it, no `on-profile` documents, Synapse's explanation of an unset `${ENV}`), module
+`META-INF/synapse/config*.yaml` and `.properties` files with their precedence and checks, the AOT check on client and
+store names, and the startup report are built in `synapse-core`. The production concept is gone: `include-detail` is
+off by default, the generated cursor key logs a WARN in every environment, and `SynapseEnvironment` and
+`synapse.environment.non-production-profiles` are removed. Every test in this repository runs as `test`, and
+`samples/rest-books` runs as `local`. Documented in `environments.adoc`, with `core.adoc`, `rest.adoc` and
+`testing.adoc` updated. They cover acceptance items 21 and 3 (the environment part: no `detail` unless
+`include-detail=true`). The module files and source names in a native image are not verified yet (DESIGN.md *Open
+questions*; plan 5).
+
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
   - The edge opens the Synapse scope inside the server observation's span, with an IT asserting MDC and baggage on an
@@ -1044,11 +1138,18 @@ new beans' context-runner tests and AOT hint tests). Plan 2c covers 7 (OpenAPI),
   - Problem responses never carry a stack trace.
   - Verify the `INBOUND` shutdown phase against `WebServerGracefulShutdownLifecycle`.
 - Plan 2b (REST paging and conditional requests): paging safety, conditional requests, and the `rest-books` sample extended with both. Done (see the *Done (plan 2b)* note above).
+- Environments plan (environments and module configuration)
+  ([plans/2026-11-05-p1-environments.md](plans/2026-11-05-p1-environments.md)): the single active profile as the
+  environment and its startup checks, module `META-INF/synapse/config*.yaml` files, the startup report, no production
+  concept (`include-detail` off by default, the cursor-key WARN in every environment, `SynapseEnvironment` removed),
+  `application-test.yaml` wherever tests start a context, and `rest-books` running as `local`. It covers acceptance 21
+  and the environment part of 3. Done (see the *Done (environments plan)* note above).
 - Plan 2c (REST versioning, CORS, OpenAPI): API versioning, CORS (including the 405/OPTIONS fallback mapping, which has no CORS configuration today), and OpenAPI in `synapse-api-rest-openapi`.
 - Plan 3 (gRPC edge):
   - The REST edge's Synapse fields include only REST attribute names; with both plugins, include
     `synapse.api.grpc.context.metadata` names so trusted-mode REST callers can't set gRPC attribute baggage
     unvalidated.
+  - Server reflection off by default through a Synapse default on Boot's key at lowest precedence (6.3).
 - Plan 5 (archetype, parent, reference app):
   - The OpenTelemetry Java agent recipe: `management.opentelemetry.map-environment-variables` and `-Dotel.*`
     guidance, an archetype profile that defines the `GlobalOpenTelemetry` `OpenTelemetry` bean, and an agent IT.
@@ -1056,6 +1157,11 @@ new beans' context-runner tests and AOT hint tests). Plan 2c covers 7 (OpenAPI),
     default and a JVM-wide baggage propagator in that extension are open questions (DESIGN.md *Open questions*).
   - `inbound.trusted=false` (trace restart, baggage dropped) and outbound baggage stripping under the OpenTelemetry
     Java agent, in the Synapse agent extension.
+  - The archetype's environment files (section 13, *Environments*), and an environment for `process-aot` and the
+    AOT-cache training run (3.3), verified with the first native and image builds.
+  - The first native test checks, in a native image, that `ClassLoader.getResources` returns one URL per jar for
+    `META-INF/synapse/config*.yaml`, that Boot's `Config resource` source names are unchanged, and that the service's
+    `application-<env>.yaml` is found (DESIGN.md *Open questions*).
 - Later phase, own branch: a rate-limited failure-log policy (a one-line WARN on every occurrence, the stack once per
   window, the translator WARN included, and a "dropped N" summary for the burst limit).
 

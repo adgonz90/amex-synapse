@@ -39,6 +39,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -59,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.logging.export.otlp.enabled=false", "management.tracing.export.otlp.enabled=false",
         "management.otlp.metrics.export.enabled=false", "synapse.operations.search-books.logging.payloads=true"})
 @AutoConfigureRestTestClient
+@ActiveProfiles("test")
 class RestPagingIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
@@ -324,6 +326,7 @@ class RestPagingIT {
     void cursorFromAnotherInstanceIs400() {
         String local = call(client.get().uri("/books?size=2")).nextCursor();
         try (ConfigurableApplicationContext other = new SpringApplicationBuilder(TestApplication.class)
+                .profiles("test")
                 .properties("server.port=0", "management.logging.export.otlp.enabled=false",
                         "management.tracing.export.otlp.enabled=false",
                         "management.otlp.metrics.export.enabled=false")
