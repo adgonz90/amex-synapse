@@ -230,11 +230,11 @@ public final class ServiceConfigFiles {
         try {
             documents = loader.load(fileName, resource);
         } catch (IOException | RuntimeException ex) {
-            // The description names the file and quotes none of it. The parser's failure can quote the file, so it is
-            // only the cause, which reaches Boot's DEBUG log and never the startup message.
+            // The description names the file and quotes none of it. The parser's message quotes the file, so the cause
+            // keeps only the failure's type, position and stack trace, never file content.
             throw new SynapseConfigurationException(
                     "Synapse could not read " + fileName + " to check it for " + ON_PROFILE + ".",
-                    "Check that the file is readable and valid YAML or properties.", ex);
+                    "Check that the file is readable and valid YAML or properties.", ConfigFileFailures.sanitized(ex));
         }
         for (PropertySource<?> document : documents) {
             ConfigurationPropertySource source = ConfigurationPropertySource.from(document);

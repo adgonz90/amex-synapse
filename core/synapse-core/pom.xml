@@ -86,6 +86,13 @@
             <artifactId>spring-data-commons</artifactId>
             <optional>true</optional>
         </dependency>
+        <dependency>
+            <!-- Only ConfigFileFailures references SnakeYAML, to read a parse error's position, and only once an
+                 exception of SnakeYAML's exists. Boot's YAML loader needs SnakeYAML at runtime anyway. -->
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <optional>true</optional>
+        </dependency>
 
         <dependency>
             <groupId>io.micrometer</groupId>

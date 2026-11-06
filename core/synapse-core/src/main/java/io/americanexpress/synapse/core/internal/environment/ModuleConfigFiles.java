@@ -179,9 +179,10 @@ public final class ModuleConfigFiles {
         try {
             return Collections.list(classLoader.getResources(path));
         } catch (IOException ex) {
-            // The description names the file; the cause, kept for diagnosis, reaches only Boot's DEBUG log.
+            // The description names the file. The cause keeps only the failure's type and stack trace, never its
+            // message, which can name a path.
             throw new SynapseConfigurationException("Synapse could not look up " + path + " on the classpath.",
-                    "Check that the classpath's jars and directories are readable.", ex);
+                    "Check that the classpath's jars and directories are readable.", ConfigFileFailures.sanitized(ex));
         }
     }
 
@@ -247,10 +248,10 @@ public final class ModuleConfigFiles {
         try {
             documents = new ArrayList<>(loader.load(SOURCE_PREFIX + "[" + file + "] " + origin, resource));
         } catch (IOException | RuntimeException ex) {
-            // The description names the file and quotes none of it. The parser's failure can quote the file, so it is
-            // only the cause, which reaches Boot's DEBUG log and never the startup message.
+            // The description names the file and quotes none of it. The parser's message quotes the file, so the cause
+            // keeps only the failure's type, position and stack trace, never file content.
             throw new SynapseConfigurationException("Synapse could not read " + file + " (" + origin + ").",
-                    "Check that the file is readable and valid YAML or properties.", ex);
+                    "Check that the file is readable and valid YAML or properties.", ConfigFileFailures.sanitized(ex));
         }
         // Boot gives later documents of a file the higher priority.
         Collections.reverse(documents);

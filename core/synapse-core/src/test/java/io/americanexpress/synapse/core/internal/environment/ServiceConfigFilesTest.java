@@ -36,7 +36,6 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.io.UrlResource;
-import org.yaml.snakeyaml.error.MarkedYAMLException;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 
@@ -459,10 +458,9 @@ class ServiceConfigFilesTest {
                                         + "spring.config.activate.on-profile.");
                         assertThat(ex.action())
                                 .isEqualTo("Check that the file is readable and valid YAML or properties.");
-                        // The parser's failure is kept for diagnosis; it quotes the file, the description doesn't.
-                        assertThat(ex.getCause())
-                                .isInstanceOf(MarkedYAMLException.class)
-                                .hasMessageContaining("s3cr3t-unclosed");
+                        // The cause keeps only the parser failure's type and position, never the file's text.
+                        assertThat(ex.getCause()).hasMessage("ParserException at line 2, column 1").hasNoCause();
+                        assertThat(ex.getCause()).asString().doesNotContain("s3cr3t");
                         assertThat(ex.getMessage()).doesNotContain("s3cr3t");
                     });
         }

@@ -29,7 +29,6 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.Environment;
-import org.yaml.snakeyaml.error.MarkedYAMLException;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 
@@ -46,8 +45,14 @@ class EnvironmentStartupIT {
 
     private static final String REPORT_START = "Synapse environment: ";
 
+    /** A credential-like value, which no output may show. */
+    private static final String SECRET = "s3cr3t";
+
     /** Text in an unparsable file, which the parser quotes in its message. */
-    private static final String PARSER_TEXT = "s3cr3t-unclosed";
+    private static final String PARSER_TEXT = SECRET + "-unclosed";
+
+    /** What the cause keeps of the parser's failure on that file: its type and 1-based position. */
+    private static final String PARSER_POSITION = "ParserException at line 2, column 1";
 
     /** The parser's package, in the frames of its stack trace (its exceptions print no class name). */
     private static final String PARSER_PACKAGE = "org.yaml.snakeyaml.";
@@ -148,12 +153,12 @@ class EnvironmentStartupIT {
     @Test
     void aFileThatCannotBeParsedKeepsTheParserTextOutOfTheStartupMessage(CapturedOutput output) throws IOException {
         Throwable failure = withReporterLevel(LogLevel.INFO, this::runWithAnUnparsableModuleFile);
-        // The parser's failure, which quotes the file, is kept as the cause for diagnosis.
+        // The cause keeps only the parser failure's type and position, which quote nothing of the file.
         assertThat(failure)
                 .isInstanceOf(SynapseConfigurationException.class)
                 .cause()
-                .isInstanceOf(MarkedYAMLException.class)
-                .hasMessageContaining(PARSER_TEXT);
+                .hasMessage(PARSER_POSITION)
+                .hasNoCause();
         // At the default level, Boot prints the description and action only.
         assertThat(output)
                 .contains("APPLICATION FAILED TO START")
@@ -165,13 +170,17 @@ class EnvironmentStartupIT {
     }
 
     @Test
-    void theCauseOfAFailureReachesOnlyTheDebugLog(CapturedOutput output) throws IOException {
+    void theDebugLogShowsTheParserFailuresTypeAndPositionButNoneOfTheFile(CapturedOutput output)
+            throws IOException {
         withReporterLevel(LogLevel.DEBUG, this::runWithAnUnparsableModuleFile);
+        // Boot logs the whole cause chain at DEBUG. The cause has the parser's stack frames, so the failing frame is
+        // still found, but no text of the file.
         assertThat(output)
                 .contains("Application failed to start due to an exception")
                 .contains("Caused by: ")
+                .contains(PARSER_POSITION)
                 .contains(PARSER_PACKAGE)
-                .contains(PARSER_TEXT);
+                .doesNotContain(SECRET);
     }
 
     private Throwable runWithAnUnparsableModuleFile() throws IOException {

@@ -41,7 +41,6 @@ import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
-import org.yaml.snakeyaml.error.MarkedYAMLException;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 
@@ -504,10 +503,9 @@ class ModuleConfigFilesTest {
                                 .isEqualTo("Synapse could not read config-e2.yaml (client-accounts-1.4.0.jar).");
                         assertThat(ex.action())
                                 .isEqualTo("Check that the file is readable and valid YAML or properties.");
-                        // The parser's failure is kept for diagnosis; it quotes the file, the description doesn't.
-                        assertThat(ex.getCause())
-                                .isInstanceOf(MarkedYAMLException.class)
-                                .hasMessageContaining("s3cr3t-unclosed");
+                        // The cause keeps only the parser failure's type and position, never the file's text.
+                        assertThat(ex.getCause()).hasMessage("ParserException at line 2, column 1").hasNoCause();
+                        assertThat(ex.getCause()).asString().doesNotContain("s3cr3t");
                         assertThat(ex.getMessage()).doesNotContain("s3cr3t");
                     });
         }
@@ -528,7 +526,7 @@ class ModuleConfigFilesTest {
     }
 
     @Test
-    void aClasspathThatCannotBeSearchedFailsWithTheLookupFailureAsCause() {
+    void aClasspathThatCannotBeSearchedFailsWithTheLookupFailuresTypeAsCause() {
         IOException lookupFailure = new IOException("Not searched in this test");
         ClassLoader classLoader = new ClassLoader(getClass().getClassLoader()) {
             @Override
@@ -541,7 +539,11 @@ class ModuleConfigFilesTest {
                     assertThat(ex.description())
                             .isEqualTo("Synapse could not look up META-INF/synapse/config.yaml on the classpath.");
                     assertThat(ex.action()).isEqualTo("Check that the classpath's jars and directories are readable.");
-                    assertThat(ex.getCause()).isSameAs(lookupFailure);
+                    // The cause keeps only the lookup failure's type and stack, never its message.
+                    assertThat(ex.getCause()).hasMessage("IOException").hasNoCause();
+                    assertThat(ex.getCause())
+                            .extracting(Throwable::getStackTrace)
+                            .isEqualTo(lookupFailure.getStackTrace());
                 });
     }
 

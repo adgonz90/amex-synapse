@@ -105,9 +105,10 @@ included. Its tests have `src/test/resources/application-test.yaml`.
   again. Documents are numbered as Boot numbers them, from `(document #0)`, and only in a file that has more than
   one. A file Synapse can't read or parse fails with
   `Synapse could not read <file> to check it for spring.config.activate.on-profile.` The message names the file and
-  quotes none of it. The parser's own error can quote the file, so Synapse keeps it only as the exception's cause,
-  which Boot logs at `DEBUG` (logger `org.springframework.boot.diagnostics.LoggingFailureAnalysisReporter`) and never
-  prints in the startup message.
+  quotes none of it. The parser's own error quotes the file, so the exception's cause keeps only that error's type and,
+  for YAML, its position (for example `ParserException at line 2, column 1`), with its stack trace: never file content.
+  Boot logs the cause at `DEBUG` (logger `org.springframework.boot.diagnostics.LoggingFailureAnalysisReporter`) and
+  never prints it in the startup message.
 
 [#module-files]
 == Module files
@@ -127,8 +128,8 @@ scanning for other names. It reads them only from local files and jars, Boot's n
 included. A module file at any other URL fails startup with
 `<origin> (<file>) is not a local file or jar, so Synapse cannot read it.` (action
 `Put the module on the classpath as a jar or directory.`), and a file that can't be read or parsed fails with
-`Synapse could not read <file> (<origin>).` As for the service's files, the parser's error, which can quote the file,
-is only the exception's cause: it reaches Boot's `DEBUG` log, never the startup message.
+`Synapse could not read <file> (<origin>).` As for the service's files, the exception's cause carries only the
+parser error's type and position, never file content.
 
 === Precedence
 

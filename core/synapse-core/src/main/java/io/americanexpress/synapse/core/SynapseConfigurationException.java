@@ -38,9 +38,11 @@ public class SynapseConfigurationException extends RuntimeException {
     }
 
     /**
-     * Creates the exception with the failure that caused it, such as a file's parser failure. The cause is for
-     * diagnosis only: it is never shown to API callers, and Boot's failure reporter logs it only at {@code DEBUG}, while
-     * the startup message prints the description and action. The exception's message is the description alone.
+     * Creates the exception with the failure that caused it. The cause is for diagnosis only: it is never shown to API
+     * callers, and Boot's failure reporter logs it at {@code DEBUG}, while the startup message prints the description
+     * and action. The exception's message is the description alone. Since any code may print the cause chain, a cause
+     * must carry no property value or file content: for a configuration file that can't be read or parsed, Synapse
+     * passes a cause that carries only the failure's type and position.
      *
      * @param description what is wrong
      * @param action what to do about it
