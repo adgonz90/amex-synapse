@@ -155,7 +155,8 @@ Throw `STALE_VERSION` when a write finds the resource at another version than th
 or a compare-and-set failed. Over REST it is 409, or 412 `PRECONDITION_FAILED` when the request sent a bound
 `If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]); over gRPC it is `ABORTED`.
 
-Throw `ALREADY_EXISTS` when a resource with the same identity exists, such as on a unique-constraint violation. Over
+Throw `ALREADY_EXISTS` when a resource with the same identity exists, such as when a create finds it already there.
+The data modules use it for unique-constraint violations (see xref:data.adoc#errors[Data error translation]). Over
 REST it is 409, like every `CONFLICT`; over gRPC it is `ALREADY_EXISTS` rather than `ABORTED` (see
 xref:grpc.adoc#errors[gRPC errors]).
 

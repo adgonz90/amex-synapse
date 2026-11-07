@@ -47,8 +47,10 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-api-rest-openapi` | P1 (plan 2c) | OpenAPI 3.1 for `RestBindings` routes, served by springdoc (3.x) at /v3/api-docs: a Synapse customizer built from the resolved routes, with Synapse's own schema generator on Jackson 3. Depends on synapse-api-rest. |
 | `synapse-api-grpc` | P1 | gRPC plugin on Boot's gRPC server support. |
 | `synapse-test-grpc` | P1 (plan 3) | @SynapseGrpcTest: the gRPC slice, on Boot's in-process test transport. Depends on synapse-test and synapse-api-grpc. |
-| `synapse-data-jpa`, `synapse-data-jdbc` | P1 | Shared data behaviour: named stores, auditing, ids, error translation, migrations per store. |
+| `synapse-data-core` | P1 (plan 4) | Shared data foundation under `synapse-data-jpa` and `-jdbc`, never added directly: named stores (DataSource, JDBC templates, migrations, health), capability interfaces, ids, auditing, error translation, the vendor SPI. |
+| `synapse-data-jpa`, `synapse-data-jdbc` | P1 | Store access on `synapse-data-core`: JPA (EntityManagerFactory, repositories, entity bases) or Spring Data JDBC. |
 | `synapse-data-postgres` | P1 | PostgreSQL vendor module. |
+| `synapse-test-data` | P1 (plan 4) | `@SynapseDataTest`, per-store test connections (`@StoreConnection`) and a shared Testcontainers PostgreSQL. Depends on synapse-test and synapse-data-core. |
 | `synapse-client-core` | P2 | Client wiring shared by protocols: authenticator SPI, error decoding, logging, retries, propagation. |
 | `synapse-client-rest`, `synapse-client-grpc` | P2 | REST and gRPC client plugins. |
 | `synapse-client-auth-oauth2` | P2 | OAuth2 client-credentials authenticator. |
@@ -115,8 +117,10 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   Data stores follow the same rule: the EntityManagerFactory is built without JDBC metadata access (the vendor module
   sets the dialect; the database version comes from `synapse.data.stores.<name>.database-version` or the vendor
   default), and migrations then schema validation run in `SmartLifecycle.start()`, in a phase before any inbound
-  plugin starts (see *Named stores*). The P1 plan verifies Hibernate 7's `hibernate.boot.allow_jdbc_metadata_access`
-  behaviour.
+  plugin starts (see *Named stores*). Verified for Hibernate 7.4 in plan 4: with
+  `hibernate.boot.allow_jdbc_metadata_access=false` and an explicit dialect, Hibernate takes the version from
+  `jakarta.persistence.database-product-version` and opens no connection. Every schema action (validation, and
+  `create` or `update` where a store allows them) also runs in `start()`, never while the EntityManagerFactory is built.
 - **AOT-ready:** every module ships `RuntimeHints` for what it creates or reflects on (pipeline proxies, record
   components referenced by bindings, method-reference lambdas, beans built from bindings), asserted with
   `RuntimeHintsPredicates`. No runtime classpath scanning. Bindings are resolved during Boot's AOT processing where
@@ -829,7 +833,16 @@ client name.
 - **Every store is named and configured under `synapse.data.stores.<name>.*`** (url, credentials, pool, vendor
   settings, migrations, `primary`, `health.readiness`). A data module declares its store with
   `@SynapseDataStore("books")` on a configuration class; entity and repository packages derive from that class's
-  package.
+  package. A store's beans are named after it (`booksDataSource`, `booksTransactionManager`, …) and carry the
+  qualifier `books`. A bean with that name in the `@SynapseDataStore` class replaces Synapse's. With both
+  `synapse-data-jpa` and `synapse-data-jdbc` present, each store names its access
+  (`@SynapseDataStore(value = "books", access = DataAccess.JDBC)`).
+- Keys under `synapse.data.stores.<name>`: `url`, `username`, `password`, `driver-class-name`, `primary`,
+  `database-version`, `allow-ddl-auto`, `hikari.*` (Hikari's own settings, bound the way Boot binds
+  `spring.datasource.hikari.*`), `jpa.*` (Boot's `JpaProperties` shape, with `jpa.hibernate.ddl-auto` and
+  `jpa.hibernate.naming.*`), `jdbc.template.*`, `migrations.enabled`, `migrations.locations`, `migrations.flyway.*`
+  (Flyway's own configuration keys), `health.readiness`, `health.timeout`. `primary` and the set of names decide
+  which beans exist, so they are build-time properties under AOT.
 - A store's `url`, `username` and `password` have no default (see *Keys without defaults* in 3.6). A data module sets
   `url` in its `config-<env>.yaml` files; credentials come from environment variables
   (`SYNAPSE_DATA_STORES_<NAME>_PASSWORD`). Pool and vendor settings keep safe defaults in `config.yaml`.
@@ -839,27 +852,35 @@ client name.
 - With one store it is the primary. With several, one may be `primary=true` for unqualified `@Transactional`; others
   are selected with `@Transactional("legacy")`. An unqualified `@Transactional` with several stores and no primary fails
   at startup. Cross-store transactions are not atomic (documented).
-- **Migrations per store:** Flyway by default (Liquibase supported), run by Synapse per store from
+- **Migrations per store:** Flyway (Liquibase support waits for a maintainer decision on its license, see DESIGN.md
+  *Open questions*), run by Synapse per store from
   `db/migration/<store>` in `SmartLifecycle.start()`, followed by schema validation against the entities (Hibernate's
   schema validator), before any inbound plugin starts. When a migration tool is present, Synapse sets `ddl-auto=validate`, and startup fails if
   `ddl-auto` is `create`, `create-drop` or `update` unless the store allows it explicitly
   (`synapse.data.stores.<name>.allow-ddl-auto=true`, name confirmed in plan 4), which belongs in
-  `application-local.yaml` or a test file. Teams that migrate in a separate
-  job disable it per store.
+  `application-local.yaml` or a test file. Without a migration tool the default is `none`. Synapse runs the schema
+  action itself in `start()`, after the migrations. Teams that migrate in a separate job turn the migrations off per
+  store (`migrations.enabled=false`); validation still runs.
+- `spring.jpa.open-in-view` defaults to `false`, set at lowest precedence (operations are the transaction boundary,
+  and entities never reach the API).
 - Startup logs the connection budget (stores × pool size) to help size databases.
 
 ### 8.2 Access model
 - Developers write entities and plain Spring Data repositories; business and operation code inject repositories.
 - Capability interfaces: `Identifiable<ID>`, `Versioned` (optimistic locking), `Auditable` (created/modified at/by).
-  Optional `@MappedSuperclass` bases: `IdEntity<ID>`, `VersionedEntity<ID>`, `AuditedEntity<ID>` (and Mongo
-  equivalents in P5). Plain entities still work without the features.
+  Optional `@MappedSuperclass` bases: `IdEntity`, `VersionedEntity`, `AuditedEntity` (UUIDv7 ids) and `LongIdEntity`,
+  `LongVersionedEntity`, `LongAuditedEntity` (database sequence), with Mongo
+  equivalents in P5. Plain entities still work without the features.
 - **Ids:** bases default to app-generated UUIDv7 (RFC 9562, monotonic within a millisecond using the `Clock`; not a
-  security capability); `Long` sequence variants exist. Bases implement `Persistable` (new when the version is null)
-  and compare by id, proxy-safe.
-- **Auditing:** fills created/modified timestamps and user (`AuditorAware` from the security context, else
-  `synapse.data.auditing.system-user`, default `system`).
-- **Error translation** (an `ExceptionTranslator`): optimistic-lock failures → `STALE_VERSION` (`CONFLICT`); unique-constraint failures → `CONFLICT` (with a code that gRPC maps to ALREADY_EXISTS), query timeout → `TIMEOUT`, connection failure →
-  `UNAVAILABLE`, others → `INTERNAL`.
+  security capability); `Long` sequence variants exist. Bases implement `Persistable` (new when the version is null;
+  `IdEntity` and `LongIdEntity`, which have no version, are new when the id is null) and compare by id, proxy-safe.
+- **Auditing:** fills created/modified timestamps and user (`AuditorAware` from the `RequestContext` principal, which
+  only Spring Security sets, else `synapse.data.auditing.system-user`, default `system`). An application
+  `AuditorAware<String>` bean replaces that source. Until `synapse-security` (P4) sets a verified principal, every
+  write records the system user (documented in `data.adoc`).
+- **Error translation** (an `ExceptionTranslator`): optimistic-lock failures → `STALE_VERSION` (`CONFLICT`);
+  unique-constraint failures → `ALREADY_EXISTS` (`CONFLICT`; gRPC ALREADY_EXISTS); query timeout →
+  `DEADLINE_EXCEEDED` (`TIMEOUT`); connection failure → `UNAVAILABLE`; other data access failures → `INTERNAL`.
 - JPA is the default in archetype and samples; JDBC is equally supported (same interfaces, auditing, stores,
   translation). Soft delete: documented use of Hibernate's `@SoftDelete`.
 
@@ -966,7 +987,7 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 | `assertThatSynapseException(...)` | P1 | `.hasCode(...)`, `.hasCategory(...)`, `.hasViolation(field)`. |
 | @SynapseRestTest (synapse-test-rest) | P1 | Plugin plus the app's bindings and controllers; the test declares a @MockitoBean for each bound operation (the slice fails fast and names any missing one); RestTestClient bound to MockMvc (the same client works against a running server). |
 | @SynapseGrpcTest (synapse-test-grpc) | P1 | Plugin plus the app's bindings and hand-written services; the test declares a @MockitoBean for each bound operation (the slice fails fast and names any missing one); Boot's in-process test transport (`@AutoConfigureTestGrpcTransport`), with stubs from `@ImportGrpcClients`. |
-| `@SynapseDataTest("<store>")` | P1 | Starts only that store's repositories, migrations and auditing, against shared Testcontainers with per-name `@ServiceConnection`. |
+| `@SynapseDataTest("<store>")` (synapse-test-data) | P1 | Starts only that store's beans, repositories, migrations and auditing, in a transaction on that store that rolls back. The store connects through `@StoreConnection("<store>")` on a container (a shared Testcontainers PostgreSQL is provided). Boot's `@ServiceConnection` registers only one JDBC connection per context, so it can't name stores. |
 | `SynapseArchitecture.forApplication(…)` | P1 | The layering rules (section 4.3). |
 | Mutable test `Clock`, JSON fixture loaders | P1 | |
 | `@SynapseClientTest("<client>")` | P2 | `MockRestServiceServer` bound to the client's builder by default; `server = STUB` starts WireMock in-JVM and points the client's `base-url` at it (WireMock's Boot 4 fit verified in the P2 plan). gRPC clients test against an in-process server. |
@@ -1231,6 +1252,20 @@ binding; the servlet transport together with `synapse-api-rest`, which fails sta
 requests; the native image (`grpc-netty`, protobuf runtime reflection, record and enum reflection, `writeReplace` on
 component-reference lambdas) and `inbound.trusted=false` under the OpenTelemetry Java agent (plan 5).
 
+**Done (plan 4, data):** `synapse-data-core`, `synapse-data-jpa`, `synapse-data-jdbc`, `synapse-data-postgres` and
+`synapse-test-data` are built and documented (`data.adoc`, the `@SynapseDataTest` section of `testing.adoc`, and
+`core.adoc`, `rest.adoc` and `environments.adoc` updated). Named stores (pool, JDBC templates, Flyway migrations and
+the schema action in `start()`, JPA or Spring Data JDBC with a transaction manager and repositories per store),
+health with the readiness opt-in, error translation (`STALE_VERSION`, `ALREADY_EXISTS`, `DEADLINE_EXCEEDED`,
+`UNAVAILABLE`), UUIDv7 ids, auditing, the entity bases, the `ddl-auto` guard and the PostgreSQL vendor are tested on
+H2 and, for PostgreSQL, with Testcontainers. They cover acceptance items 8, 10 (data modules: context-runner rules,
+AOT hint tests, and an AOT-processed context with JPA and JDBC stores), 15 (the store part: readiness reflects a
+store only when it opts in), 17 (stores: no connection while beans are created), 19 (`@SynapseDataTest` is provided;
+the reference app uses it in plan 5) and 20 (auditing timestamps and UUIDv7 ids follow the test `Clock`). Under AOT,
+a store's name and `primary` are fixed at build time, and a run-time change fails startup. Liquibase waits for the
+maintainer's licence decision (DESIGN.md *Open questions*); native verification of per-store Flyway scanning is in
+plan 5.
+
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
   - The edge opens the Synapse scope inside the server observation's span, with an IT asserting MDC and baggage on an
@@ -1271,6 +1306,11 @@ component-reference lambdas) and `inbound.trusted=false` under the OpenTelemetry
 - Plan 3b (gRPC page tokens), proposed by plan 3 and needed by plan 5's `SearchBooks` over gRPC: `PageQuery` and
   `PageResult` over gRPC with AIP-158 fields, and whether `CursorCodec` moves to core for them (plan 2b left this to
   plan 3).
+- Plan 4 (data) ([plans/2026-11-05-p1-data-postgres.md](plans/2026-11-05-p1-data-postgres.md)): `synapse-data-core`,
+  `-jpa`, `-jdbc`, `-postgres` and `synapse-test-data` (8.1–8.2, the store part of 5.10, `@SynapseDataTest`).
+  It covers acceptance 8, 10 (data modules), 15 (stores), 17 (stores), 19 (`@SynapseDataTest` is provided; the
+  reference app uses it in plan 5) and 20 (auditing and ids). Liquibase waits for a maintainer decision. Done (see
+  the *Done (plan 4)* note above).
 - Plan 5 (archetype, parent, reference app):
   - The OpenTelemetry Java agent recipe: `management.opentelemetry.map-environment-variables` and `-Dotel.*`
     guidance, an archetype profile that defines the `GlobalOpenTelemetry` `OpenTelemetry` bean, and an agent IT.

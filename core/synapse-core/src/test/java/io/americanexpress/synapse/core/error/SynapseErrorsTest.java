@@ -48,6 +48,14 @@ class SynapseErrorsTest {
     }
 
     @Test
+    void alreadyExistsIsAConflict() {
+        assertThat(SynapseErrors.ALREADY_EXISTS.category()).isEqualTo(ErrorCategory.CONFLICT);
+        assertThat(SynapseErrors.ALREADY_EXISTS.code()).isEqualTo("ALREADY_EXISTS");
+        assertThat(SynapseErrors.ALREADY_EXISTS.messageTemplate())
+                .isEqualTo("The resource already exists");
+    }
+
+    @Test
     void templatesTakeNoArguments() {
         for (SynapseErrors error : SynapseErrors.values()) {
             assertThat(error.messageTemplate()).doesNotContain("{");

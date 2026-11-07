@@ -232,6 +232,74 @@ the application's server. Test these against the application's server, in a `@Sp
   Synapse's `METHOD_NOT_FOUND` details;
 * the virtual-thread executor of `spring.threads.virtual.enabled`.
 
+[#synapse-data-test]
+== @SynapseDataTest
+
+A slice for one data store (see xref:data.adoc[Data]), in `synapse-test-data`:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test-data</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+`@SynapseDataTest("books")` starts the `@SynapseDataStore("books")` class with its pool, migrations, entities,
+repositories and auditing, and leaves out every other store and component. Each test runs in a transaction of that
+store, rolled back afterwards, as with `@DataJpaTest`. As in the other slices, the `test` environment is active, the
+module needs `application-test.yaml`, and a `MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you
+define a `Clock`, so audit timestamps and UUIDv7 ids follow it. The application's test settings may configure other
+stores: the slice expects their settings and doesn't start them.
+
+`@StoreConnection("books")` on a `static` field holding a Testcontainers `JdbcDatabaseContainer` connects the store to
+that container's database, instead of its `url`, `username` and `password`. `SynapseContainers.postgres()` returns a
+PostgreSQL container shared by every test class of the JVM, started on first use; `postgres("<key>")` gives another
+one per key, such as one per store.
+
+[source,java]
+----
+@SynapseDataTest("books")
+class BookRepositoryTest {
+
+    @StoreConnection("books")
+    static PostgreSQLContainer books = SynapseContainers.postgres();
+
+    @Autowired BookRepository repository;
+
+    @Test
+    void findsByIsbn() {
+        repository.save(new Book("978-0-00-000000-1", "Dune"));
+
+        assertThat(repository.findByIsbn("978-0-00-000000-1")).isPresent();
+    }
+}
+----
+
+A store name that no `@SynapseDataStore` declares fails the context:
+`@SynapseDataTest("bokks") names a store that no @SynapseDataStore("bokks") declares. Declared stores: books. Scanned packages: com.example.books.`
+(action `Name one of the declared stores, such as @SynapseDataTest("books").`). An invalid name fails with
+`'Books' is not a valid store name (@SynapseDataTest("Books")).`
+
+Limits:
+
+* The slice runs no operations: it has no pipeline. To assert a data error code, call the code under test through
+  `SynapseOperations.with().translator(...)` with the slice's `synapseDataExceptionTranslator` and
+  `synapseJpaExceptionTranslator` beans, or use a `@SpringBootTest` of the service.
+* Each test's transaction rolls back, so a failure that happens only at commit (a unique violation flushed by the
+  commit) never happens. Such a test sets `@Transactional(propagation = Propagation.NOT_SUPPORTED)` and makes a
+  committing call, or runs as a `@SpringBootTest`.
+* `@StoreConnection` works on `static` fields only. Containers defined by `@Bean` methods are not supported.
+* `@StoreConnection` registers its connection bean with an instance supplier, so test contexts processed ahead of time
+  (AOT) are not supported.
+* A subclass or `@Nested` class can't replace a superclass's or enclosing class's `@StoreConnection` for the same
+  store: two fields for one store fail.
+
+`SynapseContainers.POSTGRES_IMAGE` pins `postgres:18.6-alpine` by its digest, so a re-pushed tag can't change the image
+under the tests. Nothing updates a digest in Java code automatically. To move to a new image, pull the new tag, read
+its digest with `docker buildx imagetools inspect postgres:<tag>`, and replace the digest and the tag in the Javadoc.
+
 == MutableClock
 
 [source,java]

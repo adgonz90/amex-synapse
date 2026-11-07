@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    Integration tests of synapse-data-jpa and synapse-data-jdbc on one class path: each module's own tests have only
+    one access module, so that a store with access AUTO resolves there. It has test sources only. Never published.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse</groupId>
+        <artifactId>synapse</artifactId>
+        <version>2.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>synapse-data-mixed-tests</artifactId>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Integration tests of the Synapse JPA and JDBC data modules together. Not published.</description>
+
+    <properties>
+        <!-- Tests only: never installed or deployed (which also keeps it out of the release SBOM), and no source or
+             Javadoc jars. -->
+        <maven.install.skip>true</maven.install.skip>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.source.skip>true</maven.source.skip>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <!-- Without main sources the java-module profile is off, so JaCoCo's prepare-agent never sets argLine (there
+             is no code to cover). The Mockito agent argument comes from the two executions below, as in that
+             profile; spring-boot-starter-test brings Mockito. -->
+        <argLine></argLine>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-data-jpa</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-data-jdbc</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- StoreAotProcessingTest compiles the code that AOT processing generates. -->
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-core-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <!-- No main classes, so no jar. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <skipIfEmpty>true</skipIfEmpty>
+                </configuration>
+            </plugin>
+            <plugin>
+                <!-- As in the java-module profile: exposes ${org.mockito:mockito-core:jar} for the agent argument. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>dependency-paths</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <!-- As in the java-module profile: sets synapse.mockitoAgentArg to Mockito's -javaagent, so Mockito
+                     runs as an agent instead of attaching itself at run time. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>mockito-agent-arg</id>
+                        <phase>process-test-classes</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <exportAntProperties>true</exportAntProperties>
+                            <target>
+                                <condition property="synapse.mockitoAgentArg" value="&quot;-javaagent:${org.mockito:mockito-core:jar}&quot;" else="">
+                                    <available file="${org.mockito:mockito-core:jar}"/>
+                                </condition>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <!-- The java-module profile binds failsafe only in modules with main sources. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

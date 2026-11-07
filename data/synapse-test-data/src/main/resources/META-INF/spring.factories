@@ -1,0 +1,4 @@
+# @StoreConnection fields, and the check that the store a @SynapseDataTest names is declared
+org.springframework.test.context.ContextCustomizerFactory=\
+io.americanexpress.synapse.test.data.StoreConnectionContextCustomizerFactory,\
+io.americanexpress.synapse.test.data.SynapseDataTestContextCustomizerFactory

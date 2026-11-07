@@ -645,9 +645,9 @@ Both can be overridden like any code: `synapse.api.rest.errors.status.[STALE_VER
 WARNING: The edge never compares versions. An operation that ignores the bound version turns `If-Match` into a no-op:
 a stale `If-Match` then overwrites the newer state with a 200.
 
-With JPA, the translation of an `@Version` conflict to `STALE_VERSION` comes with the data modules. Until then, an
-operation on JPA throws `STALE_VERSION` itself (or an `ExceptionTranslator` bean maps the optimistic-lock exception to
-it).
+On a Synapse data store, an `@Version` conflict (JPA or Spring Data JDBC) is translated to `STALE_VERSION` (see
+xref:data.adoc#errors[Data error translation]). An operation on another data access library throws `STALE_VERSION`
+itself, or an `ExceptionTranslator` bean maps that library's optimistic-lock exception to it.
 
 === `If-None-Match` on writes
 

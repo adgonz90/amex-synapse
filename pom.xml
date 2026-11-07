@@ -67,10 +67,17 @@
         <module>api/synapse-test-rest</module>
         <module>api/synapse-api-grpc</module>
         <module>api/synapse-test-grpc</module>
+        <module>data/synapse-data-core</module>
+        <module>data/synapse-data-jpa</module>
+        <module>data/synapse-data-jdbc</module>
+        <module>data/synapse-test-data</module>
+        <module>data/synapse-data-postgres</module>
         <!-- Runnable samples; never published. -->
         <module>samples/rest-books</module>
         <!-- Build-rule tests; never published. -->
         <module>tests/synapse-build-rules-tests</module>
+        <!-- Tests of several data modules together; never published. -->
+        <module>tests/synapse-data-mixed-tests</module>
     </modules>
 
     <properties>
@@ -197,6 +204,31 @@
             <dependency>
                 <groupId>io.americanexpress.synapse</groupId>
                 <artifactId>synapse-test-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-jpa</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-jdbc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-postgres</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-data</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

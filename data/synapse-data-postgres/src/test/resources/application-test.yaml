@@ -1,0 +1,3 @@
+# The service's test environment: Synapse requires a file for the active environment. The stores' connections come
+# from @StoreConnection containers in each test, and the data module's own settings from its META-INF/synapse files
+# (src/test/data-module).

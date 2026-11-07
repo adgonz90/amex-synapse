@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!-- Test-only logging for synapse-data-jdbc (never packaged): Boot's console defaults, without Flyway's test-only WARNs. -->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+    <!-- "Using H2 ... which is newer than the version Flyway has been verified with": the tests run on H2 2.4. -->
+    <logger name="org.flywaydb.core.internal.database.base.Database" level="ERROR"/>
+    <!-- "No migrations found" and "Unable to resolve location": most test stores have no migration folder. -->
+    <logger name="org.flywaydb.core.internal.command.DbValidate" level="ERROR"/>
+    <logger name="org.flywaydb.core.internal.scanner.classpath.ClassPathScanner" level="ERROR"/>
+</configuration>

@@ -1,0 +1,644 @@
+= Data
+
+Synapse builds named data stores. Every store, a single one included, is declared with
+`@SynapseDataStore("<name>")` in a data module and configured under `synapse.data.stores.<name>`. Synapse builds each
+store with Boot's own builders and binding: a Hikari pool, JDBC templates, Flyway migrations, an EntityManagerFactory
+(JPA) or the Spring Data JDBC infrastructure, a transaction manager, repositories, a health indicator and metrics.
+Boot's single-DataSource auto-configurations back off, and `spring.datasource.*` is not used.
+
+[#modules]
+== Modules
+
+[cols="2,5",options="header"]
+|===
+|Module |Add it when
+|`synapse-data-jpa` |The store uses JPA (Hibernate) and Spring Data JPA repositories.
+|`synapse-data-jdbc` |The store uses Spring Data JDBC aggregates and repositories.
+|`synapse-data-postgres` |The store's database is PostgreSQL. It brings the driver and Flyway's PostgreSQL support.
+|`synapse-data-core` |Never directly: both access modules bring it.
+|`synapse-test-data` |In `test` scope, for `@SynapseDataTest` and `@StoreConnection` (see
+xref:testing.adoc#synapse-data-test[Testing]).
+|===
+
+A data module adds one access module and one vendor module:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-data-jpa</artifactId>
+</dependency>
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-data-postgres</artifactId>
+</dependency>
+----
+
+Flyway is optional in `synapse-data-core`. `synapse-data-postgres` brings `flyway-core` (through
+`flyway-database-postgresql`), so a PostgreSQL store has migrations, and `ddl-auto` defaults to `validate`.
+
+[#declaring]
+== Declaring a store
+
+[source,java]
+----
+package com.example.books.data;
+
+@Configuration(proxyBeanMethods = false)
+@SynapseDataStore("books")
+public class BooksStore {
+}
+----
+
+* The name uses lowercase letters, digits and dashes, starting with a letter: `books`, `legacy-orders`.
+* The store's entities, aggregates and repositories are in the class's package and below. `@EntityScan` and
+  `@EnableJpaRepositories` are not used: the package comes from the store class.
+* Two stores' packages must not overlap. A store in `com.example.data` and another in `com.example.data.legacy` fail
+  startup.
+* The class is a `@Configuration` of the data module. The service picks it up like any of its configuration: by
+  component scan, or with `@Import(BooksStore.class)`. It is not an auto-configuration.
+* With both access modules on the class path, the store names its access:
+  `@SynapseDataStore(value = "books", access = DataAccess.JPA)` or `DataAccess.JDBC`. With one of them, the default
+  `AUTO` takes it.
+
+[#beans]
+=== Bean names and qualifiers
+
+A store's beans are named after its lowerCamel form (`legacy-orders` gives `legacyOrders`), and carry the store name
+as their qualifier (`legacy-orders`). Every store has:
+
+[cols="2,3",options="header"]
+|===
+|Bean |Type
+|`<p>DataSource` |`HikariDataSource`, pool name `<store>`
+|`<p>JdbcTemplate`, `<p>NamedParameterJdbcTemplate`, `<p>JdbcClient` |Spring's JDBC templates on the store's pool
+|`<p>Flyway` |`Flyway`, when Flyway is on the class path
+|`<p>StoreLifecycle` |Runs migrations, then the schema action, at startup
+|===
+
+A JPA store adds `<p>PersistenceManagedTypes`, `<p>EntityManagerFactory`, `<p>TransactionManager`
+(`JpaTransactionManager`), `<p>SchemaAction` and its repositories. A JDBC store adds `<p>TransactionManager`
+(`JdbcTransactionManager`), `<p>JdbcDialect`, `<p>RelationalManagedTypes`, `<p>JdbcCustomConversions`,
+`<p>JdbcMappingContext`, `<p>JdbcConverter`, `<p>DataAccessStrategy`, `<p>JdbcAggregateTemplate` and its
+repositories. The persistence unit name is the store name.
+
+Inject a store's beans by qualifier:
+
+[source,java]
+----
+BooksQueries(@Qualifier("books") JdbcClient jdbc) { ... }
+----
+
+A repository fragment injects the store's `EntityManager` the same way, `@Qualifier("books") EntityManager`, or with
+`@PersistenceContext(unitName = "books")`.
+
+[#replacing]
+=== Replacing a bean
+
+A bean with one of these names, defined in the `@SynapseDataStore` class, replaces Synapse's. It is still the store's:
+it gets the store's qualifier (unless it names one of its own) and is primary exactly when Synapse's would be. So
+`@Transactional("books")` and `@SynapseDataTest("books")` find a replaced `booksTransactionManager`.
+
+[source,java]
+----
+@Configuration(proxyBeanMethods = false)
+@SynapseDataStore(value = "notes", access = DataAccess.JDBC)
+public class NotesStore {
+
+    @Bean
+    JdbcTransactionManager notesTransactionManager(@Qualifier("notes") DataSource dataSource) {
+        return new JdbcTransactionManager(dataSource);
+    }
+}
+----
+
+What a replacement loses:
+
+* A replaced `<p>DataSource` skips every connection check: it connects wherever it says. The rejected `hikari` keys
+  (see <<rejected-keys>>), the vendor's blocked driver properties and forbidden class-path resources, and the
+  empty-password rule apply only to the pool Synapse builds, and the vendor's URL check sees the store's `url`, not
+  the replacement's. The store's `url`, `username` and `password` are still needed, since they choose the store's
+  vendor and dialects.
+* A replaced `<p>EntityManagerFactory` gets no Synapse mapping resource, so its entities get no ids and no audit
+  stamps (see <<ids>>). Add `io/americanexpress/synapse/data/jpa/synapse-orm.xml` to its mapping resources. Its store
+  can't use `ddl-auto: update`.
+* A replaced `<p>JdbcAggregateTemplate` has none of Synapse's callbacks. Add an `IdGeneratingEntityCallback` for
+  `@Sequence` ids yourself.
+
+[#keys]
+== Keys
+
+Every key is listed, with its description and default, in the
+xref:reference/configuration-properties.adoc[configuration property reference]. A store's keys are under
+`synapse.data.stores.<name>`:
+
+[cols="2,4",options="header"]
+|===
+|Key |Meaning
+|`url`, `username`, `password` |Where and as whom to connect. No default.
+|`driver-class-name` |Derived from the URL when not set.
+|`primary` |Whether the store's beans are the primary ones when the service has several stores.
+|`database-version` |The database version Hibernate generates SQL for. Defaults to the vendor's.
+|`allow-ddl-auto` |Whether `ddl-auto` may change the schema (see <<ddl-auto>>).
+|`hikari.*` |Hikari's own settings, bound onto the pool as Boot binds `spring.datasource.hikari.*`.
+|`jpa.*` |Boot's `JpaProperties` shape: `jpa.hibernate.ddl-auto`, `jpa.hibernate.naming.*`, `jpa.properties.*`,
+`jpa.mapping-resources`, `jpa.show-sql`, `jpa.database-platform`.
+|`jdbc.template.*` |The JDBC template settings of `spring.jdbc.template.*`.
+|`migrations.enabled`, `migrations.locations`, `migrations.flyway.*` |See <<migrations>>.
+|`health.readiness`, `health.timeout` |See <<health>>.
+|===
+
+`synapse.data.auditing.system-user` (default `system`) is shared by every store (see <<auditing>>).
+
+Hikari's timeouts take milliseconds, as with `spring.datasource.hikari.*`: `hikari.connection-timeout: 2000`, not
+`2s`.
+
+[#module-config]
+=== The data module's files
+
+A data module ships its store's settings in its own files (see xref:environments.adoc#module-files[Module files]):
+
+----
+data-books/src/main/resources/
+  META-INF/synapse/config.yaml
+  META-INF/synapse/config-e2.yaml
+  META-INF/synapse/config-prod.yaml
+  db/migration/books/V1__books.sql
+data-books/src/test/resources/
+  application-test.yaml
+----
+
+[source,yaml]
+----
+# data-books: META-INF/synapse/config.yaml (every environment)
+synapse:
+  data:
+    stores:
+      books:
+        hikari:
+          maximum-pool-size: 5
+        health:
+          readiness: true
+
+# data-books: META-INF/synapse/config-e2.yaml
+synapse.data.stores.books.url: jdbc:postgresql://books-db.e2.example.com:5432/books
+----
+
+* `config.yaml` holds what is the same in every environment: pool settings, migrations, `jpa.*`,
+  `health.readiness`.
+* `config-<env>.yaml` holds what differs: the `url`, and `database-version` where the servers differ.
+* `username` and `password` never go in a file. They come from the platform's environment variables:
+  `SYNAPSE_DATA_STORES_BOOKS_USERNAME` and `SYNAPSE_DATA_STORES_BOOKS_PASSWORD` (the store name in upper case, dashes
+  removed: `SYNAPSE_DATA_STORES_LEGACYORDERS_PASSWORD`).
+* The module's own tests use `src/test/resources/application-test.yaml`, which may hold only a comment, and connect
+  with `@StoreConnection`. The module's `config*.yaml` files apply to them as they are. Never put files in
+  `src/test/resources/META-INF/synapse/`: the test classes directory would then ship both `META-INF/synapse/` and
+  `application-test.yaml`, which fails startup (see xref:environments.adoc#module-checks[Checks]).
+* A `config-test.yaml` in `src/main` ships in the jar, so it applies to the tests of every service that uses the
+  module. Use it only for what every consumer's tests need.
+* Module files defined in test sources (a fixture module) need a class-path root of their own. A separate test-only
+  Maven module works in the IDE too.
+* The service's files win over the module's without a warning. Two modules that set the same key fail startup.
+
+[#keys-without-defaults]
+=== Keys without defaults
+
+`url`, `username` and `password` have no default. A store without one of them fails startup:
+
+[cols="2,3",options="header"]
+|===
+|Description |Action
+|`The store 'books' has no url.`
+|`Set synapse.data.stores.books.url in the data module's config-<env>.yaml. Keys that say where to connect have no default.`
+|`The store 'books' has no password.`
+|`Set synapse.data.stores.books.password, from an environment variable such as SYNAPSE_DATA_STORES_BOOKS_PASSWORD.`
+|===
+
+The password may be empty. Synapse then passes an empty password to the driver, so the driver never falls back to a
+password file of its own. A store-qualified `JdbcConnectionDetails` bean without a password (`null`) gets the empty
+one too.
+
+[#rejected-keys]
+=== Rejected keys
+
+A store connects only where its `url`, `username` and `password` say. A key that would change that fails startup,
+naming the key and never its value:
+
+* `hikari.jdbc-url`, `hikari.username`, `hikari.password`, `hikari.data-source-class-name`,
+  `hikari.data-source-jndi`, and `hikari.data-source-properties.user`, `username`, `password` and `url` (in any case);
+* `hikari.schema` and `hikari.catalog`, which would choose another schema or database than the URL names. Name the
+  schema in the URL;
+* `hikari.connection-init-sql` and `migrations.flyway.init-sql`, whose SQL runs on each new connection, and
+  `hikari.connection-test-query`, whose SQL runs on each connection check: it could change the store's role or
+  schema (`SET ROLE`, `SET search_path`);
+* `migrations.flyway.url`, `user`, `password` and `locations` (use `migrations.locations`);
+* in `jpa.properties`: every `jakarta.persistence.jdbc.*` and `javax.persistence.jdbc.*` key, the JTA and non-JTA
+  data source keys, and `hibernate.connection.url`, `username`, `user`, `password`, `driver_class`,
+  `provider_class` and `datasource`, and `hibernate.multi_tenant_connection_provider`,
+  `hibernate.multi_tenant.schema_mapper` and `hibernate.multi_tenant.credentials_mapper`. Tuning keys such as
+  `hibernate.connection.isolation` stay allowed;
+* in Hibernate's global settings (JVM system properties, a class-path `hibernate.properties`):
+  `hibernate.connection.provider_class`, `username`, `user` and `password`, `jakarta.persistence.jdbc.user` and
+  `password` with their `javax` forms, and the three `hibernate.multi_tenant` keys above;
+* a `url` with credentials in it (a user before the host, `//app@db` or `//app:secret@db`, or a parameter named like
+  a user or a secret, such as `user=`, `password=`, `sslpassword=`, `token=`). Drivers and pools log the URL;
+* `jpa.open-in-view` and `jpa.bootstrap`, which are not store settings.
+
+[cols="3,3",options="header"]
+|===
+|Description |Action
+|`The store 'books' sets synapse.data.stores.books.hikari.jdbc-url, which would replace its url.`
+|`Remove synapse.data.stores.books.hikari.jdbc-url and set synapse.data.stores.books.url instead.`
+|`The store 'books' sets synapse.data.stores.books.hikari.connection-init-sql, SQL that runs on each new connection and could change the role or schema the store uses.`
+|`Remove synapse.data.stores.books.hikari.connection-init-sql. Name the schema in synapse.data.stores.books.url.`
+|`The store 'books' has credentials in synapse.data.stores.books.url, and drivers and pools log the URL.`
+|`Remove them from the URL and set synapse.data.stores.books.username and synapse.data.stores.books.password instead (from environment variables).`
+|`Hibernate's global settings (system properties or hibernate.properties) set hibernate.connection.provider_class, which would replace the url of the store 'books'.`
+|`Remove hibernate.connection.provider_class from the JVM's system properties and hibernate.properties, and set synapse.data.stores.books.url instead.`
+|===
+
+`hikari.credentials-provider-class-name` stays allowed: it supplies the store's credentials, such as an IAM token,
+rather than another target.
+
+Keys under `synapse.data.stores` use the dotted form only. A bracketed store name
+(`synapse.data.stores[books].url`) fails startup, since a store binds only the dotted form. A store configured under
+`synapse.data.stores` that no `@SynapseDataStore` declares fails too:
+`synapse.data.stores.orders is configured, but no @SynapseDataStore("orders") declares the store.`
+
+[#ignored-keys]
+=== Boot keys stores ignore
+
+Startup warns, naming the keys and never their values, when these are set, because stores don't use them:
+`spring.datasource.*`, `spring.flyway.*`, `spring.jdbc.template.*`, `spring.jpa.*` (with a JPA store),
+`spring.data.jdbc.dialect` and `spring.dao.exceptiontranslation.enabled` (with a JDBC store):
+
+----
+spring.datasource.* is set (spring.datasource.url), but Synapse data stores don't use it. Configure each store under synapse.data.stores.<name>.
+----
+
+`spring.jpa.open-in-view` has its own WARN, unless it is `false`.
+
+[#stores]
+== One store, several stores
+
+* With one store, it is the primary one: its beans are what an unqualified injection or `@Transactional` gets.
+* With several, one may set `synapse.data.stores.<name>.primary: true`. Two that set it fail startup:
+  `More than one store sets primary: books, legacy.`
+* Other stores are named: `@Transactional("legacy")`, `@Qualifier("legacy")`.
+* A transaction that spans stores is not atomic. Each store commits on its own; there is no distributed transaction.
+
+With several stores and none primary, an unqualified `@Transactional` can't choose a transaction manager, so startup
+fails:
+
+----
+There are 2 stores and none is primary, so an unqualified @Transactional can't choose a transaction manager: com.example.books.BookService#save.
+----
+
+The check reads the user classes of beans, `@Transactional` from implemented interfaces and repository fragments
+included. It lists up to five methods, then `and <n> more`. It skips Spring's own classes and Spring Data repository
+interfaces. It honours what Spring resolves: a primary transaction manager, a `TransactionManagementConfigurer` bean,
+or a type-level `@Qualifier` that names a transaction manager. What it can't see:
+
+* `TransactionTemplate` and programmatic transactions. Build them on a named transaction manager.
+* A lazy or prototype `@Bean` whose method returns an interface: the implementation's `@Transactional` is read only
+  when the bean exists. The first call then fails as it would without the check.
+* `@Fallback` transaction managers, transaction managers made by a `FactoryBean`, beans in a parent context and a
+  `TransactionInterceptor` with a `transactionManagerBeanName`.
+* A type-level `@Qualifier` is also found on a superclass or interface, where Spring reads only the class itself.
+
+With one store, or a primary one, Boot's own JPA configuration still matches and defines `jpaVendorAdapter` and
+`entityManagerFactoryBuilder` from `spring.jpa.*`. Stores don't use them. Its web configuration also applies
+`spring.jpa.open-in-view` to that store.
+
+[#migrations]
+== Migrations
+
+Each store has its own Flyway, on its own pool:
+
+* `migrations.locations` defaults to `classpath:db/migration/<store>`;
+* `migrations.flyway.*` takes Flyway's own keys, without the `flyway.` prefix: `baseline-on-migrate: true`,
+  `table: books_schema_history`. Write them in a config file: environment variable forms are not supported. An
+  unknown key, a value Flyway rejects, or two spellings of one key fail startup, naming the key;
+* `migrations.enabled: false` skips the migrations, for teams that run them in a separate job.
+
+Migrations run in the store's `SmartLifecycle.start()`, in a phase before any inbound plugin starts, then the schema
+action runs. Nothing touches the database while beans are created. A store that sets `migrations.locations` or
+`migrations.flyway.*` without Flyway on the class path fails startup.
+
+Flyway logs the URL of the database it migrates at INFO (`Database: jdbc:postgresql://…`). The URL can't carry
+credentials (see <<rejected-keys>>). With H2, Hikari's `Added connection` line also shows the H2 user name.
+
+Liquibase is not supported yet: Synapse sets `spring.liquibase.enabled=false` by default. Boot's `spring.sql.init`
+is turned off too (`spring.sql.init.mode=never`): it would run scripts against the primary store while beans are
+created.
+
+[#ddl-auto]
+== ddl-auto
+
+`synapse.data.stores.<name>.jpa.hibernate.ddl-auto` takes Boot's five values. Its default is `validate` when Flyway
+is on the class path (even with `migrations.enabled: false`), else `none`.
+
+[cols="1,4",options="header"]
+|===
+|Value |At startup
+|`none` |Nothing.
+|`validate` |The schema must match the entities, else startup fails: `The schema of the store 'books' does not match its entities: <Hibernate's message>`.
+|`update` |Hibernate updates the schema.
+|`create` |Hibernate drops the store's tables, then creates them (Boot's "create the schema and destroy previous data").
+|`create-drop` |As `create`, and drops them when the context stops.
+|===
+
+`update`, `create` and `create-drop` change the schema, so they fail startup unless the store sets
+`allow-ddl-auto: true`. Allow them for one environment, in `application-local.yaml` or a test file:
+
+[source,yaml]
+----
+# application-local.yaml
+synapse:
+  data:
+    stores:
+      books:
+        allow-ddl-auto: true
+        jpa.hibernate.ddl-auto: update
+----
+
+This guard is the same in every environment: no environment name is ever checked. Without `allow-ddl-auto`:
+
+[cols="3,3",options="header"]
+|===
+|Description |Action
+|`The store 'books' sets ddl-auto to update, which changes the schema at startup.`
+|`Use migrations in db/migration/books, or allow it for one environment with synapse.data.stores.books.allow-ddl-auto: true in application-local.yaml or a test file.`
+|===
+
+The guard can't be bypassed with raw keys. These fail startup, naming the key:
+
+* any `hibernate.hbm2ddl.*` key in `jpa.properties` (which also blocks `import_files`, `create_namespaces` and
+  `delimiter`), and any `jakarta.persistence.schema-generation.*` or `javax.persistence.schema-generation.*` key;
+* the same keys in Hibernate's global settings, except the value `none` for `hibernate.hbm2ddl.auto` (with or without
+  a contributor) and for the root `database.action` and `scripts.action`. `-Dhibernate.hbm2ddl.auto=none` starts;
+  `-Dhibernate.hbm2ddl.auto=update` fails;
+* a `HibernatePropertiesCustomizer` that sets one of them;
+* `jpa.generate-ddl: true`.
+
+Synapse never creates or drops schemas (namespaces), only tables. When an action other than `none` or `validate` is
+allowed, a failed DDL statement fails startup (`hibernate.hbm2ddl.halt_on_error=true`). `update` runs only on the
+EntityManagerFactory Synapse builds: a store whose class defines its own `<p>EntityManagerFactory` fails with
+`The store 'books' sets ddl-auto to update, which Synapse runs only on the EntityManagerFactory it builds, and the application defines booksEntityManagerFactory.`
+
+[#jpa]
+== JPA stores
+
+Hibernate is built without opening a connection: Synapse sets the database product name from the vendor
+(`PostgreSQL`) and the version from `database-version`, and turns JDBC metadata access off. Hibernate resolves the
+dialect from them. `jpa.database-platform` or `jpa.properties.hibernate.dialect` override it.
+
+Open-in-view is off: operations are the transaction boundary, so an `EntityManager` never stays open for a whole web
+request.
+
+`jpa.mapping-resources` adds `orm.xml` files to the store's persistence unit, after Synapse's own.
+
+The application's Hibernate customization beans apply to JPA stores:
+
+* `PhysicalNamingStrategy` and `ImplicitNamingStrategy`: one bean per store. It is the store's own
+  `<p>PhysicalNamingStrategy` (or `<p>ImplicitNamingStrategy`) in the store class, else a bean qualified with the store
+  (`@Qualifier("books")`), else an unqualified one. Among several candidates, the `@Primary` one wins; several without
+  one fail startup. A bean with another qualifier is never used (a DEBUG line names it).
+* `HibernatePropertiesCustomizer`: every applicable one. The unqualified ones run first, then those qualified with the
+  store, then the store's own `<p>HibernatePropertiesCustomizer`, each group in `@Order`. A later customizer replaces
+  what an earlier one set, so the most specific wins on a shared key. The guards above run again on the result.
+
+With one store, or a primary one, Boot's own JPA configuration also resolves naming strategies, and fails with several
+unqualified beans. Declare store-qualified ones as not default candidates, the pattern Boot gives for additional data
+sources:
+
+[source,java]
+----
+@Bean(defaultCandidate = false)
+@Qualifier("books")
+PhysicalNamingStrategy booksNaming() {
+    return new CamelCaseToUnderscoresNamingStrategy();
+}
+----
+
+On a unique violation, Hibernate logs the database's message, which carries the duplicate value, at WARN through the
+logger `org.hibernate.orm.jdbc.error`. It goes to the server log only. A service that must keep such values out of its
+logs sets that logger's level.
+
+[#ids]
+== Entity bases and ids
+
+`synapse-data-jpa` has mapped superclasses for entities:
+
+[cols="2,2,3",options="header"]
+|===
+|Class |Id |Columns
+|`IdEntity` |`UUID` |`id`
+|`VersionedEntity` |`UUID` |`id`, `version`
+|`AuditedEntity` |`UUID` |`id`, `version`, `created_at`, `created_by`, `modified_at`, `modified_by`
+|`LongIdEntity`, `LongVersionedEntity`, `LongAuditedEntity` |`Long` |The same, with `@GeneratedValue(strategy = SEQUENCE)`
+|===
+
+* A UUID id is assigned when the entity is first persisted, by the `EntityIdGenerator` bean
+  (`synapseEntityIdGenerator`): a UUIDv7 (RFC 9562) from the `Clock`, monotonic within a millisecond, so new rows land
+  at the end of the primary key's index. Define an `EntityIdGenerator` bean to replace it.
+* A UUIDv7 carries its creation time and is not a secret. Don't use it as a capability or an access token.
+* The bases implement Spring Data's `Persistable`: an entity is new while it has no version (no id, for `IdEntity` and
+  `LongIdEntity`), so a save is one `INSERT`.
+* `equals` compares the id and the unproxied class; `hashCode` is the class's, so it doesn't change when the id is
+  assigned.
+* A `Long*` entity uses Hibernate's sequence `<entity>_seq` with an allocation size of 50. Create it with
+  `INCREMENT BY 50` in a migration.
+
+Ids and audit stamps come from a default entity listener in Synapse's mapping resource, which every store's
+persistence unit gets. It applies to every entity of every store. An entity with `@ExcludeDefaultListeners`, or any
+entity of a store whose class defines its own `<p>EntityManagerFactory`, gets no id and no stamps: its persist fails
+with Hibernate's "must be manually assigned". A JDBC aggregate gets audit stamps, but no id: assign it with the
+`EntityIdGenerator`.
+
+[#auditing]
+=== Auditing
+
+An entity that implements `Auditable` (such as an `AuditedEntity`) is stamped on every save:
+
+* `created_at` and `created_by` when it has no creation time yet; `modified_at` and `modified_by` always.
+* Timestamps come from the `Clock`, truncated to microseconds, the precision of a `timestamp(6)` column, so the value
+  reads back unchanged. Declare the columns `timestamp(6)`: a column with less precision won't round-trip.
+* The user comes from an application `AuditorAware<String>` bean when there is one, else from the `RequestContext`
+  principal, else `synapse.data.auditing.system-user` (default `system`).
+
+WARNING: Nothing sets the `RequestContext` principal yet: `synapse-security` (P4) will, from a verified credential.
+Until then every write records `synapse.data.auditing.system-user`, writes inside REST requests included. To record
+the caller now, define an `AuditorAware<String>` bean that reads only a verified identity, never an unverified
+header.
+
+How Synapse's auditor backs off:
+
+* Synapse's `synapseAuditorAware` is not a default candidate, so an application `AuditorAware<String>` wins without
+  conflicting with it. An `AuditorAware<Long>` is ignored by Synapse and still reaches Spring Data.
+* Two application `AuditorAware<String>` beans fail startup (with lazy initialization, at the first stamp).
+* `@EnableJpaAuditing` without an auditor of the application's gets none of Synapse's: Spring Data's `@CreatedBy`
+  stays empty. Synapse's own stamps are not affected.
+* `@EnableJdbcAuditing` doesn't work with Synapse stores: it wires a bean named `jdbcMappingContext`, which stores
+  don't have. JDBC stores are stamped by Synapse's own callback.
+* `getBeansOfType(AuditorAware.class)` includes `synapseAuditorAware`.
+
+[#jdbc]
+== JDBC stores
+
+A JDBC store's aggregates are the classes annotated `@Table` in its package. With both access modules on the class
+path, Spring Data runs in strict mode and gives repositories only to aggregates with `@Table`, so always annotate
+them. `@Table("name")` is case-sensitive (the name is quoted).
+
+* The dialect comes from the vendor, without a connection. Define `<p>JdbcDialect` in the store class to change it.
+* `@Sequence` ids work: each store's aggregate template has its own id callback, on its own database.
+* The application's `NamingStrategy` and `JdbcCustomConversions` apply with the qualifier rules of JPA's naming
+  strategies: the store's own `<p>NamingStrategy` or `<p>JdbcCustomConversions`, else a bean qualified with the
+  store, else an unqualified one. One unqualified `JdbcCustomConversions` replaces the dialect's conversions for every
+  JDBC store, so it fails startup when those stores' dialects differ:
+  `The JdbcCustomConversions bean applicationConversions would apply to JDBC stores whose dialects differ: books (…JdbcH2Dialect), legacy (…JdbcPostgresDialect).`
+* Boot's JDBC repositories stay off (`spring.data.jdbc.repositories.enabled=false`). An application that turns them on
+  gets Boot's `idGeneratingBeforeSaveCallback` on the primary store, which runs for every store's aggregates: with
+  several stores and none primary that fails startup, and with a primary store `@Sequence` ids come from the primary
+  store's database.
+
+[#errors]
+== Error translation
+
+Data access failures become Synapse errors (see xref:core.adoc#errors[Errors]). The translators walk the cause chain
+to depth 10, so a failure wrapped at commit is still found. The caller sees only the code's message; the exception is
+logged on the server side.
+
+[cols="3,2",options="header"]
+|===
+|Failure |Code
+|Optimistic lock (`@Version`): Spring's `OptimisticLockingFailureException`, JPA's `OptimisticLockException`, Hibernate's `StaleStateException` |`STALE_VERSION`
+|Unique constraint: Spring's `DuplicateKeyException`, a Hibernate `ConstraintViolationException` of kind `UNIQUE` |`ALREADY_EXISTS`
+|Query timeout: Spring's, JPA's or Hibernate's `QueryTimeoutException` |`DEADLINE_EXCEEDED`
+|Connection failure, a transaction that can't begin: `DataAccessResourceFailureException`, `TransientDataAccessResourceException`, `CannotCreateTransactionException` |`UNAVAILABLE`
+|Anything else, such as a NOT NULL or foreign key violation |`INTERNAL`
+|===
+
+`ALREADY_EXISTS` and `STALE_VERSION` are `CONFLICT` (409 over REST). Observed on PostgreSQL 18.6 with PgJDBC 42.7.14:
+
+[cols="3,1,3,2",options="header"]
+|===
+|Case |SQLState |Exception |Code
+|Unique violation, JPA, at commit |23505 |Hibernate's `ConstraintViolationException` (UNIQUE), wrapped by the commit |`ALREADY_EXISTS`
+|Unique violation, JDBC |23505 |`DuplicateKeyException` |`ALREADY_EXISTS`
+|`@Version` conflict |none |optimistic lock |`STALE_VERSION`
+|`statement_timeout`, JDBC or JPA |57014 |a `QueryTimeoutException` |`DEADLINE_EXCEEDED`
+|`lock_timeout` |55P03 |`UncategorizedSQLException` (JDBC), `PessimisticLockException` (JPA) |`INTERNAL`
+|Serialization failure |40001 |`CannotAcquireLockException` |`INTERNAL`
+|Deadlock |40P01 |`PessimisticLockingFailureException` |`INTERNAL`
+|===
+
+* 57014 is PostgreSQL's *query_canceled*, so a cancelled statement (`pg_cancel_backend`, `Statement.cancel()`) is
+  `DEADLINE_EXCEEDED` too.
+* The lock types follow Spring's SQLState fallback: class 40 is pessimistic locking, and class 55 is in no set.
+  Whether lock failures should become a retryable code is still open.
+
+[#health]
+== Health and readiness
+
+Synapse defines `dbHealthContributor`, so Boot's backs off. It has one indicator per store, named after it:
+`db/books`.
+
+* When the pool has connections and none is idle, the indicator is `UP` with `pool: busy`, without borrowing one.
+* Otherwise it borrows a connection and checks `Connection.isValid(1)`, waiting at most `health.timeout`
+  (default `1s`, must be positive). The borrow runs on a platform daemon thread, one at a time per store: a check that
+  finds one in flight waits for it, up to its own timeout, so a database outage never queues borrows. A borrow that
+  returns late is closed.
+* Details are fixed texts, never a driver message: `The connection failed.`, `The connection is not valid.`,
+  `No connection within 1000 ms.`, `The check was interrupted.`, `The check could not start.`
+
+A store joins the `readiness` group only with `health.readiness: true`, so a busy or down store doesn't take the
+service out of rotation unless it opts in. Limits:
+
+* While stores exist, the application's own DataSource (one that isn't a store's) has no health indicator: Boot's
+  backs off by name.
+* A user `dbHealthIndicator`, or a `dbHealthContributor` whose children aren't named after the stores, makes
+  `health.readiness` a no-op.
+
+[#metrics]
+== Metrics and the connection budget
+
+Boot binds every pool's metrics: `hikaricp.*` with the tag `pool=<store>`. At startup, Synapse logs the connection
+budget at INFO (logger `io.americanexpress.synapse.data`):
+
+----
+Synapse data stores: books (pool 10), legacy (pool 5); at most 15 connections per instance.
+----
+
+Multiply by the instance count to size the database's connection limit.
+
+[#vendors]
+== Vendors
+
+A store's URL selects its vendor module. A URL no vendor supports fails startup:
+`No Synapse vendor module supports the store 'books' (jdbc:sqlserver).` The message names only the URL's scheme.
+
+[#postgres]
+=== PostgreSQL
+
+`synapse-data-postgres` supports URLs that start with `jdbc:postgresql:`. Hibernate's dialect is `PostgreSQLDialect`
+and Spring Data JDBC's is `JdbcPostgresDialect`. `database-version` defaults to `15`, the oldest supported release
+after 14's end of life (2026-11-12). Set the version of your servers:
+
+[source,yaml]
+----
+synapse.data.stores.books.database-version: 17
+----
+
+The store connects only where its settings say:
+
+* The URL names a host and a database: `jdbc:postgresql://<host>[:<port>][,<host>[:<port>]...]/<database>[?<parameters>]`.
+  `jdbc:postgresql:books` and `jdbc:postgresql://db:5432/` fail startup.
+* The URL parameters `host`, `port`, `dbname` (and `PGHOST`, `PGPORT`, `PGDBNAME`) and `service` fail startup, since
+  they would replace the host and database, or read them and a password from a `pg_service.conf` file.
+* These `hikari.data-source-properties` fail startup, in any case: `PGHOST`, `PGPORT`, `PGDBNAME`, `host`, `port`,
+  `dbname`, `user`, `password`, `sslpassword`, `socketFactory`, `socketFactoryArg`, `options`, `currentSchema` and
+  `service`. Name the schema in the URL (`?currentSchema=books`).
+* `sslkey`, `sslcert`, `sslrootcert`, `sslmode`, `authenticationPluginClassName` and the Kerberos keys (`gsslib`,
+  `jaasLogin`, `kerberosServerName`, ...) stay allowed: they change how the store proves its user name, not who it is.
+* An `org/postgresql/driverconfig.properties` on the class path fails startup, since the driver would read it behind
+  the store's settings.
+* A store's password is always given to the driver, an empty one included, so `.pgpass` and `PGPASSFILE` are never
+  read.
+* `PGSERVICEFILE` and `PGSYSCONFDIR` are never read either, since they only locate the service file that the
+  rejected `service` parameter and property would read. libpq's `PGHOST`, `PGUSER` and `PGPASSWORD` variables do
+  nothing in PgJDBC.
+
+[cols="3,3",options="header"]
+|===
+|Description |Action
+|`The store 'books' has a url that names no host.`
+|`Set synapse.data.stores.books.url in the form jdbc:postgresql://<host>[:<port>][,<host>[:<port>]...]/<database>[?<parameters>].`
+|`The store 'books' sets synapse.data.stores.books.hikari.data-source-properties.currentSchema, a driver property that would change where, as whom or in which schema the store connects, or that holds a secret.`
+|`Remove it, name the host, port, database and schema in synapse.data.stores.books.url, and set synapse.data.stores.books.username and synapse.data.stores.books.password.`
+|===
+
+Not checked, and not a change of identity: with SSL on and no `sslcert`, the driver uses the default client
+certificate in `~/.postgresql/` (`%APPDATA%\postgresql\` on Windows), and a Kerberos login uses the ticket cache. The
+server maps either to the store's `username`.
+
+[#native]
+== AOT and native images
+
+* A store's name and its `primary` decide which beans exist, so they are fixed at build time. When the application
+  runs with AOT-generated artifacts, the store checks run again with the run-time environment: a store configured
+  only at run time fails as undeclared, and a `primary` that differs from the build fails:
+  `The store 'books' sets synapse.data.stores.books.primary differently from when its beans were registered (in AOT mode, at build time).`
+  (action `Set synapse.data.stores.books.primary in config.yaml or application.yaml, the same in every environment and not in a @PropertySource, and in AOT mode build again.`).
+  This covers environment variables (`SYNAPSE_DATA_STORES_BOOKS_PRIMARY`) and the command line too. On the JVM the
+  same failure means that a `@PropertySource` set `primary` after the store was registered. See also
+  xref:environments.adoc#aot[AOT and native images].
+* Synapse registers resource hints for the stores' default migration locations (`db/migration/*/**`) and its mapping
+  resource, and reflection hints for its entity listener and each vendor's dialects. Migrations in other
+  `migrations.locations` need hints of the application's own.
+* The JVM AOT mode is tested with two JPA stores and a JDBC store on H2: their beans, qualifiers, repositories, ids,
+  audit stamps and `@Sequence` ids. The qualifier and `@Order` of the application's `@Bean` methods, and whether a
+  store bean is Synapse's own, are read the same way as on the JVM: tested with store-qualified
+  `HibernatePropertiesCustomizer` beans, `ddl-auto: update`, and the `JdbcCustomConversions` dialect check. A native
+  image is best effort: the reflection hints for entities and Flyway's
+  class-path scanning in a native image are not verified yet.

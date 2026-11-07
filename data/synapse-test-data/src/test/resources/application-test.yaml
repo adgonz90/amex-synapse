@@ -1,0 +1,13 @@
+# Settings for this module's tests: @SynapseDataTest activates the test profile, which loads this file. Both stores
+# are configured, as in a service; a slice for the books store starts that store only.
+synapse:
+  data:
+    stores:
+      books:
+        url: jdbc:h2:mem:slice-books;DB_CLOSE_DELAY=-1
+        username: sa
+        password: ""
+      legacy:
+        url: jdbc:h2:mem:slice-legacy;DB_CLOSE_DELAY=-1
+        username: sa
+        password: ""

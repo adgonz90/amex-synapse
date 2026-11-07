@@ -92,6 +92,31 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-jpa</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-jdbc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-postgres</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-data</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
                 <version>1.5.1</version>

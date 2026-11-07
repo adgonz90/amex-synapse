@@ -208,7 +208,7 @@ data-books/src/main/resources/META-INF/synapse/
 # service-books: application.yaml
 spring.profiles.active: ${ENV}
 synapse.client.accounts.timeout: 3s
-synapse.data.stores.books.pool-size: 8
+synapse.data.stores.books.hikari.maximum-pool-size: 8
 
 # service-books: application-e2.yaml
 synapse.client.accounts.timeout: 4s
@@ -228,7 +228,7 @@ synapse.client.accounts.timeout: 2s
 
 # data-books: META-INF/synapse/config.yaml
 synapse.data.stores.books.url: jdbc:postgresql://base/books
-synapse.data.stores.books.pool-size: 5
+synapse.data.stores.books.hikari.maximum-pool-size: 5
 
 # data-books: META-INF/synapse/config-e2.yaml
 synapse.data.stores.books.url: jdbc:postgresql://e2/books
@@ -244,12 +244,13 @@ Run with `ENV=e2`, `SYNAPSE_CLIENT_ACCOUNTS_MAXCONNECTIONS=99`, `SYNAPSE_DATA_ST
 |`synapse.client.accounts.max-connections` |`99` |An environment variable
 |`synapse.data.stores.books.password` |The variable's value |An environment variable
 |`synapse.client.accounts.timeout` |`4s` |`application-e2.yaml`
-|`synapse.data.stores.books.pool-size` |`8` |`application.yaml`
+|`synapse.data.stores.books.hikari.maximum-pool-size` |`8` |`application.yaml`
 |`synapse.data.stores.books.url` |`jdbc:postgresql://e2/books` |`config-e2.yaml` of `data-books`
 |`synapse.client.accounts.retries` |`3` |`config.yaml` of `client-accounts`
 |===
 
-The client and store keys only show the precedence here: clients and named stores come with their own modules.
+The client keys only show the precedence here: clients come with their own modules. The store keys are those of
+a data module (see xref:data.adoc#module-config[The data module's files]).
 
 [#safe-defaults]
 == Safe defaults
@@ -280,14 +281,15 @@ synapse:
   needed (see xref:openapi.adoc#exposure[Who can read it]). Under AOT and in a native image the setting decides which
   beans exist, so it is fixed when the application is built and an environment's file can't change it (see
   <<aot>> and xref:openapi.adoc#aot-toggle[OpenAPI under AOT]).
-
-Later modules follow the same model: a store allows `ddl-auto` only through its own switch.
+* A data store's `ddl-auto` may change the schema only when the store sets
+  `synapse.data.stores.<name>.allow-ddl-auto: true`, for example in `application-local.yaml` (see
+  xref:data.adoc#ddl-auto[ddl-auto]).
 
 [#keys-without-defaults]
 == Keys without defaults
 
 Keys that say where to connect, or who to connect as, have no Synapse default: a client's `base-url`, and a store's
-`url`, `username` and `password` (they come with the client and data modules). A module that forgot a value for an
+`url`, `username` and `password` (see xref:data.adoc#keys-without-defaults[Data]). A module that forgot a value for an
 environment then fails binding at startup instead of calling the wrong target. Tuning keys (timeouts, retries, pools,
 logging) keep safe defaults.
 
@@ -387,7 +389,8 @@ Configuration, highest priority first:
   `synapse.data.stores.<name>`) belongs in files that don't depend on the environment: a module's `config.yaml` or the
   service's `application.yaml`. When the application runs with AOT-generated artifacts, startup fails when an
   environment file (a module's `config-<env>.yaml` or the service's `application-<env>.yaml`) adds such a name; names
-  are compared as canonical property names, and environment variables and the command line are not checked:
+  are compared as canonical property names, and environment variables and the command line are not checked here
+  (the data stores check their own names, and `primary`, again at startup: see xref:data.adoc#native[Data]):
 +
 [cols="4,3",options="header"]
 |===

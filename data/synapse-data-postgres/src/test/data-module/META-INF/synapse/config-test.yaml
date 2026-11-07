@@ -1,0 +1,10 @@
+# The fixture data module's settings for the test environment, over its config.yaml.
+synapse:
+  data:
+    stores:
+      books:
+        hikari:
+          connection-timeout: 5000
+      legacy:
+        hikari:
+          connection-timeout: 5000
