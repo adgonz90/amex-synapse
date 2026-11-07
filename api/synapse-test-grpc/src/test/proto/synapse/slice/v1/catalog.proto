@@ -1,0 +1,72 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// Test fixture of the gRPC test slice: the services its slice tests start.
+syntax = "proto3";
+
+package synapse.slice.v1;
+
+option java_package = "io.americanexpress.synapse.test.grpc.fixture.proto";
+option java_multiple_files = true;
+
+// Bound to a Synapse operation with .unary.
+service CatalogService {
+  rpc GetItem(GetItemRequest) returns (Item);
+}
+
+// Implemented by a hand-written service.
+service PingService {
+  rpc Ping(PingRequest) returns (PingReply);
+}
+
+// Bound by name with .bindAllByName().
+service InventoryService {
+  rpc GetStock(GetStockRequest) returns (Stock);
+  rpc CountItems(CountItemsRequest) returns (ItemCount);
+}
+
+message GetItemRequest {
+  string id = 1;
+}
+
+message Item {
+  string id = 1;
+  string name = 2;
+  int32 rating = 3;
+}
+
+message PingRequest {
+  string message = 1;
+}
+
+message PingReply {
+  string message = 1;
+}
+
+message GetStockRequest {
+  string sku = 1;
+}
+
+message Stock {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message CountItemsRequest {
+  string category = 1;
+}
+
+message ItemCount {
+  int64 count = 1;
+}

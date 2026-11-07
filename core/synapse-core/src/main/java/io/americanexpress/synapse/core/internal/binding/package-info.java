@@ -11,7 +11,10 @@
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
  */
-/** Resolution of component references to record components. Internal to Synapse. */
+/**
+ * Binding support shared by the edges: resolution of component references to record components, the persistence type
+ * check and the user class of an operation bean. Internal to Synapse.
+ */
 @NullMarked
 package io.americanexpress.synapse.core.internal.binding;
 

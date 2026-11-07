@@ -30,6 +30,7 @@ class SynapseErrorsTest {
                     Map.entry("FORBIDDEN", ErrorCategory.FORBIDDEN),
                     Map.entry("CONFLICT", ErrorCategory.CONFLICT),
                     Map.entry("STALE_VERSION", ErrorCategory.CONFLICT),
+                    Map.entry("ALREADY_EXISTS", ErrorCategory.CONFLICT),
                     Map.entry("PRECONDITION_FAILED", ErrorCategory.PRECONDITION_FAILED),
                     Map.entry("PRECONDITION_REQUIRED", ErrorCategory.PRECONDITION_FAILED),
                     Map.entry("RATE_LIMITED", ErrorCategory.RATE_LIMITED),
@@ -39,7 +40,7 @@ class SynapseErrorsTest {
 
     @Test
     void everyCodeHasItsCategory() {
-        assertThat(SynapseErrors.values()).hasSize(EXPECTED.size()).hasSize(13);
+        assertThat(SynapseErrors.values()).hasSize(EXPECTED.size()).hasSize(14);
         for (SynapseErrors error : SynapseErrors.values()) {
             assertThat(error.code()).isEqualTo(error.name());
             assertThat(error.category()).as(error.name()).isEqualTo(EXPECTED.get(error.name()));
@@ -64,6 +65,7 @@ class SynapseErrorsTest {
                 .isEqualTo("The request conflicts with the current state of the resource");
         assertThat(SynapseErrors.STALE_VERSION.messageTemplate())
                 .isEqualTo("The resource was changed by another request");
+        assertThat(SynapseErrors.ALREADY_EXISTS.messageTemplate()).isEqualTo("The resource already exists");
         assertThat(SynapseErrors.PRECONDITION_FAILED.messageTemplate()).isEqualTo("A precondition failed");
         assertThat(SynapseErrors.PRECONDITION_REQUIRED.messageTemplate())
                 .isEqualTo("The request must be conditional");

@@ -35,6 +35,13 @@ class OperationNamesTest {
         assertThat(OperationNames.nameOf(type)).isEqualTo(expected);
     }
 
+    @ParameterizedTest
+    @CsvSource({"GetBook, get-book", "SearchBooks, search-books", "GetHTTPStatus, get-http-status", "Ping, ping",
+            "GetBookOperation, get-book-operation"})
+    void methodNamesMapToOperationNames(String method, String operation) {
+        assertThat(OperationNames.ofMethodName(method)).isEqualTo(operation);
+    }
+
     @Test
     void annotationOverridesDerivedName() {
         assertThat(OperationNames.nameOf(Renamed.class)).isEqualTo("fetch-book");

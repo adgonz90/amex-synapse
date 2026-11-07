@@ -82,6 +82,16 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
                 <version>1.5.1</version>
@@ -90,6 +100,17 @@
                 <groupId>org.springdoc</groupId>
                 <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
                 <version>3.2.0</version>
+            </dependency>
+            <!--
+                CVE pin: guava 33.6.0 (what grpc-java 1.84.1 brings) is affected by GHSA-xxph-c9ww-hj94 /
+                CVE-2026-102554; 33.7.2 is the first fixed release. Same version as the root pom.xml (a build-rules
+                test keeps them equal); not managed by Spring Boot 4.1.2.
+                Remove when grpc-java brings guava >= 33.7.2.
+            -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>33.7.2-jre</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

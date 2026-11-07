@@ -1,0 +1,86 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// The gRPC API of the book catalog. Each method is bound to the same operation as the REST route that does the same
+// thing (see BooksGrpcConfiguration). Synapse maps each message field to the record component with the same name
+// (added_via to addedVia); a nullable component needs a field with presence, hence the wrapper types.
+syntax = "proto3";
+
+package synapse.samples.books.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+
+option java_package = "io.americanexpress.synapse.samples.books.api.grpc.proto";
+option java_multiple_files = true;
+
+// The catalog. SearchBooks is not here yet: gRPC page tokens come in plan 3b.
+service BookService {
+  // get-book. An unknown id is NOT_FOUND with the reason BOOK_NOT_FOUND.
+  rpc GetBook(GetBookRequest) returns (Book);
+  // create-book. The channel comes from the x-channel metadata, not from the message.
+  rpc CreateBook(CreateBookRequest) returns (Book);
+  // update-book. A stale version is ABORTED with the reason STALE_VERSION.
+  rpc UpdateBook(UpdateBookRequest) returns (Book);
+  // delete-book.
+  rpc DeleteBook(DeleteBookRequest) returns (google.protobuf.Empty);
+  // get-catalog-stats.
+  rpc GetCatalogStats(google.protobuf.Empty) returns (CatalogStats);
+}
+
+message Book {
+  // A UUID.
+  string id = 1;
+  string isbn = 2;
+  string title = 3;
+  string author = 4;
+  // Unset when the year is not known.
+  google.protobuf.Int32Value year = 5;
+  // The channel the book was added through; unset when the caller sent none.
+  google.protobuf.StringValue added_via = 6;
+  // 1 when the book is added, plus 1 on every change.
+  int64 version = 7;
+}
+
+message GetBookRequest {
+  string id = 1;
+}
+
+message CreateBookRequest {
+  string isbn = 1;
+  string title = 2;
+  string author = 3;
+  google.protobuf.Int32Value year = 4;
+}
+
+message UpdateBookRequest {
+  string id = 1;
+  string isbn = 2;
+  string title = 3;
+  string author = 4;
+  google.protobuf.Int32Value year = 5;
+  // The version this change is based on; unset to update the version the service reads.
+  google.protobuf.Int64Value version = 6;
+}
+
+message DeleteBookRequest {
+  string id = 1;
+  // The version to delete; unset to delete the version the service reads.
+  google.protobuf.Int64Value version = 2;
+}
+
+message CatalogStats {
+  int32 books = 1;
+  int32 authors = 2;
+}

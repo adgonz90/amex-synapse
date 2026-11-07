@@ -425,6 +425,19 @@ class SynapseRestAutoConfigurationTest {
     }
 
     @Test
+    void synapseFieldsIncludeGrpcAttributeNames() {
+        webRunner.withPropertyValues("synapse.api.grpc.context.metadata.partner=x-partner").run(context -> {
+            MockHttpServletRequest request = new MockHttpServletRequest();
+            request.addHeader("baggage", "partner=evil,other=o");
+
+            HttpServletRequest seen = filter(context, request);
+
+            assertThat(seen.getHeader("baggage")).isEqualTo("other=o");
+            assertThat(InboundBaggage.candidates(seen)).containsExactly(Map.entry("partner", "evil"));
+        });
+    }
+
+    @Test
     void inboundPropagationFilterBindsTrustAndRemoteFields() {
         webRunner
                 .withPropertyValues("synapse.context.inbound.trusted=false",

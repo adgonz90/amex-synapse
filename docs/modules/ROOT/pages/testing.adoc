@@ -163,6 +163,75 @@ logging of the operation don't run. Request binding (with its violations), respo
 error responses do. A `@MockitoSpyBean` needs a real operation bean, which the slice doesn't create: add the
 operation with `@Import(GetBookOperation.class)` and replace its collaborators with `@MockitoBean`.
 
+== @SynapseGrpcTest
+
+A slice for the gRPC layer, in `synapse-test-grpc`:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test-grpc</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+It starts the xref:grpc.adoc[gRPC plugin] (compiled bindings, edge interceptors, error details) on Boot's in-process
+test transport, with no network server, together with the classes that declare a `GrpcBindings` `@Bean`, and the
+application's hand-written services (`BindableService` components), `@GrpcAdvice` classes, `GrpcExceptionHandler`s
+and `ServerInterceptor`s. Operations, business beans and every other component are left out. Components are kept by
+their own type, as in Boot's slices: a configuration class that declares an interceptor, exception handler or service
+as a `@Bean` is left out, and the test brings it in with `@Import`. Calls are made with client stubs, which
+`@ImportGrpcClients` registers on the in-process channel. As in the other slices, the `test` environment is active,
+the module needs `application-test.yaml`, and a `MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless
+you define a `Clock`. Statuses carry their description only when `application-test.yaml` sets
+`synapse.errors.include-detail: true`.
+
+Declare a `@MockitoBean` (or a `@TestBean`) for each operation the bindings use:
+
+[source,java]
+----
+@SynapseGrpcTest
+@ImportGrpcClients(types = BookServiceGrpc.BookServiceBlockingStub.class)
+class BooksGrpcTest {
+
+    @Autowired BookServiceGrpc.BookServiceBlockingStub books;
+    @MockitoBean GetBookOperation getBook;
+    @MockitoBean CreateBookOperation createBook;
+
+    @Test
+    void missingBookIsNotFound() {
+        given(getBook.execute(any())).willReturn(Optional.empty());
+
+        StatusRuntimeException e = catchThrowableOfType(StatusRuntimeException.class,
+                () -> books.getBook(GetBookRequest.newBuilder().setId("00000000-0000-0000-0000-000000000001").build()));
+
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+    }
+}
+----
+
+When an operation has no double, the slice fails before any bean is created and names every missing operation and
+the `@Bean` method that binds it. The check covers operations that are parameters of a `@Bean` method returning
+`GrpcBindings`. The operations `.bindAllByName()` finds are not parameters, so they can't be named in advance: a
+method whose operation has no double fails startup with the *no operation is bound* failure (see
+xref:grpc.adoc#startup-failures[Startup failures]), whose action ends with
+`In @SynapseGrpcTest, declare a @MockitoBean for it.`
+
+The doubles are used as they are, without the pipeline, as in `@SynapseRestTest`. Message mapping (with its
+violations), the edge and the error details run.
+
+Boot's in-process test server applies no server builder customizers, so the slice runs without what they set up on
+the application's server. Test these against the application's server, in a `@SpringBootTest` on a random port
+(`spring.grpc.server.port=0` and `@LocalGrpcServerPort`):
+
+* the inbound message and metadata size limits (`spring.grpc.server.inbound.*`): an oversized message or metadata is
+  accepted;
+* keepalive;
+* Synapse's fallback handlers: a call to a method no service declares gets grpc-java's own `UNIMPLEMENTED`, not
+  Synapse's `METHOD_NOT_FOUND` details;
+* the virtual-thread executor of `spring.threads.virtual.enabled`.
+
 == MutableClock
 
 [source,java]

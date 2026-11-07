@@ -40,6 +40,7 @@ import org.springframework.core.env.PropertySource;
 import org.springframework.util.ClassUtils;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.internal.binding.OperationTypes;
 import io.americanexpress.synapse.core.operation.BusinessOperation;
 import io.americanexpress.synapse.core.operation.OperationKind;
 import io.americanexpress.synapse.core.operation.OperationNames;
@@ -192,7 +193,7 @@ public final class OperationProxyVerifier implements SmartInitializingSingleton 
     }
 
     private static void verifyProxied(String beanName, Object bean) {
-        Class<?> type = ClassUtils.getUserClass(AopProxyUtils.ultimateTargetClass(bean));
+        Class<?> type = OperationTypes.userClassOf(bean);
         OperationBeanDefinitionChecker.checkClass(beanName, type);
         Class<?> advisor = bean instanceof ServiceOperation<?, ?> ? OperationAdvisor.class : BusinessAdvisor.class;
         if (!AopUtils.isCglibProxy(bean) || !(bean instanceof Advised advised)

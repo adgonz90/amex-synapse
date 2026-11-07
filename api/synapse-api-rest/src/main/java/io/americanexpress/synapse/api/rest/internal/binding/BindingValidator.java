@@ -13,7 +13,6 @@
  */
 package io.americanexpress.synapse.api.rest.internal.binding;
 
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
@@ -50,6 +49,8 @@ import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.binding.ComponentRef;
 import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.internal.binding.ComponentRefs;
+import io.americanexpress.synapse.core.internal.binding.OperationTypes;
+import io.americanexpress.synapse.core.internal.binding.PersistenceTypes;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
 import io.americanexpress.synapse.core.operation.OperationKind;
 import io.americanexpress.synapse.core.paging.PageQuery;
@@ -93,12 +94,6 @@ import io.americanexpress.synapse.core.paging.PageResult;
  * {@code Deprecation} or {@code Sunset}, which Spring's API versioning sets.
  */
 public final class BindingValidator {
-
-    private static final List<String> ENTITY_ANNOTATIONS = List
-            .of("jakarta.persistence.Entity", "org.springframework.data.mongodb.core.mapping.Document",
-                    "org.springframework.data.relational.core.mapping.Table");
-
-    private static final String DATA_PACKAGE = "io.americanexpress.synapse.data";
 
     /** Response headers Synapse writes itself, in lower case: an output component can't be mapped to them. */
     private static final Set<String> RESERVED_HEADERS = Set
@@ -488,35 +483,6 @@ public final class BindingValidator {
     }
 
     /**
-     * Returns why a type is a persistence entity, or {@code null}. Annotations are matched by name, so none of the
-     * persistence libraries has to be on the class path.
-     */
-    private static @Nullable String persistenceReason(Class<?> type) {
-        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
-            for (Annotation annotation : current.getDeclaredAnnotations()) {
-                String name = annotation.annotationType().getName();
-                if (ENTITY_ANNOTATIONS.contains(name)) {
-                    return "annotated @" + name;
-                }
-            }
-            if (current != type && isDataType(current)) {
-                return "extends " + current.getName();
-            }
-        }
-        for (Class<?> implemented : ClassUtils.getAllInterfacesForClassAsSet(type)) {
-            if (isDataType(implemented)) {
-                return "implements " + implemented.getName();
-            }
-        }
-        return null;
-    }
-
-    private static boolean isDataType(Class<?> type) {
-        String name = type.getPackageName();
-        return name.equals(DATA_PACKAGE) || name.startsWith(DATA_PACKAGE + ".");
-    }
-
-    /**
      * The rules of every conventions bean, merged, with the response header components resolved.
      */
     private record Conventions(Set<Class<?>> queryRecords, Set<HeaderRule> headers,
@@ -640,7 +606,7 @@ public final class BindingValidator {
 
         private void checkTypes() {
             checkNotEntity("input", route.inputType());
-            ResolvableType output = RouteDefinition.generic(RouteDefinition.operationClass(route.operation()), 1);
+            ResolvableType output = RouteDefinition.generic(OperationTypes.userClassOf(route.operation()), 1);
             Class<?> raw = output.resolve(Object.class);
             if ((raw == Optional.class || raw == List.class)
                     && output.getGeneric(0).resolve(Object.class) == PageResult.class) {
@@ -656,7 +622,7 @@ public final class BindingValidator {
                         "Declare the operation's input as a record, or as Void if it takes none.");
             }
             boolean read = isRead(route.method());
-            if (read && OperationKind.of(RouteDefinition.operationClass(route.operation())) == OperationKind.COMMAND) {
+            if (read && OperationKind.of(OperationTypes.userClassOf(route.operation())) == OperationKind.COMMAND) {
                 throw fail(route, "a CommandOperation cannot be bound to " + route.method().name(),
                         "Bind it to POST, PUT or DELETE, or make it a QueryOperation if it only reads.");
             }
@@ -707,7 +673,7 @@ public final class BindingValidator {
         }
 
         private void checkNotEntity(String role, Class<?> type) {
-            String reason = persistenceReason(type);
+            String reason = PersistenceTypes.persistenceReason(type);
             if (reason != null) {
                 throw fail(route,
                         "the " + role + " type " + type.getName() + " is a persistence entity (" + reason + ")",

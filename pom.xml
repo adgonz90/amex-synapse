@@ -65,6 +65,8 @@
         <module>api/synapse-api-rest</module>
         <module>api/synapse-api-rest-openapi</module>
         <module>api/synapse-test-rest</module>
+        <module>api/synapse-api-grpc</module>
+        <module>api/synapse-test-grpc</module>
         <!-- Runnable samples; never published. -->
         <module>samples/rest-books</module>
         <!-- Build-rule tests; never published. -->
@@ -85,10 +87,21 @@
 
         <!-- Platform. Keep in sync with the parent version in parent/synapse-parent/pom.xml. -->
         <spring-boot.version>4.1.2</spring-boot.version>
+        <!--
+            Same values as spring-boot-dependencies 4.1.2; the root build doesn't inherit Boot's parent, so the protobuf
+            plugin's coordinates are repeated here. Bump them with Boot.
+        -->
+        <protobuf-maven-plugin.version>5.1.11</protobuf-maven-plugin.version>
+        <protobuf-java.version>4.36.2</protobuf-java.version>
+        <grpc-java.version>1.84.1</grpc-java.version>
 
         <!-- Static analysis -->
         <error-prone.version>2.51.0</error-prone.version>
         <nullaway.version>0.14.3</nullaway.version>
+        <!-- Source paths (a regular expression) Error Prone skips, passed as -XepExcludedPaths. Only for code generated
+             without a @Generated annotation Error Prone recognizes (protoc, grpc-java); a module can exclude paths
+             here, never disable checks. The default, ^$, matches no path. -->
+        <synapse.errorprone.excludedPaths>^$</synapse.errorprone.excludedPaths>
 
         <!--
             Eclipse JDT formatter engine used by Spotless. Pinned so a Spotless upgrade can't silently reformat the
@@ -177,6 +190,16 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
                 <version>${archunit.version}</version>
@@ -185,6 +208,25 @@
                 <groupId>org.springdoc</groupId>
                 <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
                 <version>${springdoc.version}</version>
+            </dependency>
+            <!--
+                CVE pin: guava 33.6.0 (what grpc-java 1.84.1 brings) is affected by GHSA-xxph-c9ww-hj94 /
+                CVE-2026-102554; 33.7.2 is the first fixed release. It also gives convergence for grpc-java 1.84.1's
+                transitives (33.6.0-android and 33.6.0-jre); not managed by Spring Boot 4.1.2.
+                Remove when grpc-java brings guava >= 33.7.2 and its transitives agree on one guava version;
+                otherwise keep it as a convergence pin.
+            -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>33.7.2-jre</version>
+            </dependency>
+            <!-- Convergence for grpc-java 1.84.1's transitives; not managed by Spring Boot 4.1.2.
+                 Remove when grpc-java's transitives agree on one error_prone_annotations version. -->
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_annotations</artifactId>
+                <version>2.50.0</version>
             </dependency>
 
             <dependency>
@@ -223,7 +265,7 @@
                             <arg>-Xlint:all,-processing,-serial</arg>
                             <arg>-XDcompilePolicy=simple</arg>
                             <arg>--should-stop=ifError=FLOW</arg>
-                            <arg>-Xplugin:ErrorProne -XepDisableWarningsInGeneratedCode -Xep:NullAway:ERROR -XepOpt:NullAway:JSpecifyMode=true -XepOpt:NullAway:OnlyNullMarked=true</arg>
+                            <arg>-Xplugin:ErrorProne -XepDisableWarningsInGeneratedCode -Xep:NullAway:ERROR -XepOpt:NullAway:JSpecifyMode=true -XepOpt:NullAway:OnlyNullMarked=true -XepExcludedPaths:${synapse.errorprone.excludedPaths}</arg>
                         </compilerArgs>
                         <annotationProcessorPaths>
                             <path>
@@ -366,6 +408,23 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-invoker-plugin</artifactId>
                     <version>${maven-invoker-plugin.version}</version>
+                </plugin>
+                <!-- Configured as spring-boot-starter-parent 4.1.2 does; modules add their own executions. -->
+                <plugin>
+                    <groupId>io.github.ascopes</groupId>
+                    <artifactId>protobuf-maven-plugin</artifactId>
+                    <version>${protobuf-maven-plugin.version}</version>
+                    <configuration>
+                        <protoc>${protobuf-java.version}</protoc>
+                        <plugins>
+                            <plugin kind="binary-maven">
+                                <groupId>io.grpc</groupId>
+                                <artifactId>protoc-gen-grpc-java</artifactId>
+                                <version>${grpc-java.version}</version>
+                                <options>@generated=omit</options>
+                            </plugin>
+                        </plugins>
+                    </configuration>
                 </plugin>
                 <!-- Used by the snapshot workflow to stamp pull request versions (2.0.0-pr123-SNAPSHOT). -->
                 <plugin>

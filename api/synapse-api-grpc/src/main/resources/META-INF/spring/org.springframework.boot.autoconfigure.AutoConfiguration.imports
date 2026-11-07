@@ -1,0 +1,2 @@
+io.americanexpress.synapse.api.grpc.autoconfigure.SynapseGrpcAutoConfiguration
+io.americanexpress.synapse.api.grpc.autoconfigure.SynapseGrpcErrorAutoConfiguration

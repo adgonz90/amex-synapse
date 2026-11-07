@@ -16,6 +16,7 @@ package io.americanexpress.synapse.api.rest.internal.edge;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -25,6 +26,8 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+
+import io.americanexpress.synapse.core.internal.context.TraceHeaders;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -194,10 +197,16 @@ class InboundPropagationFilterTest {
     }
 
     @Test
-    void traceHeadersCoverW3cAndB3() {
-        assertThat(InboundPropagationFilter.TRACE_HEADERS)
-                .containsExactlyInAnyOrder("traceparent", "tracestate", "b3", "X-B3-TraceId", "X-B3-SpanId",
-                        "X-B3-ParentSpanId", "X-B3-Sampled", "X-B3-Flags");
+    void untrustedHidesEveryTraceHeaderInAnyCase() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        for (String name : TraceHeaders.NAMES) {
+            request.addHeader(name.toLowerCase(Locale.ROOT), "v");
+        }
+        request.addHeader("Accept", "application/json");
+
+        HttpServletRequest seen = filter(false, request);
+
+        assertThat(headerNames(seen)).containsExactly("Accept");
     }
 
     @Test

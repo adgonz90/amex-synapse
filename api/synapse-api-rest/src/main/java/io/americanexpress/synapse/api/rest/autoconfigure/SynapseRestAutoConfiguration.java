@@ -77,6 +77,7 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationPropertie
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
+import io.americanexpress.synapse.core.internal.context.SynapseBaggageFields;
 
 /**
  * Auto-configuration for the REST API plugin: its properties, the edge filters, the CORS configuration, and the routes
@@ -96,22 +97,22 @@ public class SynapseRestAutoConfiguration {
     /**
      * The first edge filter: it hides or strips inbound propagation headers before Boot's server observation filter
      * ({@code Ordered.HIGHEST_PRECEDENCE + 1}) extracts the caller's trace and baggage. It handles REQUEST dispatches
-     * only. Define a bean with the same name to replace it.
+     * only. The Synapse fields it protects are core's {@link SynapseBaggageFields}: the correlation id field and the
+     * context attribute names of every edge, so baggage for a gRPC attribute is stripped here too. Define a bean with
+     * the same name to replace it.
      *
-     * @param properties the REST properties, for the context attribute names
      * @param context the context properties, for {@code synapse.context.inbound.trusted}
-     * @param environment the environment, to read {@value #REMOTE_FIELDS} (empty when unset)
+     * @param environment the environment, to read the Synapse fields and {@value #REMOTE_FIELDS} (empty when unset)
      * @return the filter registration
      */
     @Bean
     @ConditionalOnMissingBean(name = "synapseInboundPropagationFilter")
-    FilterRegistrationBean<InboundPropagationFilter> synapseInboundPropagationFilter(SynapseRestProperties properties,
-            SynapseContextProperties context, Environment environment) {
-        Set<String> synapseFields = new LinkedHashSet<>();
-        synapseFields.add(ContextBinder.CORRELATION_BAGGAGE_FIELD);
-        synapseFields.addAll(properties.context().headers().keySet());
+    FilterRegistrationBean<InboundPropagationFilter> synapseInboundPropagationFilter(SynapseContextProperties context,
+            Environment environment) {
+        Binder binder = Binder.get(environment);
+        Set<String> synapseFields = SynapseBaggageFields.of(binder);
         Set<String> remoteFields = new LinkedHashSet<>(
-                Binder.get(environment).bind(REMOTE_FIELDS, Bindable.listOf(String.class)).orElse(List.of()));
+                binder.bind(REMOTE_FIELDS, Bindable.listOf(String.class)).orElse(List.of()));
         FilterRegistrationBean<InboundPropagationFilter> registration = new FilterRegistrationBean<>(
                 new InboundPropagationFilter(context.inbound().trusted(), synapseFields, remoteFields));
         registration.setDispatcherTypes(DispatcherType.REQUEST);

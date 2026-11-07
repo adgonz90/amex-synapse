@@ -272,14 +272,16 @@ synapse:
 * CORS is off until an environment's file lists its front ends, for example
   `+synapse.api.rest.cors.allowed-origins: https://app.example.com+` in `application-e2.yaml`; a `+*+` origin logs a
   WARN in every environment (see xref:rest.adoc#cors[REST CORS]).
+* gRPC server reflection is off: Synapse sets Boot's `spring.grpc.server.reflection.enabled` to `false` at lowest
+  precedence, and an environment file turns it on, such as `application-local.yaml` for `grpcurl` (see
+  xref:grpc.adoc#_server_reflection[Server reflection]).
 * With `synapse-api-rest-openapi`, the OpenAPI document at `/v3/api-docs` is off until an environment's file turns it
   on with `springdoc.api-docs.enabled: true`, for example in `application-local.yaml`; where it is on, protect it as
   needed (see xref:openapi.adoc#exposure[Who can read it]). Under AOT and in a native image the setting decides which
   beans exist, so it is fixed when the application is built and an environment's file can't change it (see
   <<aot>> and xref:openapi.adoc#aot-toggle[OpenAPI under AOT]).
 
-Later modules follow the same model: gRPC server reflection is off by default, and a store allows `ddl-auto` only
-through its own switch.
+Later modules follow the same model: a store allows `ddl-auto` only through its own switch.
 
 [#keys-without-defaults]
 == Keys without defaults
@@ -313,10 +315,10 @@ Local runs use the `local` environment and its `application-local.yaml`:
 [#tests]
 == Tests
 
-Tests run as `test`. Synapse's slices (`@SynapseOperationTest`, `@SynapseRestTest`) activate it and turn nothing else
-on; a `@SpringBootTest` class declares `@ActiveProfiles("test")` itself. Every module whose tests start a Spring Boot
-context therefore has `src/test/resources/application-test.yaml`. It may hold only a comment; test conveniences go
-there:
+Tests run as `test`. Synapse's slices (`@SynapseOperationTest`, `@SynapseRestTest`, `@SynapseGrpcTest`) activate it
+and turn nothing else on; a `@SpringBootTest` class declares `@ActiveProfiles("test")` itself. Every module whose
+tests start a Spring Boot context therefore has `src/test/resources/application-test.yaml`. It may hold only a
+comment; test conveniences go there:
 
 [source,yaml]
 ----
@@ -393,6 +395,9 @@ Configuration, highest priority first:
 |`config-e2.yaml (client-accounts-1.4.0.jar) adds the client 'payments', which no environment-independent file declares. In AOT mode the set of clients and stores is fixed at build time.`
 |`Declare synapse.client.payments in config.yaml or application.yaml, and set only its values per environment.`
 |===
+* `spring.grpc.server.reflection.enabled` decides whether a bean exists, so it is fixed at build time too: with
+  AOT-generated artifacts, startup fails when an environment file changes it from the value the build used (see
+  xref:grpc.adoc#_server_reflection[Server reflection]).
 * `synapse-core` registers resource hints for `+META-INF/synapse/config*.yaml+` and
   `+META-INF/synapse/config*.properties+`.
 * AOT processing (`process-aot`) and the AOT cache training run of `build-image` start the application to prepare it,

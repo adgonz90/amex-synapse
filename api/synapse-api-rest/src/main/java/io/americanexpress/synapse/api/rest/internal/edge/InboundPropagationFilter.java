@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.api.rest.internal.edge;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -30,12 +31,13 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import io.americanexpress.synapse.core.internal.context.BaggageHeaders;
+import io.americanexpress.synapse.core.internal.context.TraceHeaders;
 
 /**
  * Hides or strips inbound propagation headers before tracing reads them. It runs first, before Boot's server
  * observation filter extracts the caller's trace and baggage from the request headers.
  * <ul>
- * <li>When inbound context is not trusted, it hides the trace headers ({@link #TRACE_HEADERS}), the {@code baggage}
+ * <li>When inbound context is not trusted, it hides the trace headers ({@link TraceHeaders#NAMES}), the {@code baggage}
  * header and the header of every remote baggage field, so the request starts a new trace with no caller baggage.</li>
  * <li>When it is trusted, it removes the Synapse fields (the correlation id and the context attribute names) from the
  * {@code baggage} header and hides their remote-field headers. Their values become {@link InboundBaggage} candidates
@@ -44,11 +46,6 @@ import io.americanexpress.synapse.core.internal.context.BaggageHeaders;
  * Header names match case-insensitively. Only the view passed down the chain changes; the request is not modified.
  */
 public final class InboundPropagationFilter extends OncePerRequestFilter {
-
-    /** The W3C Trace Context and B3 trace headers. */
-    public static final Set<String> TRACE_HEADERS = Set
-            .of("traceparent", "tracestate", "b3", "X-B3-TraceId", "X-B3-SpanId", "X-B3-ParentSpanId",
-                    "X-B3-Sampled", "X-B3-Flags");
 
     private final boolean trusted;
 
@@ -70,7 +67,7 @@ public final class InboundPropagationFilter extends OncePerRequestFilter {
         this.trusted = trusted;
         this.synapseFields = Collections.unmodifiableSet(new LinkedHashSet<>(synapseFields));
         this.synapseFieldMatcher = caseInsensitive(synapseFields);
-        Set<String> hidden = caseInsensitive(TRACE_HEADERS);
+        Set<String> hidden = caseInsensitive(TraceHeaders.NAMES);
         hidden.add(BaggageHeaders.HEADER);
         hidden.addAll(remoteFields);
         // Synapse fields are remote fields once core has merged them; hide their headers even if that did not run.
@@ -124,7 +121,7 @@ public final class InboundPropagationFilter extends OncePerRequestFilter {
         return null;
     }
 
-    private static Set<String> caseInsensitive(Set<String> names) {
+    private static Set<String> caseInsensitive(Collection<String> names) {
         Set<String> set = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         set.addAll(names);
         return set;

@@ -19,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import org.springframework.boot.EnvironmentPostProcessor;
 import org.springframework.boot.SpringApplication;
@@ -29,7 +30,10 @@ import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.internal.context.BaggageHeaders;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
+import io.americanexpress.synapse.core.internal.context.SynapseBaggageFields;
+import io.americanexpress.synapse.core.internal.context.TraceHeaders;
 
 /**
  * Adds Synapse's baggage fields to Boot's baggage lists. Boot's OpenTelemetry bridge reads the remote and correlation
@@ -57,14 +61,10 @@ final class BaggageFieldsEnvironmentPostProcessor implements EnvironmentPostProc
             .of(REMOTE_FIELDS,
                     "management.tracing.baggage.correlation.fields");
 
-    /** The W3C Baggage, W3C Trace Context and B3 headers, which the REST edge hides from untrusted callers. */
-    private static final List<String> PROPAGATION_HEADERS = List
-            .of("baggage", "traceparent", "tracestate", "b3", "X-B3-TraceId", "X-B3-SpanId", "X-B3-ParentSpanId",
-                    "X-B3-Sampled", "X-B3-Flags");
-
-    private static final List<String> ATTRIBUTE_MAPS = List
-            .of("synapse.api.rest.context.headers",
-                    "synapse.api.grpc.context.metadata");
+    /** The W3C Baggage, W3C Trace Context and B3 headers, which inbound edges hide from untrusted callers. */
+    private static final List<String> PROPAGATION_HEADERS = Stream
+            .concat(Stream.of(BaggageHeaders.HEADER), TraceHeaders.NAMES.stream())
+            .toList();
 
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
@@ -91,11 +91,8 @@ final class BaggageFieldsEnvironmentPostProcessor implements EnvironmentPostProc
         }
         Set<String> synapseFields = new LinkedHashSet<>();
         synapseFields.add(ContextBinder.CORRELATION_BAGGAGE_FIELD);
-        for (String attributes : ATTRIBUTE_MAPS) {
-            Set<String> names = binder
-                    .bind(attributes, Bindable.mapOf(String.class, String.class))
-                    .orElse(Map.of())
-                    .keySet();
+        for (String attributes : SynapseBaggageFields.ATTRIBUTE_MAPS) {
+            Set<String> names = SynapseBaggageFields.attributeNames(binder, attributes);
             if (names.stream().anyMatch(ContextBinder.CORRELATION_BAGGAGE_FIELD::equalsIgnoreCase)) {
                 throw new SynapseConfigurationException(
                         "The context attribute name '" + ContextBinder.CORRELATION_BAGGAGE_FIELD + "' under "

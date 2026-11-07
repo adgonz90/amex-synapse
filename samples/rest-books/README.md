@@ -1,8 +1,9 @@
 # Sample: a book catalog over REST
 
-A small Synapse 2 service you can run and call: a catalog of books served over REST. It uses only what Synapse has
-today (`synapse-core`, `synapse-api-rest`, `synapse-api-rest-openapi`, `synapse-logging-log4j2` and the test
-modules). The data lives in memory, starts with three books, and is lost when the service stops.
+A small Synapse 2 service you can run and call: a catalog of books served over REST, and over gRPC with the same
+operations (see [gRPC](#grpc)). It uses only what Synapse has today (`synapse-core`, `synapse-api-rest`,
+`synapse-api-rest-openapi`, `synapse-api-grpc`, `synapse-logging-log4j2` and the test modules). The data lives in
+memory, starts with three books, and is lost when the service stops.
 
 ## What it shows
 
@@ -24,11 +25,13 @@ Code paths are under `src/main/java/io/americanexpress/synapse/samples/books/`.
 | Problem responses (RFC 9457 `application/problem+json`) with `code`, `correlationId` and `violations`; `detail` only when `include-detail` is on (local) | [Errors](#errors) |
 | The correlation id: read from `X-Correlation-Id` or generated, echoed on every response, written to the logs of the request | [Correlation id](#correlation-id) |
 | ECS JSON logs; a failing operation logs one line, a successful one logs nothing | [Logs](#what-to-look-for-in-the-logs) |
-| Tests: the REST slice (`@SynapseRestTest`), the operation slice (`@SynapseOperationTest`), `SynapseOperations.invoke`, an end-to-end test on a real server, and the layering rules | `src/test/java` |
+| The same operations over gRPC: a `.proto` service compiled by the build, and one `GrpcBindings` bean with `.unary(...)`, `.notFound(...)`, a value from the request context (`x-channel` metadata) and `.bindAllByName()` for the rest; no change to the operations or models | `src/main/proto/books/v1/books.proto`, `api/grpc/BooksGrpcConfiguration.java`, [gRPC](#grpc) |
+| gRPC errors: the status code from the error category (`NOT_FOUND`, `ABORTED`, `INVALID_ARGUMENT`), and `google.rpc.ErrorInfo` with the code as `reason` and the `correlationId`; `BadRequest` for violations | [gRPC errors](#grpc-errors) |
+| Tests: the REST slice (`@SynapseRestTest`), the gRPC slice (`@SynapseGrpcTest`), the operation slice (`@SynapseOperationTest`), `SynapseOperations.invoke`, an end-to-end test on a real server, and the layering rules | `src/test/java` |
 
-The packages follow Synapse's layering (specs/v2/BUILD.md section 4.3): `api.rest` calls `operation`; operations call
-`business` (only through `BusinessOperation.execute`) and `data`; business code calls `data`; nobody calls `api`.
-`ArchitectureTest` checks it with `SynapseArchitecture.forApplication(BooksApplication.class)`.
+The packages follow Synapse's layering (specs/v2/BUILD.md section 4.3): `api.rest` and `api.grpc` call `operation`;
+operations call `business` (only through `BusinessOperation.execute`) and `data`; business code calls `data`; nobody
+calls `api`. `ArchitectureTest` checks it with `SynapseArchitecture.forApplication(BooksApplication.class)`.
 
 Two choices worth knowing when you read the code:
 
@@ -78,9 +81,10 @@ local Maven repository: install them first (again after you change them):
 
 `-DskipTests` only saves time on the install step; it is not a test run.
 
-The service listens on port 8080; stop it with Ctrl+C. At startup it logs which environment it runs and where its
-configuration comes from (see [What to look for in the logs](#what-to-look-for-in-the-logs)), and the REST plugin logs
-one line per route, for example:
+The service listens on port 8080, and on 9090 for gRPC ([gRPC](#grpc)); stop it with Ctrl+C. At startup it logs
+which environment it runs and where its configuration comes from (see
+[What to look for in the logs](#what-to-look-for-in-the-logs)), and the REST plugin logs one line per route, for
+example:
 
 ```text
 {"@timestamp":"2026-11-06T21:11:15.478127700Z","log":{"level":"INFO","logger":"io.americanexpress.synapse.api.rest"},"process":{"pid":34980,"thread":{"name":"main"}},"service":{"name":"rest-books","node":{}},"message":"Synapse REST exposes GET /books/{id} -> get-book on port 8080","ecs":{"version":"8.11"}}
@@ -815,6 +819,213 @@ springdoc:
 Rebuild and start the service, and open http://localhost:8080/swagger-ui.html, which redirects to
 `/swagger-ui/index.html` and loads the document from `/v3/api-docs`.
 
+## gRPC
+
+The same operations also serve a gRPC API, `synapse.samples.books.v1.BookService`, on port 9090 (Spring Boot's gRPC
+server on Netty, next to Tomcat). The service is declared in `src/main/proto/books/v1/books.proto`; the build compiles
+it into messages and stubs in `api.grpc.proto` (generated, under `target/generated-sources/protobuf`, and left out of
+the coverage check). `api/grpc/BooksGrpcConfiguration.java` is a single `GrpcBindings` bean: Synapse maps each request
+message to the operation's input record field by field (`added_via` to `addedVia`, a string `id` to a `UUID`, wrapper
+types such as `google.protobuf.Int32Value year` to nullable components), runs the operation through the same pipeline
+as REST, and maps the output back. The operation and model classes are the ones REST uses, unchanged.
+
+| Method | Operation | Bound by | Errors |
+|---|---|---|---|
+| `GetBook(GetBookRequest) returns (Book)` | `get-book` | `.unary(...)` with `.notFound(BookErrors.BOOK_NOT_FOUND)` | `NOT_FOUND` `BOOK_NOT_FOUND`; `INVALID_ARGUMENT` for an id that isn't a UUID |
+| `CreateBook(CreateBookRequest) returns (Book)` | `create-book` | `.unary(...)` with `.context(CreateBookRequest::channel, ...)`: `channel` from the `x-channel` metadata | `INVALID_ARGUMENT` `VALIDATION_FAILED`; `ABORTED` `DUPLICATE_ISBN` |
+| `UpdateBook(UpdateBookRequest) returns (Book)` | `update-book` | `.bindAllByName()`; `version` is an `Int64Value`, unset for "the version the service reads" | `NOT_FOUND` `BOOK_NOT_FOUND`; `ABORTED` `DUPLICATE_ISBN` or `STALE_VERSION` |
+| `DeleteBook(DeleteBookRequest) returns (google.protobuf.Empty)` | `delete-book` | `.bindAllByName()`; `version` as on `UpdateBook` | `NOT_FOUND` `BOOK_NOT_FOUND`; `ABORTED` `STALE_VERSION` |
+| `GetCatalogStats(google.protobuf.Empty) returns (CatalogStats)` | `get-catalog-stats` | `.bindAllByName()` | |
+
+The status code comes from the error's category: `NOT_FOUND` for `NOT_FOUND`, `ABORTED` for `CONFLICT`,
+`INVALID_ARGUMENT` for `INVALID_INPUT`. `synapse.api.grpc.errors.status.[CODE]` changes it for a code. There is no
+`If-Match` over gRPC: the version is a field, and a stale one is `ABORTED`, where REST answers 412.
+
+At startup the gRPC plugin logs one line per method, after Boot's line for the server:
+
+```text
+{"@timestamp":"2026-11-06T21:52:03.760530100Z","log":{"level":"INFO","logger":"io.americanexpress.synapse.api.grpc"},"process":{"pid":22820,"thread":{"name":"main"}},"service":{"name":"rest-books","node":{}},"message":"Synapse gRPC exposes synapse.samples.books.v1.BookService/GetBook -> get-book on port 9090","ecs":{"version":"8.11"}}
+```
+
+### Call it with grpcurl
+
+The commands below are standard [grpcurl](https://github.com/fullstorydev/grpcurl) usage, quoted for Git Bash or any
+POSIX shell; they were not run with grpcurl here. Under `local`, server reflection is on
+(`spring.grpc.server.reflection.enabled: true` in `application-local.yaml`), so grpcurl needs no `.proto` file. Every
+other environment keeps Synapse's default, reflection off: pass the file instead, with
+`-import-path samples/rest-books/src/main/proto -proto books/v1/books.proto`.
+
+The outputs shown are real, recorded from the running service (`ENV=local`), but they come from a small grpc-java
+client, not from grpcurl: it called the same methods with the same metadata and printed the response message, or the
+error's code, message and `google.rpc.Status`, as protobuf JSON. grpcurl's own layout may differ.
+
+```bash
+grpcurl -plaintext localhost:9090 list
+```
+
+```text
+grpc.health.v1.Health
+synapse.samples.books.v1.BookService
+grpc.reflection.v1.ServerReflection
+```
+
+Read a seeded book:
+
+```bash
+grpcurl -plaintext -d '{"id": "00000000-0000-0000-0000-000000000001"}' \
+  localhost:9090 synapse.samples.books.v1.BookService/GetBook
+```
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000001",
+  "isbn": "978-0441172719",
+  "title": "Dune",
+  "author": "Frank Herbert",
+  "year": 1965,
+  "version": "1"
+}
+```
+
+`added_via` is a `StringValue` and the book has none, so it is not in the output. `version` is an `int64`, which
+protobuf JSON writes as a string.
+
+Add a book, with the channel in the `x-channel` metadata (as `X-Channel` does over REST):
+
+```bash
+grpcurl -plaintext -H 'x-channel:grpc' \
+  -d '{"isbn": "978-0151006205", "title": "The Telling", "author": "Ursula K. Le Guin", "year": 2000}' \
+  localhost:9090 synapse.samples.books.v1.BookService/CreateBook
+```
+
+```json
+{
+  "id": "e0436518-3020-411a-ac5e-3f0a8f79e96f",
+  "isbn": "978-0151006205",
+  "title": "The Telling",
+  "author": "Ursula K. Le Guin",
+  "year": 2000,
+  "addedVia": "grpc",
+  "version": "1"
+}
+```
+
+The book is in the same store REST reads: `curl -s http://localhost:8080/books/<id>` returns it.
+
+### gRPC errors
+
+An error is a status code, a message, and a `google.rpc.Status` in the `grpc-status-details-bin` trailer. The details
+are an `ErrorInfo` whose `reason` is the error code and whose `domain` is `spring.application.name`, with the
+`correlationId` in its metadata, then a `BadRequest` when there are violations.
+The message is the formatted error message only when `synapse.errors.include-detail` is on (`local`); otherwise it is
+empty. No stack trace or exception name ever reaches the caller.
+
+A book that doesn't exist:
+
+```bash
+grpcurl -plaintext -H 'x-correlation-id:demo-123' -d '{"id": "00000000-0000-0000-0000-000000000099"}' \
+  localhost:9090 synapse.samples.books.v1.BookService/GetBook
+```
+
+```text
+Code: NOT_FOUND
+Message: The resource was not found
+google.rpc.Status: {
+  "code": 5,
+  "message": "The resource was not found",
+  "details": [{
+    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+    "reason": "BOOK_NOT_FOUND",
+    "domain": "rest-books",
+    "metadata": {
+      "correlationId": "demo-123"
+    }
+  }]
+}
+```
+
+The reason is the declared code, `BOOK_NOT_FOUND`, but the message is `NOT_FOUND`'s. Over gRPC a `.notFound(...)` code
+gets no message arguments, so when its template has placeholders (`Book {0} was not found`) the edge describes the error
+with `NOT_FOUND`'s message, localized like any other, instead of printing the template unfilled. A template without
+placeholders keeps its own text. (REST fills in the path variables, so its `detail` is
+`Book 00000000-0000-0000-0000-000000000099 was not found`.) An id that isn't a UUID is `INVALID_ARGUMENT` before the
+operation runs:
+
+```bash
+grpcurl -plaintext -H 'x-correlation-id:demo-125' -d '{"id": "not-a-uuid"}' \
+  localhost:9090 synapse.samples.books.v1.BookService/GetBook
+```
+
+```text
+Code: INVALID_ARGUMENT
+Message: The request is invalid
+google.rpc.Status: {
+  "code": 3,
+  "message": "The request is invalid",
+  "details": [{
+    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+    "reason": "VALIDATION_FAILED",
+    "domain": "rest-books",
+    "metadata": {
+      "correlationId": "demo-125"
+    }
+  }, {
+    "@type": "type.googleapis.com/google.rpc.BadRequest",
+    "fieldViolations": [{
+      "field": "id",
+      "description": "is not a valid value"
+    }]
+  }]
+}
+```
+
+The `BadRequest` field is the proto field's path. Like a request that doesn't bind over REST, this call is turned away
+before an operation runs, so it logs nothing.
+
+A duplicate ISBN is a `CONFLICT`, so `ABORTED`, and the operation logs its failure line as over REST:
+
+```bash
+grpcurl -plaintext -H 'x-correlation-id:demo-124' \
+  -d '{"isbn": "978-0441172719", "title": "The Telling", "author": "Ursula K. Le Guin", "year": 2000}' \
+  localhost:9090 synapse.samples.books.v1.BookService/CreateBook
+```
+
+```text
+Code: ABORTED
+Message: A book with ISBN 978-0441172719 already exists
+google.rpc.Status: {
+  "code": 10,
+  "message": "A book with ISBN 978-0441172719 already exists",
+  "details": [{
+    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+    "reason": "DUPLICATE_ISBN",
+    "domain": "rest-books",
+    "metadata": {
+      "correlationId": "demo-124"
+    }
+  }]
+}
+```
+
+```json
+{"@timestamp":"2026-11-06T21:53:41.091834300Z","log":{"level":"WARN","logger":"io.americanexpress.synapse.operation"},"process":{"pid":22820,"thread":{"name":"grpc-12"}},"service":{"name":"rest-books","node":{}},"message":"Operation create-book failed with DUPLICATE_ISBN (CONFLICT): A book with ISBN 978-0441172719 already exists","correlationId":"demo-124","error":{"category":"CONFLICT","code":"DUPLICATE_ISBN"},"operation":"create-book","spanId":"b380950ce6abfbef","traceId":"3ec84631f9d68f2388d79da88f791c8b","ecs":{"version":"8.11"}}
+```
+
+### x-correlation-id
+
+gRPC uses the correlation header's name in lower case, `x-correlation-id` (`synapse.correlation.header`), as metadata.
+An id the caller sends is echoed; without one, the service generates a UUID. A successful call echoes it in the
+response headers; an error carries it in the trailers, next to `grpc-status-details-bin`, and in
+`ErrorInfo.metadata.correlationId`. From the calls above:
+
+```text
+GetBook (x-correlation-id: demo-123, NOT_FOUND)  trailers: x-correlation-id=demo-123
+CreateBook (no x-correlation-id, OK)             headers:  x-correlation-id=dfd00e1e-d329-4585-addb-d566a91b5cfe
+```
+
+`SearchBooks` comes to gRPC with page tokens (plan 3b): its `PageQuery` input and `PageResult` output have no gRPC
+mapping yet, so `books.proto` leaves it out.
+
 ## What to look for in the logs
 
 The console shows one JSON object per line, in the Elastic Common Schema (from `synapse-logging-log4j2`).
@@ -914,6 +1125,11 @@ concurrency limit, and (commented out) the paging settings: `max-offset` and the
 sample. `application-local.yaml` holds the local conveniences: error detail, the CORS origin of a local front end and
 the OpenAPI document.
 
+For gRPC it lists the server port (`spring.grpc.server.port: 9090`), the `x-channel` metadata mapping
+(`synapse.api.grpc.context.metadata.channel`), the deadline cap and default, and the concurrency limit
+(`synapse.api.grpc.max-concurrent-calls`). Reflection is off there (Synapse's default); `application-local.yaml` turns
+it on.
+
 This module inherits the repository's build parent so it passes the same gates as the library. Your own service
 inherits `io.americanexpress.synapse:synapse-parent` and declares the same dependencies as this `pom.xml`.
 
@@ -924,9 +1140,10 @@ inherits `io.americanexpress.synapse:synapse-parent` and declares the same depen
 | Test | Shows |
 |---|---|
 | `api/rest/BooksRestTest` | `@SynapseRestTest`: the bindings, edge filters and problem responses on MockMvc, with `@MockitoBean` operations: the page object and `Link`, 304, `If-Match` binding, 428, the version 2 route beside version 1 |
+| `api/grpc/BooksGrpcTest` | `@SynapseGrpcTest`: the gRPC bindings and edge on Boot's in-process transport, with `@MockitoBean` operations and a client from `@ImportGrpcClients`: field mapping and wrapper presence, `NOT_FOUND` with `BOOK_NOT_FOUND` and `NOT_FOUND`'s message, `x-channel` into the context, an unset version as `null`, `Empty` in and out, `ABORTED` for `STALE_VERSION` and `DUPLICATE_ISBN` |
 | `operation/BookOperationsTest` | `@SynapseOperationTest`: operations and business beans with the real pipeline (validation, error codes, versions, paging and sorting, the authors list of `BookV2`) |
 | `business/ReviseBookTest` | `SynapseOperations.invoke`: business operations through their pipeline, without Spring, including the races that end in `STALE_VERSION` |
 | `data/InMemoryBookStoreTest` | The store, as a plain unit test: the compare-and-set |
-| `BooksApplicationIT` | The whole service on a real port, as `test` with `synapse.errors.include-detail=false` (the safe defaults: no `detail`): cursors and `Link`, offsets, 304, 412, 409 with a `@MockitoSpyBean` store, 428, `/v2` beside `/books` and `/v3` as 404, `/v3/api-docs` off in `test`, CORS off in `test`; nested classes with `/v3/api-docs` on (every route listed), with CORS on: Actuator's paths untouched, and under a context path, an Actuator request's error response without CORS headers however the path is spelled; tagged `smoke` |
+| `BooksApplicationIT` | The whole service on a real port, as `test` with `synapse.errors.include-detail=false` (the safe defaults: no `detail`): cursors and `Link`, offsets, 304, 412, 409 with a `@MockitoSpyBean` store, 428, `/v2` beside `/books` and `/v3` as 404, `/v3/api-docs` off in `test`, CORS off in `test`; a book added over REST and read over gRPC (Netty on a free port; each nested context starts its own); nested classes with `/v3/api-docs` on (every route listed), with CORS on: Actuator's paths untouched, and under a context path, an Actuator request's error response without CORS headers however the path is spelled; tagged `smoke` |
 | `BooksLocalEnvironmentIT` | The whole service as `local`, with the real `application-local.yaml`: that file turns `/v3/api-docs` on; tagged `smoke` |
 | `ArchitectureTest` | The layering rules |

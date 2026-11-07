@@ -46,6 +46,7 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-api-rest` | P1 (XML codec and `BinaryContent` in P4) | REST plugin: `RestBindings`, problem+json, paging, conditional requests, versioning, CORS, limits. |
 | `synapse-api-rest-openapi` | P1 (plan 2c) | OpenAPI 3.1 for `RestBindings` routes, served by springdoc (3.x) at /v3/api-docs: a Synapse customizer built from the resolved routes, with Synapse's own schema generator on Jackson 3. Depends on synapse-api-rest. |
 | `synapse-api-grpc` | P1 | gRPC plugin on Boot's gRPC server support. |
+| `synapse-test-grpc` | P1 (plan 3) | @SynapseGrpcTest: the gRPC slice, on Boot's in-process test transport. Depends on synapse-test and synapse-api-grpc. |
 | `synapse-data-jpa`, `synapse-data-jdbc` | P1 | Shared data behaviour: named stores, auditing, ids, error translation, migrations per store. |
 | `synapse-data-postgres` | P1 | PostgreSQL vendor module. |
 | `synapse-client-core` | P2 | Client wiring shared by protocols: authenticator SPI, error decoding, logging, retries, propagation. |
@@ -136,6 +137,8 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 - `dependencyConvergence` is enforced. Every pin that affects consumers' runtime classpath goes into `synapse-bom`
   (the root build imports the same list), with a comment and a removal condition. `synapse-parent` repeats them
   directly (see *Consumer parent*). A CI check keeps the root POM, the BOM and the parent in sync.
+  Example: the guava CVE pin (GHSA-xxph-c9ww-hj94 / CVE-2026-102554) is in the root POM and the BOM; an invoker test
+  keeps the two versions equal.
 - Test libraries stay in test scope, except in `synapse-test` and the `synapse-test-<plugin>` slice artifacts, which exist to provide them (its POM overrides the
   ban; an invoker test proves the ban still holds elsewhere).
 
@@ -314,7 +317,7 @@ Business → `model` is allowed here and narrowed to `model.event` by the *Forbi
 | `ErrorDetails` | `String code(); String messageTemplate(); ErrorCategory category();` implemented by team enums. |
 | `ErrorCategory` | `INVALID_INPUT, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, RATE_LIMITED, UNAVAILABLE, TIMEOUT, INTERNAL`. Protocol-neutral, domain-only. |
 | `SynapseException` | `SynapseException(ErrorDetails, Object... args)` and `(ErrorDetails, Throwable, Object... args)`. Message formatted from the template with `MessageFormat`; a `MessageSource` entry keyed by `code()` overrides it. |
-| `SynapseErrors` | The framework's own `ErrorDetails` enum: `MALFORMED_REQUEST`, `VALIDATION_FAILED` (`INVALID_INPUT`), `NOT_FOUND`, `UNAUTHENTICATED`, `FORBIDDEN`, `CONFLICT`, `STALE_VERSION` (`CONFLICT`: a version check or optimistic lock failed), `PRECONDITION_FAILED`, `PRECONDITION_REQUIRED` (`PRECONDITION_FAILED`: the input requires a precondition the request lacks; REST 428), `RATE_LIMITED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED` (`TIMEOUT`), `INTERNAL`, each with its matching category unless stated. |
+| `SynapseErrors` | The framework's own `ErrorDetails` enum: `MALFORMED_REQUEST`, `VALIDATION_FAILED` (`INVALID_INPUT`), `NOT_FOUND`, `UNAUTHENTICATED`, `FORBIDDEN`, `CONFLICT`, `STALE_VERSION` (`CONFLICT`: a version check or optimistic lock failed), `ALREADY_EXISTS` (`CONFLICT`: a resource with the same identity exists, such as a unique-constraint violation; gRPC answers it ALREADY_EXISTS), `PRECONDITION_FAILED`, `PRECONDITION_REQUIRED` (`PRECONDITION_FAILED`: the input requires a precondition the request lacks; REST 428), `RATE_LIMITED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED` (`TIMEOUT`), `INTERNAL`, each with its matching category unless stated. |
 | `ExceptionTranslator` | SPI: turns a non-Synapse exception into a `SynapseException`. Modules contribute translators (data access, Spring Security, clients, Kafka); core has no data or security dependency. |
 | `@OperationName`, `@OperationGroup` | Operation classes are named `<UseCase>Operation` (inputs `<UseCase>Request`, outputs nouns such as `Book`). The operation name defaults to the class name without the `Operation` suffix, in kebab-case (`GetBookOperation` → `get-book`); `@OperationName("…")` overrides it; `@OperationGroup("books")` groups operations into a gRPC service/REST resource and drives docs. |
 | `@Incubating` | Marks evolving public API (see *API stability*). |
@@ -392,7 +395,9 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 - REST reads a relative `Request-Timeout: <milliseconds>` header (`synapse.api.rest.deadline.header`; a Synapse
   convention, not a standard); gRPC uses its native deadline. Requests without one get
   `synapse.api.rest.deadline.default` (and the gRPC/GraphQL equivalents). Requested budgets are capped by
-  `synapse.api.rest.deadline.max`. Defaults: `default` 10 s, `max` 30 s. Malformed values are ignored.
+  `synapse.api.rest.deadline.max`. Defaults: `default` 10 s, `max` 30 s. Malformed values are ignored. gRPC uses
+  `synapse.api.grpc.deadline.default` and `.max` with the same defaults; the cap applies to the `RequestContext`
+  deadline only, since a server can't change the caller's gRPC deadline.
 - Scheduled and runner invocations have no deadline unless `synapse.scheduling` sets one. Kafka records use the
   subscriber's processing timeout (see *Subscriber*).
 - Clients cap their timeouts to the remaining budget and forward it.
@@ -443,7 +448,9 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   `synapse.api.grpc.max-concurrent-calls`, `synapse.api.graphql.max-concurrent-requests`; Kafka is bounded by its
   concurrency). When full, it answers `UNAVAILABLE` (REST 503 with `Retry-After`) without running the operation.
   Defaults: REST 200, counting every request except Actuator management paths (which are never limited), with
-  `Retry-After: 1`; the gRPC and GraphQL defaults are set in their plans. (With virtual threads, Boot's thread-pool settings no longer limit concurrency.)
+  `Retry-After: 1`; gRPC 200, counting every call except the gRPC health and reflection services, answered
+  `UNAVAILABLE` with `google.rpc.RetryInfo` (1 s); the GraphQL default is set in its plan. (With virtual threads,
+  Boot's thread-pool settings no longer limit concurrency.)
 - **Shutdown order** (Spring waits for each phase at most `spring.lifecycle.timeout-per-shutdown-phase`): stop inbound
   (HTTP, gRPC, GraphQL, Kafka consumers, schedulers) → drain in-flight operations (the pipeline counts them) → flush
   publishers (`publishAsync` futures) → close clients and pools. The drain thread itself waits at most 10 minutes, so a
@@ -477,7 +484,8 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   value (path `/books/1`, body `"id": 2`), the request fails with `INVALID_INPUT`. Unknown fields are ignored.
 - **Errors:** each plugin maps `ErrorCategory` to its protocol (table below). Overrides are keyed by error code,
   globally or per operation (`synapse.api.rest.errors.status.[CODE]`, `synapse.api.rest.operations.<op>.errors.status.[CODE]`,
-  `synapse.api.grpc.errors.status.[CODE]`); precedence: per-operation > global > category default.
+  `synapse.api.grpc.errors.status.[CODE]`, `synapse.api.grpc.operations.<op>.errors.status.[CODE]`); precedence:
+  per-operation > global > category default.
 - **Exposure inventory:** at startup each plugin logs every exposed operation with protocol, route/method and port.
 
 | Category | REST | gRPC | GraphQL (`ErrorType`) |
@@ -486,7 +494,7 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 | UNAUTHENTICATED | 401 (+ `WWW-Authenticate`) | UNAUTHENTICATED | UNAUTHORIZED |
 | FORBIDDEN | 403 | PERMISSION_DENIED | FORBIDDEN |
 | NOT_FOUND | 404 | NOT_FOUND | NOT_FOUND |
-| CONFLICT | 409 | ABORTED (a unique-constraint violation: ALREADY_EXISTS) | BAD_REQUEST |
+| CONFLICT | 409 | ABORTED (the code `ALREADY_EXISTS`: ALREADY_EXISTS) | BAD_REQUEST |
 | PRECONDITION_FAILED | 412 | FAILED_PRECONDITION | BAD_REQUEST |
 | RATE_LIMITED | 429 | RESOURCE_EXHAUSTED | INTERNAL_ERROR |
 | UNAVAILABLE | 503 | UNAVAILABLE | INTERNAL_ERROR |
@@ -500,8 +508,10 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   the `correlationId` member is the lookup key. Full detail and cause are logged server-side.
 - **Protocol-only failures** never reach an operation; the plugin answers them in the same error shape with fixed
   codes: REST `ROUTE_NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405 (+ `Allow`), `NOT_ACCEPTABLE` 406,
-  `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400, `PRECONDITION_FAILED` 412 (a weak `If-Match`, or an `If-Match`/`If-None-Match` that the route doesn't bind), `CORS_REJECTED` 403 (a cross-origin request the CORS settings don't allow), `MISSING_API_VERSION` 400 and `UNSUPPORTED_API_VERSION` 400 (when Boot's `spring.mvc.apiversion.*` settings make Spring reject a request's version); gRPC `UNIMPLEMENTED` and
-  `RESOURCE_EXHAUSTED` (message too large).
+  `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400, `PRECONDITION_FAILED` 412 (a weak `If-Match`, or an `If-Match`/`If-None-Match` that the route doesn't bind), `CORS_REJECTED` 403 (a cross-origin request the CORS settings don't allow), `MISSING_API_VERSION` 400 and `UNSUPPORTED_API_VERSION` 400 (when Boot's `spring.mvc.apiversion.*` settings make Spring reject a request's version); gRPC `UNIMPLEMENTED` with `METHOD_NOT_FOUND` (an unknown method) and
+  `INVALID_ARGUMENT` with `MALFORMED_REQUEST` (request bytes that aren't a valid message). One case keeps the
+  protocol's own shape: a gRPC message over the size limit is grpc-java's `RESOURCE_EXHAUSTED`, without `ErrorInfo`
+  (see 6.3).
 - **Required preconditions** are not protocol-only: a non-null `VersionCondition` component makes the precondition
   part of the operation's input contract, and every plugin answers a request without it with core's
   `PRECONDITION_REQUIRED` (category `PRECONDITION_FAILED`) before the operation runs. REST maps it to 428 (RFC 6585
@@ -656,22 +666,59 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
 `application/problem+xml` errors. The protobuf REST codec is a 2.x add-on.
 
 ### 6.3 gRPC (`synapse-api-grpc`)
-- Built on Boot's gRPC server module (`spring-boot-grpc-server`, Spring gRPC 1.1; never the starter, which brings a
-  logging starter; standalone Netty or
-  Servlet HTTP/2). Synapse error mapping plugs into Boot's gRPC exception handling; Boot's observation interceptor is
-  reused. Message and metadata limits use Boot's `spring.grpc.server.inbound.message.max-size` and
-  `spring.grpc.server.inbound.metadata.max-size`; Synapse defaults the metadata limit to 16 KB at lowest precedence.
-- `GrpcBindings.service(BookServiceGrpc.getServiceDescriptor())` lists `.unary(BookServiceGrpc.getGetBookMethod(), getBook)`
+- Built on Boot's gRPC server module (`spring-boot-grpc-server` 4.1.2, Spring gRPC 1.1.2; never the starter, which
+  brings a logging starter). Like the starter, the plugin depends on `io.grpc:grpc-netty` (a standalone Netty server on
+  `spring.grpc.server.port`, default 9090) and `io.grpc:grpc-services` (reflection and the gRPC health service).
+  Shaded Netty works by exclusion (Boot's documented swap). The servlet transport (`grpc-servlet-jakarta` on the
+  servlet container's HTTP/2) is not supported together with `synapse-api-rest` in P1: the REST edge would also
+  filter gRPC calls, so startup fails when both are active (decided in plan 3; revisit in a later plan).
+- Synapse error mapping plugs into Boot's gRPC exception handling (a `GrpcExceptionHandler` bean, ordered last);
+  Boot's observation interceptor is reused. Message and metadata limits use Boot's
+  `spring.grpc.server.inbound.message.max-size` (Boot's default 4 MB) and `spring.grpc.server.inbound.metadata.max-size`;
+  Synapse defaults the metadata limit to 16 KB at lowest precedence.
+- **The edge** is two global interceptors around Boot's: Synapse's edge interceptor runs first and hides or strips
+  trace and baggage metadata before Boot's observation interceptor extracts it (as the REST edge does with headers);
+  Synapse's context interceptor runs inside the server observation and Boot's exception handling. It opens the
+  Synapse scope for every listener callback, so escape-hatch services get the same context.
+  - Correlation id: the metadata key is `synapse.correlation.header` in lower case (`x-correlation-id`). It is echoed
+    in the response headers, or in the trailers when the call ends without headers.
+  - Attributes: `synapse.api.grpc.context.metadata.<attribute>=<key>`; keys must be valid ASCII metadata keys (not
+    `-bin`), checked at startup. The locale comes from `accept-language` metadata when present.
+  - Deadline: the gRPC deadline, capped by `synapse.api.grpc.deadline.max`; without one,
+    `synapse.api.grpc.deadline.default` (see *Deadlines*).
+  - Concurrency: `synapse.api.grpc.max-concurrent-calls` (see *Inbound load and shutdown*).
+  - When `spring.threads.virtual.enabled` is true, Synapse gives Boot's server a virtual-thread executor through
+    Boot's `GrpcServerExecutorProvider`.
+- **Bindings:** a `GrpcBindings` bean binds one gRPC service and is itself a `BindableService`, so Boot discovers it
+  and applies the same global interceptors as to a hand-written `*ImplBase` service (the escape hatch).
+  `GrpcBindings.service(BookServiceGrpc.getServiceDescriptor())` lists `.unary(BookServiceGrpc.getGetBookMethod(), getBook)`
   entries; `.bindAllByName()` binds every remaining method to the operation with the matching name (`GetBook` →
   `get-book`). Startup fails if a method is unbound, bound twice, or its types can't be mapped. Unary only in 2.0.
-  A hand-written `*ImplBase` subclass remains the escape hatch, with the same interceptors.
+  Per method: `.map("field.path", Record::component)`, `.context(Record::component, ctx -> …)` and
+  `.notFound(code)`, as in REST. A `PageQuery` or `PageResult` in a bound type fails startup until gRPC page tokens
+  are built (plan 3b, proposed).
 - **Message mapping:** request and response messages map to records **by name at runtime using protobuf descriptors**
-  (`snake_case` → `camelCase`), verified at startup. Built in: `Timestamp`↔`Instant`, `Duration`, wrapper types ↔
-  nullable components, enums by name, repeated ↔ `List`, maps, nested messages. `oneof` fields and renamed fields use
-  an explicit override in the binding (`.map(...)`).
-- Errors: status per the table; the Synapse code travels as `google.rpc.ErrorInfo` (`reason` = code) in the status
-  details, plus `google.rpc.BadRequest` for violations. Server reflection is off by default: Synapse defaults Boot's
-  reflection switch to off at lowest precedence (key verified in plan 3), and an environment file turns it on.
+  (`snake_case` → `camelCase`), verified at startup. Synapse reads and writes `DynamicMessage`s over the generated
+  descriptors and never instantiates generated message classes. Built in: `Timestamp`↔`Instant`, `Duration`, wrapper
+  types ↔ nullable components, enums by name, repeated ↔ `List`, maps, nested messages, `google.protobuf.Empty` ↔
+  `Void`, and strings converted with Spring's `ConversionService` (UUID, dates). A nullable component needs a field
+  with presence (a wrapper, a message or proto3 `optional`). `oneof` fields and renamed fields use an explicit
+  override in the binding (`.map(...)`). Request fields without a component are ignored; a record component without a
+  field fails startup.
+- Errors: status per the table; the Synapse code travels as `google.rpc.ErrorInfo` (`reason` = code, `domain` =
+  `spring.application.name`, or `synapse` when it is unset, `metadata.correlationId`; AIP-193) in the status details, plus `google.rpc.BadRequest`
+  for violations (field paths in proto names). The status description is the detail, only when
+  `synapse.errors.include-detail` is true. A malformed request message is `INVALID_ARGUMENT` with `MALFORMED_REQUEST`.
+  An unknown method is `UNIMPLEMENTED` with the code `METHOD_NOT_FOUND`. A message over the size limit is rejected by
+  grpc-java with `RESOURCE_EXHAUSTED` and carries no `ErrorInfo`: grpc-java checks the size only once the call has
+  requested its message, so the call reaches the interceptors (`interceptCall`, then `onCancel`), but no message is
+  delivered, the operation is not invoked, no exception handler runs and the concurrency permit is released (verified
+  in grpc-java 1.84.1; *Protocol-only failures* in 6.1 notes the exception).
+- Server reflection is off by default: Synapse sets Boot's `spring.grpc.server.reflection.enabled` (verified in Boot
+  4.1.2) to `false` at lowest precedence, and an environment file turns it on. The key decides whether a bean exists,
+  so it is build-time under AOT: in AOT mode startup fails when its value differs from the one the build used.
+- **Exposure inventory:** `Synapse gRPC exposes <service>/<method> -> <operation> on port <port>`, logged when the
+  server starts.
 
 ### 6.4 GraphQL (`synapse-api-graphql`, P4)
 - Spring for GraphQL, schema-first. `GraphQlBindings` with `.query("bookById", getBook)`, `.mutation(...)` and
@@ -918,7 +965,7 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 | `@SynapseOperationTest` | P1 (client fakes P2, publisher fakes P3) | Boots operations, business beans and the pipeline only; replaces client interfaces and `PublisherOperation`s with fakes or mocks. |
 | `assertThatSynapseException(...)` | P1 | `.hasCode(...)`, `.hasCategory(...)`, `.hasViolation(field)`. |
 | @SynapseRestTest (synapse-test-rest) | P1 | Plugin plus the app's bindings and controllers; the test declares a @MockitoBean for each bound operation (the slice fails fast and names any missing one); RestTestClient bound to MockMvc (the same client works against a running server). |
-| @SynapseGrpcTest (synapse-test-grpc) | P1 | Plugin plus the app's bindings with operations mocked; grpc-java's in-process server. |
+| @SynapseGrpcTest (synapse-test-grpc) | P1 | Plugin plus the app's bindings and hand-written services; the test declares a @MockitoBean for each bound operation (the slice fails fast and names any missing one); Boot's in-process test transport (`@AutoConfigureTestGrpcTransport`), with stubs from `@ImportGrpcClients`. |
 | `@SynapseDataTest("<store>")` | P1 | Starts only that store's repositories, migrations and auditing, against shared Testcontainers with per-name `@ServiceConnection`. |
 | `SynapseArchitecture.forApplication(…)` | P1 | The layering rules (section 4.3). |
 | Mutable test `Clock`, JSON fixture loaders | P1 | |
@@ -1169,6 +1216,21 @@ responses) and 10 (REST and OpenAPI modules: the new beans' context-runner tests
 of the `corsConfigurationSource` bean is verified by `synapse-security` (P4); springdoc, the schema generator and the
 CORS filter in a native image by the native build (plan 5).
 
+**Done (plan 3, gRPC edge):** `synapse-api-grpc` and `synapse-test-grpc` are built and documented (`grpc.adoc`, the
+`@SynapseGrpcTest` section of `testing.adoc`, and `core.adoc` and `environments.adoc` updated), and
+`samples/rest-books` serves its operations over gRPC too. Core gains `SynapseErrors.ALREADY_EXISTS`, and the REST
+edge strips the gRPC attribute names from caller baggage as well. They cover acceptance items 2 (the same operations
+over gRPC with no change to operation or model classes; `Timestamp`, wrappers, enums, repeated fields; a `oneof`
+needs `.map(...)`), 3 (gRPC: `NOT_FOUND` with `ErrorInfo.reason`, a per-operation override), 4 (gRPC:
+`INVALID_ARGUMENT` with `BadRequest`), 5 (gRPC: `INTERNAL`), 6 (gRPC: the `x-correlation-id` metadata), 10 (gRPC
+modules), 11 (an expired gRPC deadline fails with `DEADLINE_EXCEEDED` before `execute`), 13 (gRPC), 14 (gRPC:
+`UNAVAILABLE` with `RetryInfo` at the limit; in-flight calls complete and new ones are refused on shutdown), 16
+(gRPC: `UNIMPLEMENTED` with `METHOD_NOT_FOUND`), 17 (gRPC) and 19 (`@SynapseGrpcTest` is provided; the reference app
+uses it in plan 5). Open: gRPC page tokens (plan 3b, proposed), so `PageQuery` and `PageResult` fail startup in a gRPC
+binding; the servlet transport together with `synapse-api-rest`, which fails startup until the REST edge skips gRPC
+requests; the native image (`grpc-netty`, protobuf runtime reflection, record and enum reflection, `writeReplace` on
+component-reference lambdas) and `inbound.trusted=false` under the OpenTelemetry Java agent (plan 5).
+
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
   - The edge opens the Synapse scope inside the server observation's span, with an IT asserting MDC and baggage on an
@@ -1195,11 +1257,20 @@ CORS filter in a native image by the native build (plan 5).
   `VersionCondition` for `If-Match`/`If-None-Match` on writes (first), API versioning, CORS (including the 405/OPTIONS
   fallback mapping), and OpenAPI in `synapse-api-rest-openapi`. It covers acceptance 7. Done (see the *Done (plan 2c)*
   note above).
-- Plan 3 (gRPC edge):
+- Plan 3 (gRPC edge) ([plans/2026-11-05-p1-grpc-edge.md](plans/2026-11-05-p1-grpc-edge.md)): `synapse-api-grpc`,
+  `synapse-test-grpc` and gRPC in `samples/rest-books`. It covers acceptance 2, 3 (gRPC), 4 (gRPC), 5 (gRPC),
+  6 (gRPC), 10 (gRPC modules), 11 (the expired gRPC deadline), 13 (gRPC), 14 (gRPC), 16 (gRPC), 17 (gRPC) and 19
+  (`@SynapseGrpcTest` is provided). Carried in:
   - The REST edge's Synapse fields include only REST attribute names; with both plugins, include
     `synapse.api.grpc.context.metadata` names so trusted-mode REST callers can't set gRPC attribute baggage
     unvalidated.
   - Server reflection off by default through a Synapse default on Boot's key at lowest precedence (6.3).
+  - `STALE_VERSION` → ABORTED (plan 2b).
+
+  Done (see the *Done (plan 3)* note above).
+- Plan 3b (gRPC page tokens), proposed by plan 3 and needed by plan 5's `SearchBooks` over gRPC: `PageQuery` and
+  `PageResult` over gRPC with AIP-158 fields, and whether `CursorCodec` moves to core for them (plan 2b left this to
+  plan 3).
 - Plan 5 (archetype, parent, reference app):
   - The OpenTelemetry Java agent recipe: `management.opentelemetry.map-environment-variables` and `-Dotel.*`
     guidance, an archetype profile that defines the `GlobalOpenTelemetry` `OpenTelemetry` bean, and an agent IT.
@@ -1209,10 +1280,6 @@ CORS filter in a native image by the native build (plan 5).
     Java agent, in the Synapse agent extension.
   - The archetype's environment files (section 13, *Environments*), and an environment for `process-aot` and the
     AOT-cache training run (3.3), verified with the first native and image builds.
-  - `OpenApiAotCheck` in `synapse-api-rest-openapi`: when the application runs with AOT-generated artifacts, startup
-    fails when `springdoc.api-docs.enabled` at runtime differs from the value `process-aot` saw (springdoc's beans
-    exist only for the build's value, so an environment file can't turn the document on or off there). The AOT build
-    records its value; the failure names both values and how to set the build's (6.2 *OpenAPI*, `openapi.adoc`).
   - The first native test checks, in a native image, that `ClassLoader.getResources` returns one URL per jar for
     `META-INF/synapse/config*.yaml`, that Boot's `Config resource` source names are unchanged, and that the service's
     `application-<env>.yaml` is found (DESIGN.md *Open questions*).
@@ -1309,7 +1376,7 @@ the migration guide covers every row of the module map in DESIGN.md.
 
 ## 16. Decided in phase plans
 These are settled at the start of the named phase (details in DESIGN.md *Open questions*): default sizes for
-the gRPC and GraphQL concurrency limits and deadlines (their plans) and client settings (P2); the client readiness
+the GraphQL concurrency limit and deadlines (P4) and client settings (P2); the client readiness
 signal (P2); WireMock's Boot 4 fit (P2); Kafka retry defaults, subscriber `max.poll.records` and timeout defaults (P3);
 the AWS function binding and Lambda operating model, GraphQL limit values, ShedLock's Boot 4 fit (P4); the archetype
 set (P6).

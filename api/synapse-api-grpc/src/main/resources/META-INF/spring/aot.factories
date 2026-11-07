@@ -1,0 +1,2 @@
+org.springframework.beans.factory.aot.BeanFactoryInitializationAotProcessor=\
+io.americanexpress.synapse.api.grpc.internal.aot.GrpcBindingsAotProcessor

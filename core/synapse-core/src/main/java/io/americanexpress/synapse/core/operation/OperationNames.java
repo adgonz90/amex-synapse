@@ -58,7 +58,23 @@ public final class OperationNames {
         if (simpleName.length() > SUFFIX.length() && simpleName.endsWith(SUFFIX)) {
             simpleName = simpleName.substring(0, simpleName.length() - SUFFIX.length());
         }
-        return WORD_BOUNDARY.matcher(simpleName).replaceAll("-").toLowerCase(Locale.ROOT);
+        return kebabCase(simpleName);
+    }
+
+    /**
+     * Returns the operation name for a method name, such as a gRPC method's: its kebab-case form, split at the same
+     * word boundaries as {@link #nameOf(Class)}, so {@code GetBook} is {@code get-book} and {@code GetHTTPStatus} is
+     * {@code get-http-status}. A trailing {@code Operation} is kept.
+     *
+     * @param methodName the method name
+     * @return the operation name
+     */
+    public static String ofMethodName(String methodName) {
+        return kebabCase(methodName);
+    }
+
+    private static String kebabCase(String name) {
+        return WORD_BOUNDARY.matcher(name).replaceAll("-").toLowerCase(Locale.ROOT);
     }
 
     /**

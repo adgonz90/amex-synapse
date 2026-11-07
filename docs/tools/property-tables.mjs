@@ -53,7 +53,13 @@ if (undocumented.length > 0) {
 
 const cell = (text) => String(text).replaceAll('|', '\\|');
 const code = (text) => '`+' + String(text) + '+`';
-const sentence = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : '');
+// Upper-cases the first letter, unless the second is already upper case, so a name such as gRPC stays as written.
+const sentence = (text) => {
+  if (!text) {
+    return '';
+  }
+  return /^.\p{Lu}/u.test(text) ? text : text.charAt(0).toUpperCase() + text.slice(1);
+};
 const simpleType = (type) => (type ?? '').replace(/^java\.lang\./, '');
 
 const sections = found

@@ -1,0 +1,6 @@
+# Settings for this module's tests: @SynapseGrpcTest activates the test profile, which loads this file.
+# Error detail is off by default in every environment; the slice tests assert on the status description, so the tests
+# turn it on.
+synapse:
+  errors:
+    include-detail: true

@@ -83,7 +83,8 @@ Attributes and baggage sent by callers are accepted by default, within hard limi
 * `synapse.context.inbound.max-entries` (16) and `synapse.context.inbound.max-size` (4KB): excess is dropped and
   logged.
 * `synapse.context.inbound.trusted=false` drops inbound context attributes in core. A public-facing service sets it.
-  Dropping inbound baggage and restarting the trace happen at each API plugin, which sees the raw request.
+  Dropping inbound baggage and restarting the trace happen at each API plugin, which sees the raw request: its HTTP
+  headers over REST, its metadata over gRPC.
 
 WARNING: Never base a security decision (tenant, roles) on an attribute or on baggage. Callers control them. Use the
 verified principal.
@@ -94,7 +95,8 @@ to DEBUG.
 [#correlation-id]
 == Correlation id
 
-The id is read from the header named by `synapse.correlation.header` (`X-Correlation-Id`). It is accepted only if it
+The id is read from the header named by `synapse.correlation.header` (`X-Correlation-Id`), and over gRPC from the
+metadata key of that name in lower case (`x-correlation-id`). It is accepted only if it
 is 1 to `synapse.correlation.max-length` (128) characters of `[A-Za-z0-9._:-]`; otherwise it is replaced with a new
 UUID and the original is logged once, sanitized and truncated. It is generated when absent. It is the baggage field and
 MDC key `correlationId` and a high-cardinality tag on the operation observation.
@@ -140,6 +142,7 @@ The framework's own `SynapseErrors`:
 |`FORBIDDEN` |`FORBIDDEN` |Access is denied
 |`CONFLICT` |`CONFLICT` |The request conflicts with the current state of the resource
 |`STALE_VERSION` |`CONFLICT` |The resource was changed by another request
+|`ALREADY_EXISTS` |`CONFLICT` |The resource already exists
 |`PRECONDITION_FAILED` |`PRECONDITION_FAILED` |A precondition failed
 |`PRECONDITION_REQUIRED` |`PRECONDITION_FAILED` |The request must be conditional
 |`RATE_LIMITED` |`RATE_LIMITED` |Too many requests
@@ -150,7 +153,11 @@ The framework's own `SynapseErrors`:
 
 Throw `STALE_VERSION` when a write finds the resource at another version than the one it expects: a version check
 or a compare-and-set failed. Over REST it is 409, or 412 `PRECONDITION_FAILED` when the request sent a bound
-`If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]).
+`If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]); over gRPC it is `ABORTED`.
+
+Throw `ALREADY_EXISTS` when a resource with the same identity exists, such as on a unique-constraint violation. Over
+REST it is 409, like every `CONFLICT`; over gRPC it is `ALREADY_EXISTS` rather than `ABORTED` (see
+xref:grpc.adoc#errors[gRPC errors]).
 
 Register `ExceptionTranslator` beans to map exceptions of libraries you use. Modules contribute their own; core has
 no data or security dependency. `ConstraintViolationException` is translated to `VALIDATION_FAILED`.
@@ -325,7 +332,9 @@ preStop delay + (phases that wait × spring.lifecycle.timeout-per-shutdown-phase
 ----
 
 The phases that wait are the web server's graceful shutdown (in-flight requests, see xref:rest.adoc#shutdown[REST]),
-the drain, and the publishers, clients and data stores of the modules you use. For example, a REST service with a 5
+the drain, and the publishers, clients and data stores of the modules you use. A gRPC server waits for its own
+`spring.grpc.server.shutdown.grace-period` instead of the phase timeout; add it as one more term (see
+xref:grpc.adoc#shutdown[gRPC]). For example, a REST service with a 5
 second `preStop` sleep and `spring.lifecycle.timeout-per-shutdown-phase=10s` needs 5 + 2 × 10 = 25 seconds, within
 the default 30.
 

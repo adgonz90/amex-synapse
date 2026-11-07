@@ -1,0 +1,160 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// Test fixture of the gRPC plugin: the services and messages its binding, mapping and edge tests use.
+syntax = "proto3";
+
+package synapse.fixture.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+option java_package = "io.americanexpress.synapse.api.grpc.fixture.proto";
+option java_multiple_files = true;
+
+// Unary methods bound to Synapse operations.
+service CatalogService {
+  rpc GetItem(GetItemRequest) returns (Item);
+  rpc CreateItem(CreateItemRequest) returns (Item);
+  rpc DeleteItem(DeleteItemRequest) returns (google.protobuf.Empty);
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse);
+  rpc Fail(FailRequest) returns (FailResponse);
+}
+
+// A service with a streaming method, which Synapse bindings reject.
+service WatchService {
+  rpc WatchItems(WatchItemsRequest) returns (stream Item);
+}
+
+enum Genre {
+  GENRE_UNSPECIFIED = 0;
+  GENRE_FICTION = 1;
+  GENRE_SCIENCE = 2;
+}
+
+message Author {
+  string name = 1;
+  string country_code = 2;
+}
+
+message Item {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Duration ttl = 4;
+  google.protobuf.Int32Value rating = 5;
+  optional string note = 6;
+  Genre genre = 7;
+  repeated string tags = 8;
+  map<string, int64> counts = 9;
+  Author author = 10;
+  oneof lookup {
+    string sku = 20;
+    string barcode = 21;
+  }
+  int64 version = 22;
+}
+
+message GetItemRequest {
+  string id = 1;
+}
+
+message CreateItemRequest {
+  Item item = 1;
+}
+
+message DeleteItemRequest {
+  string id = 1;
+}
+
+message ListTagsRequest {
+  string id = 1;
+}
+
+message ListTagsResponse {
+  repeated string tags = 1;
+}
+
+message FailRequest {
+  string code = 1;
+}
+
+message FailResponse {
+  string message = 1;
+}
+
+message WatchItemsRequest {
+  string id = 1;
+}
+
+// A message whose field has no presence, for the nullable-component check.
+message PlainNumbers {
+  int32 year = 1;
+}
+
+// Every scalar type, wrapper and container shape, for the mapping tests.
+message Scalars {
+  int32 int32_value = 1;
+  sint32 sint32_value = 2;
+  sfixed32 sfixed32_value = 3;
+  uint32 uint32_value = 4;
+  fixed32 fixed32_value = 5;
+  int64 int64_value = 6;
+  sint64 sint64_value = 7;
+  sfixed64 sfixed64_value = 8;
+  uint64 uint64_value = 9;
+  fixed64 fixed64_value = 10;
+  bool bool_value = 11;
+  double double_value = 12;
+  float float_value = 13;
+  bytes bytes_value = 14;
+  google.protobuf.DoubleValue double_wrapper = 20;
+  google.protobuf.FloatValue float_wrapper = 21;
+  google.protobuf.Int64Value int64_wrapper = 22;
+  google.protobuf.UInt64Value uint64_wrapper = 23;
+  google.protobuf.Int32Value int32_wrapper = 24;
+  google.protobuf.UInt32Value uint32_wrapper = 25;
+  google.protobuf.BoolValue bool_wrapper = 26;
+  google.protobuf.StringValue string_wrapper = 27;
+  google.protobuf.BytesValue bytes_wrapper = 28;
+  repeated Author authors = 30;
+  map<int32, Author> authors_by_rank = 31;
+  repeated google.protobuf.Timestamp times = 32;
+  repeated Genre genres = 33;
+  optional Genre optional_genre = 34;
+  Shelf shelf = 35;
+}
+
+// An enum whose values are named like the Java constants and whose zero value is a real value.
+enum Shelf {
+  TOP = 0;
+  BOTTOM = 1;
+}
+
+// A message that contains itself, for recursive records.
+message Node {
+  string name = 1;
+  Node next = 2;
+}
+
+// A oneof whose members are messages, for the output oneof check.
+message Choice {
+  oneof pick {
+    Author first = 1;
+    Author second = 2;
+  }
+}

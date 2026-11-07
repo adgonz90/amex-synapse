@@ -13,9 +13,18 @@ synapse:
         # own front ends in its application-<env>.yaml. Actuator's paths are left to management.endpoints.web.cors.*.
         allowed-origins:
           - http://localhost:3000
+
 springdoc:
   api-docs:
     # Serves the OpenAPI document at /v3/api-docs. It describes every route to anyone who can reach the service, so
     # it is off by default in every environment; an environment that wants it (here, local runs) turns it on. With
     # AOT-generated artifacts (a native image) this file can't change it: the value at build time decides.
     enabled: true
+
+spring:
+  grpc:
+    server:
+      # gRPC server reflection, so that grpcurl can list and call the service without the .proto file. Every other
+      # environment keeps Synapse's default (off): reflection publishes the whole API to any caller.
+      reflection:
+        enabled: true

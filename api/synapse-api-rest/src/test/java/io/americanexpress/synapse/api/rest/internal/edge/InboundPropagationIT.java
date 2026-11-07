@@ -154,10 +154,28 @@ class InboundPropagationIT {
         }
     }
 
+    @Nested
+    @TestPropertySource(properties = "synapse.api.grpc.context.metadata.channel=x-channel")
+    class GrpcAttribute {
+
+        @Autowired
+        private RestTestClient grpcAttributeClient;
+
+        @Test
+        void grpcAttributeBaggageIsStrippedAtTheRestEdge() {
+            Seen seen = probe(grpcAttributeClient, "baggage", "channel=evil,partner=o");
+
+            assertThat(seen.channel()).isNull();
+            assertThat(seen.operationChannel()).isNull();
+            assertThat(seen.partner()).isEqualTo("o");
+        }
+    }
+
     /** What tracing held in the controller, and in the operation it called. */
     record Seen(String traceId, @Nullable String correlationId, @Nullable String tenant, @Nullable String partner,
-            @Nullable String region, String operationTraceId, @Nullable String operationCorrelationId,
-            @Nullable String operationMdcCorrelationId) {
+            @Nullable String region, @Nullable String channel, String operationTraceId,
+            @Nullable String operationCorrelationId, @Nullable String operationMdcCorrelationId,
+            @Nullable String operationChannel) {
     }
 
     /** What the probe returned, and the correlation header of its response. */
@@ -165,7 +183,8 @@ class InboundPropagationIT {
     }
 
     /** What tracing and the MDC held inside the operation. */
-    record InOperation(String traceId, @Nullable String correlationId, @Nullable String mdcCorrelationId) {
+    record InOperation(String traceId, @Nullable String correlationId, @Nullable String mdcCorrelationId,
+            @Nullable String channel) {
     }
 
     @SpringBootConfiguration
@@ -200,7 +219,8 @@ class InboundPropagationIT {
 
         @Override
         public InOperation execute(String input) {
-            return new InOperation(traceId(tracer), baggage(tracer, "correlationId"), MDC.get("correlationId"));
+            return new InOperation(traceId(tracer), baggage(tracer, "correlationId"), MDC.get("correlationId"),
+                    baggage(tracer, "channel"));
         }
     }
 
@@ -223,9 +243,10 @@ class InboundPropagationIT {
             String tenant = baggage(tracer, "tenant");
             String partner = baggage(tracer, "partner");
             String region = baggage(tracer, "region");
+            String channel = baggage(tracer, "channel");
             InOperation inOperation = operation.execute("probe");
-            return new Seen(traceId, correlationId, tenant, partner, region, inOperation.traceId(),
-                    inOperation.correlationId(), inOperation.mdcCorrelationId());
+            return new Seen(traceId, correlationId, tenant, partner, region, channel, inOperation.traceId(),
+                    inOperation.correlationId(), inOperation.mdcCorrelationId(), inOperation.channel());
         }
     }
 }

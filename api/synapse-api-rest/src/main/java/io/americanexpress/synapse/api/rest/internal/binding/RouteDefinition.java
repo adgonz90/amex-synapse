@@ -20,11 +20,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.jspecify.annotations.Nullable;
-import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.core.ResolvableType;
 import org.springframework.http.HttpMethod;
-import org.springframework.util.ClassUtils;
 
+import io.americanexpress.synapse.core.internal.binding.OperationTypes;
 import io.americanexpress.synapse.core.operation.OperationNames;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 import io.americanexpress.synapse.core.paging.PageResult;
@@ -98,7 +97,7 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
      */
     public static RouteDefinition declared(HttpMethod method, String path, ServiceOperation<?, ?> operation,
             List<RouteDeclaration> declarations, ResponseRules response) {
-        Class<?> operationClass = operationClass(operation);
+        Class<?> operationClass = OperationTypes.userClassOf(operation);
         String version = declarations
                 .stream()
                 .filter(RouteDeclaration.Version.class::isInstance)
@@ -149,7 +148,7 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
      * @return the unwrapped output type
      */
     public Class<?> outputValueType() {
-        return unwrap(generic(operationClass(operation), 1)).resolve(Object.class);
+        return unwrap(generic(OperationTypes.userClassOf(operation), 1)).resolve(Object.class);
     }
 
     /**
@@ -189,10 +188,6 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
             @Nullable PagingRules resolvedPaging, ConditionalRules resolvedConditional) {
         return new RouteDefinition(method, path, operation, operationName, inputType, outputType, resolvedSources,
                 resolvedResponse, declarations, resolvedPaging, resolvedConditional, version);
-    }
-
-    static Class<?> operationClass(ServiceOperation<?, ?> operation) {
-        return ClassUtils.getUserClass(AopProxyUtils.ultimateTargetClass(operation));
     }
 
     static ResolvableType generic(Class<?> operationClass, int index) {

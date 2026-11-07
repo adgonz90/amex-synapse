@@ -39,6 +39,12 @@ public enum SynapseErrors implements ErrorDetails {
     /** The resource changed since the caller read it, so the update would overwrite someone else's change. */
     STALE_VERSION("The resource was changed by another request", ErrorCategory.CONFLICT),
 
+    /**
+     * A resource with the same identity exists, such as a unique-constraint violation. gRPC answers it
+     * ALREADY_EXISTS.
+     */
+    ALREADY_EXISTS("The resource already exists", ErrorCategory.CONFLICT),
+
     /** A precondition failed. */
     PRECONDITION_FAILED("A precondition failed", ErrorCategory.PRECONDITION_FAILED),
 
