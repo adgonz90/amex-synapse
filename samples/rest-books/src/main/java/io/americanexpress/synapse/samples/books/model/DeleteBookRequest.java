@@ -15,15 +15,17 @@ package io.americanexpress.synapse.samples.books.model;
 
 import java.util.UUID;
 
-import org.jspecify.annotations.Nullable;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 
 /**
  * Removes a book from the catalog.
  *
  * @param id the id of the book
- * @param version the version the caller expects the book to have, or {@code null} to check against the version the
- *        business operation reads. The REST binding fills it from {@code If-Match}, which the route requires;
- *        {@code If-Match: *} binds {@code null}
+ * @param version the version the caller expects the book to have. It isn't {@code @Nullable}, so a delete must name
+ *        one: that is part of this operation's contract, which every protocol enforces before the operation runs (over
+ *        REST, a {@code DELETE} without {@code If-Match} is 428 {@code PRECONDITION_REQUIRED}). REST fills it from
+ *        {@code If-Match}: {@code "1"} is {@code Version(1)} and {@code *} is {@code AnyVersion}, which checks against
+ *        the version the business operation reads
  */
-public record DeleteBookRequest(UUID id, @Nullable Long version) {
+public record DeleteBookRequest(UUID id, VersionCondition<Long> version) {
 }

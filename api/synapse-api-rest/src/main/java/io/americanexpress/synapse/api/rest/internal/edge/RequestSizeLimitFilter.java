@@ -52,7 +52,7 @@ public final class RequestSizeLimitFilter extends OncePerRequestFilter implement
 
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 4;
+        return Ordered.HIGHEST_PRECEDENCE + 5;
     }
 
     @Override

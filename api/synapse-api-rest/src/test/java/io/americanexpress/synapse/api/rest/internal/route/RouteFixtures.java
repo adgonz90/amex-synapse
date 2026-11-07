@@ -36,6 +36,7 @@ import io.americanexpress.synapse.api.rest.internal.paging.CursorKeys;
 import io.americanexpress.synapse.api.rest.internal.paging.InputDigest;
 import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
@@ -122,15 +123,19 @@ final class RouteFixtures {
         }
     }
 
-    /** Revises a book and counts its calls; the version is bound from {@code If-Match}. */
-    static class ReviseVersionedBookOperation implements CommandOperation<VersionedBook, VersionedBook> {
+    /** A revision of a book, conditional on the version bound from {@code If-Match}. */
+    record RevisionRequest(long id, String title, @Nullable VersionCondition<Long> version) {
+    }
+
+    /** Revises a book and counts its calls. */
+    static class ReviseVersionedBookOperation implements CommandOperation<RevisionRequest, VersionedBook> {
 
         final AtomicInteger calls = new AtomicInteger();
 
         @Override
-        public VersionedBook execute(VersionedBook input) {
+        public VersionedBook execute(RevisionRequest input) {
             calls.incrementAndGet();
-            return input;
+            return new VersionedBook(input.id(), input.title(), 2L);
         }
     }
 

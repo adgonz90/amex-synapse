@@ -44,7 +44,8 @@ import io.americanexpress.synapse.core.error.SynapseException;
  *
  * <p>
  * It is the innermost edge filter: inside the context filter, so the problem and its log line carry the request's
- * correlation id, and inside Boot's server observation, which then records the 4xx response instead of an exception.
+ * correlation id, inside the CORS filter, so the problem carries the CORS headers of an allowed origin, and inside
+ * Boot's server observation, which then records the 4xx response instead of an exception.
  */
 public final class ClientErrorFilter extends OncePerRequestFilter implements Ordered {
 
@@ -63,7 +64,7 @@ public final class ClientErrorFilter extends OncePerRequestFilter implements Ord
 
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 5;
+        return Ordered.HIGHEST_PRECEDENCE + 6;
     }
 
     @Override

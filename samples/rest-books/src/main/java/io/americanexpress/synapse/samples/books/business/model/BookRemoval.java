@@ -15,14 +15,14 @@ package io.americanexpress.synapse.samples.books.business.model;
 
 import java.util.UUID;
 
-import org.jspecify.annotations.Nullable;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 
 /**
- * A book to remove from the catalog.
+ * A book to remove from the catalog. A removal always names the version it is conditional on.
  *
  * @param id the id of the book
- * @param version the version the caller expects the book to have, or {@code null} to check against the version the
- *        business operation reads
+ * @param version the version the caller expects the book to have: {@code Version(v)} for one version, or
+ *        {@code AnyVersion} for whatever version the business operation reads
  */
-public record BookRemoval(UUID id, @Nullable Long version) {
+public record BookRemoval(UUID id, VersionCondition<Long> version) {
 }

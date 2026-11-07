@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.api.rest.internal.binding;
 
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -35,6 +36,9 @@ import io.americanexpress.synapse.api.rest.RouteSpec;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules.OutputHeader;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.BookResult;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.BookShelf;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConditionFilterOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConditionFilterRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConditionalReadRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateVersionedBookOperation;
@@ -45,6 +49,7 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetBookShelfOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetConditionalBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetDataOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetEntityOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetFileOperation;
@@ -52,6 +57,7 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetHolderOutputOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetPlainBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetRowOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetStrictConditionalBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetVersionedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetWithBodyOnlyOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetWithNullableFilterOperation;
@@ -61,6 +67,8 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ListBookShelvesOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ListOfPagesOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ListVersionedBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseConditionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseConditionRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.OffsetFilter;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.OptionalPageOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.OtherRecord;
@@ -74,6 +82,8 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PatchBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PatchBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PingOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PlainVersionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PlainVersionRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Principal;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PrincipalBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PrincipalOnlyOperation;
@@ -92,8 +102,14 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SizeFilterRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SizeOnlyOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SortKey;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionalReadRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictPutBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictReviseOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictReviseRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SupertypeConditionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SupertypeConditionRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TenantId;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TreeNode;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TreePageOperation;
@@ -106,6 +122,7 @@ import io.americanexpress.synapse.api.rest.internal.error.BookErrors;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.binding.ComponentRef;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
 import io.americanexpress.synapse.core.operation.QueryOperation;
@@ -115,6 +132,7 @@ import io.americanexpress.synapse.core.paging.PageQuery;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.entry;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class BindingValidatorTest {
@@ -1032,7 +1050,6 @@ class BindingValidatorTest {
 
         ConditionalRules conditional = route.conditional();
         assertThat(Objects.requireNonNull(conditional.etag()).name()).isEqualTo("version");
-        assertThat(conditional.requireIfMatch()).isFalse();
         assertThat(conditional.ifMatch()).isNull();
         assertThat(conditional.ifNoneMatch()).isNull();
         // The component stays in the body: it is not an output header.
@@ -1177,21 +1194,295 @@ class BindingValidatorTest {
     }
 
     @Test
-    void ifMatchComponentMustBeNullable() {
-        assertFails(RestBindings
+    void aReadsConditionalComponentMustBeNullable() {
+        // A read binds a plain type: * and an absent header both bind null.
+        assertFails(RestBindings.builder().get("/books", getBook).header("If-None-Match", GetBookRequest::id).build(),
+                "REST route GET /books (get-book): ", "If-None-Match", "GetBookRequest.id",
+                "* binds null; declare GetBookRequest.id @Nullable");
+        // A read can't require a precondition: an absent header binds null.
+        assertFailsWith(RestBindings
                 .builder()
-                .put("/books/{id}", new StrictReviseOperation())
-                .header("If-Match", StrictReviseRequest::version)
-                .build(), "REST route PUT /books/{id} (strict-revise): ", "If-Match", "StrictReviseRequest.version",
-                "* binds null; declare StrictReviseRequest.version @Nullable");
-        assertFails(RestBindings
+                .get("/books/{id}", new GetStrictConditionalBookOperation())
+                .header("If-None-Match", StrictConditionalReadRequest::version)
+                .build(), List.of(),
+                "REST route GET /books/{id} (get-strict-conditional-book): the component "
+                        + "StrictConditionalReadRequest.version is bound from If-None-Match on GET but isn't "
+                        + "@Nullable: a read can't require a precondition, and an absent If-None-Match binds null",
+                "Declare StrictConditionalReadRequest.version @Nullable.");
+    }
+
+    @Test
+    void aNonNullVersionConditionOnAWriteIsRequired() {
+        // The operation's input says the precondition is required: startup accepts it, and the route requires it.
+        RouteDefinition delete = single(RestBindings
                 .builder()
-                .put("/books/{id}", new StrictReviseOperation())
+                .delete("/books/{id}", new StrictConditionOperation())
+                .header("If-Match", StrictConditionRequest::version)
+                .build());
+        assertThat(Objects.requireNonNull(delete.conditional().ifMatch()).component().nullable()).isFalse();
+        RouteDefinition post = single(RestBindings
+                .builder()
+                .post("/books/{id}/removals", new StrictConditionOperation())
+                .header("If-Match", StrictConditionRequest::version)
+                .build());
+        assertThat(Objects.requireNonNull(post.conditional().ifMatch()).component().nullable()).isFalse();
+
+        // If-None-Match, and a convention, alike.
+        RouteDefinition put = single(RestBindings.builder().put("/books/{id}", new StrictPutBookOperation()).build(),
+                RestConventions.builder().header("If-None-Match", VersionCondition.class).build());
+        assertThat(Objects.requireNonNull(put.conditional().ifNoneMatch()).component().name()).isEqualTo("unless");
+        assertThat(Objects.requireNonNull(put.conditional().ifNoneMatch()).component().nullable()).isFalse();
+
+        // @Nullable keeps it optional.
+        RouteDefinition optional = single(RestBindings
+                .builder()
+                .delete("/books/{id}", new RemoveBookOperation())
+                .header("If-Match", RemoveBookRequest::version)
+                .build());
+        assertThat(Objects.requireNonNull(optional.conditional().ifMatch()).component().nullable()).isTrue();
+    }
+
+    @Test
+    void routeSpecHasNoRequireIfMatch() {
+        // Whether a precondition is required is the operation's input contract, the same over every protocol, so the
+        // REST binding has no switch for it.
+        assertThat(RouteSpec.class.getMethods()).extracting(Method::getName).doesNotContain("requireIfMatch");
+    }
+
+    @Test
+    void plainTypeOnAWriteFailsStartup() {
+        String problem = ", but its type is Long: a write needs a VersionCondition, so that * and an absent header "
+                + "stay apart";
+        String action = "Declare it as VersionCondition<Long> to require the header, or @Nullable "
+                + "VersionCondition<Long> to make it optional (null without it): Version(v) for one entity tag, "
+                + "AnyVersion for *.";
+        PlainVersionOperation plain = new PlainVersionOperation();
+        assertFailsWith(
+                RestBindings
+                        .builder()
+                        .put("/books/{id}", plain)
+                        .header("If-Match", PlainVersionRequest::version)
+                        .build(),
+                List.of(), "REST route PUT /books/{id} (plain-version): the component PlainVersionRequest.version is "
+                        + "bound from If-Match on PUT" + problem,
+                action);
+        assertFailsWith(RestBindings
+                .builder()
+                .post("/books/{id}", plain)
+                .header("If-None-Match", PlainVersionRequest::version)
+                .build(), List.of(),
+                "REST route POST /books/{id} (plain-version): the component "
+                        + "PlainVersionRequest.version is bound from If-None-Match on POST" + problem,
+                action);
+        assertFailsWith(RestBindings
+                .builder()
+                .delete("/books/{id}", plain)
+                .header("If-Match", PlainVersionRequest::version)
+                .build(), List.of(),
+                "REST route DELETE /books/{id} (plain-version): the component "
+                        + "PlainVersionRequest.version is bound from If-Match on DELETE" + problem,
+                action);
+        // The type check comes before the nullability check, for a declared source and a convention.
+        StrictReviseOperation strict = new StrictReviseOperation();
+        assertFailsWith(RestBindings
+                .builder()
+                .put("/books/{id}", strict)
                 .header("If-None-Match", StrictReviseRequest::version)
-                .build(), "If-None-Match", "declare StrictReviseRequest.version @Nullable");
-        assertFails(RestBindings.builder().put("/books/{id}", new StrictReviseOperation()).build(),
+                .build(), List.of(),
+                "the component StrictReviseRequest.version is bound from If-None-Match on PUT, "
+                        + "but its type is long: a write needs a VersionCondition",
+                action);
+        assertFailsWith(RestBindings.builder().put("/books/{id}", strict).build(),
                 List.of(RestConventions.builder().header("If-Match", long.class).build()),
-                "declare StrictReviseRequest.version @Nullable");
+                "the component StrictReviseRequest.version is bound from If-Match on PUT, but its type is long",
+                action);
+    }
+
+    @Test
+    void rawOrWildcardVersionConditionFails() {
+        String action = "Declare the version type, for example VersionCondition<Long>.";
+        LooseConditionOperation loose = new LooseConditionOperation();
+        assertFailsWith(
+                RestBindings
+                        .builder()
+                        .delete("/books/{id}", loose)
+                        .header("If-Match", LooseConditionRequest::raw)
+                        .build(),
+                List.of(), "REST route DELETE /books/{id} (loose-condition): the component LooseConditionRequest.raw "
+                        + "is a VersionCondition without a version type",
+                action);
+        assertFailsWith(RestBindings
+                .builder()
+                .delete("/books/{id}", loose)
+                .header("If-None-Match", LooseConditionRequest::wildcard)
+                .build(), List.of(),
+                "the component LooseConditionRequest.wildcard is a VersionCondition without a "
+                        + "version type",
+                action);
+        assertFailsWith(RestBindings
+                .builder()
+                .delete("/books/{id}", loose)
+                .context(LooseConditionRequest::wildcard, context -> null)
+                .build(), List.of(),
+                "the component LooseConditionRequest.wildcard is a VersionCondition without a "
+                        + "version type",
+                action);
+    }
+
+    @Test
+    void objectVersionTypeFails() {
+        // Version("5").matches(5L) is false for every Object version, so each conditional write would answer 412.
+        assertFailsWith(RestBindings
+                .builder()
+                .delete("/books/{id}", new LooseConditionOperation())
+                .header("If-Match", LooseConditionRequest::object)
+                .build(), List.of(),
+                "REST route DELETE /books/{id} (loose-condition): the component LooseConditionRequest.object is "
+                        + "bound as VersionCondition<Object>; the version type must be a concrete type such as Long or "
+                        + "String",
+                "Declare the type of the resource's version, for example VersionCondition<Long>: the bound value is "
+                        + "converted to it and compared with the version the operation reads.");
+    }
+
+    @Test
+    void supertypeOfStringVersionTypeFails() {
+        // The header's text binds as a String, which never equals a Long version the operation reads as Serializable.
+        SupertypeConditionOperation operation = new SupertypeConditionOperation();
+        String action = "Declare the type of the resource's version, for example VersionCondition<Long>: the bound "
+                + "value is converted to it and compared with the version the operation reads.";
+        assertFailsWith(RestBindings
+                .builder()
+                .delete("/books/{id}", operation)
+                .header("If-Match", SupertypeConditionRequest::serializable)
+                .build(), List.of(),
+                "REST route DELETE /books/{id} (supertype-condition): the component "
+                        + "SupertypeConditionRequest.serializable is bound as VersionCondition<Serializable>; the "
+                        + "version type must be a concrete type such as Long or String",
+                action);
+        assertFailsWith(RestBindings
+                .builder()
+                .delete("/books/{id}", operation)
+                .header("If-None-Match", SupertypeConditionRequest::comparable)
+                .build(), List.of(),
+                "REST route DELETE /books/{id} (supertype-condition): the component "
+                        + "SupertypeConditionRequest.comparable is bound as VersionCondition<Comparable>; the "
+                        + "version type must be a concrete type such as Long or String",
+                action);
+        // String and CharSequence hold the text itself.
+        for (RestBindings bindings : List
+                .of(RestBindings
+                        .builder()
+                        .delete("/books/{id}", operation)
+                        .header("If-Match", SupertypeConditionRequest::text)
+                        .build(),
+                        RestBindings
+                                .builder()
+                                .delete("/books/{id}", operation)
+                                .header("If-Match", SupertypeConditionRequest::string)
+                                .build())) {
+            assertThat(validator.validate(bindings.routes(), List.of())).hasSize(1);
+        }
+    }
+
+    @Test
+    void versionConditionFromAnotherSourceFails() {
+        String action = "Bind it with .header(\"If-Match\", ...) or .header(\"If-None-Match\", ...), or supply it with "
+                + ".context or .from.";
+        String prefix = "REST route PUT /books/{id} (revise-book): the component ReviseBookRequest.version is a "
+                + "VersionCondition bound from ";
+        assertFailsWith(
+                RestBindings.builder().put("/books/{id}", reviseBook).query("v", ReviseBookRequest::version).build(),
+                List.of(), prefix + "query parameter v", action);
+        assertFailsWith(
+                RestBindings.builder().put("/books/{id}", reviseBook).cookie("v", ReviseBookRequest::version).build(),
+                List.of(), prefix + "cookie v", action);
+        assertFailsWith(RestBindings
+                .builder()
+                .put("/books/{id}", reviseBook)
+                .header("X-Version", ReviseBookRequest::version)
+                .build(), List.of(), prefix + "header X-Version", action);
+        assertFailsWith(RestBindings.builder().put("/books/{id}", reviseBook).build(), List.of(),
+                prefix + "the request body", action);
+        assertFailsWith(RestBindings
+                .builder()
+                .put("/books/{id}", new RemoveBookOperation())
+                .body(RemoveBookRequest::version)
+                .build(), List.of(),
+                "REST route PUT /books/{id} (remove-book): the component RemoveBookRequest.version is a "
+                        + "VersionCondition bound from the whole request body",
+                action);
+        assertFailsWith(RestBindings.builder().put("/books/{id}", reviseBook).build(),
+                List.of(RestConventions.builder().header("X-Version", VersionCondition.class).build()),
+                prefix + "header X-Version", action);
+        assertFailsWith(RestBindings
+                .builder()
+                .get("/books/{tag}", new GetConditionalBookOperation())
+                .path("tag", ConditionalReadRequest::version)
+                .header("X-Id", ConditionalReadRequest::id)
+                .build(), List.of(),
+                "ConditionalReadRequest.version is a VersionCondition bound from path variable {tag}",
+                action);
+        // Inside a query record, or wrapped in another type, it has no source either.
+        assertFailsWith(RestBindings
+                .builder()
+                .get("/books", new ConditionFilterOperation())
+                .query(ConditionFilterRequest::filter)
+                .build(), List.of(),
+                "REST route GET /books (condition-filter): the component ConditionFilter.version is a VersionCondition "
+                        + "bound from the query string",
+                action);
+        LooseConditionOperation loose = new LooseConditionOperation();
+        assertFailsWith(
+                RestBindings
+                        .builder()
+                        .delete("/books/{id}", loose)
+                        .header("If-Match", LooseConditionRequest::list)
+                        .build(),
+                List.of(), "REST route DELETE /books/{id} (loose-condition): the component LooseConditionRequest.list "
+                        + "is a VersionCondition inside List, bound from header If-Match",
+                action);
+        assertFailsWith(RestBindings
+                .builder()
+                .delete("/books/{id}", loose)
+                .header("If-None-Match", LooseConditionRequest::optional)
+                .build(), List.of(),
+                "the component LooseConditionRequest.optional is a VersionCondition inside "
+                        + "Optional, bound from header If-None-Match",
+                action);
+    }
+
+    @Test
+    void versionConditionFromContextOrFromIsAllowed() {
+        RouteDefinition context = single(RestBindings
+                .builder()
+                .put("/books/{id}", reviseBook)
+                .context(ReviseBookRequest::version, requestContext -> VersionCondition.of(1L))
+                .build());
+        assertThat(source(context, "version")).isInstanceOf(InputSource.Context.class);
+        assertThat(context.conditional().ifMatch()).isNull();
+
+        RouteDefinition custom = single(RestBindings
+                .builder()
+                .put("/books/{id}", reviseBook)
+                .from(ReviseBookRequest::version, request -> VersionCondition.any())
+                .build());
+        assertThat(source(custom, "version")).isInstanceOf(InputSource.Custom.class);
+        assertThat(custom.conditional().ifMatch()).isNull();
+    }
+
+    @Test
+    void readRouteBindsVersionConditionOrPlainType() {
+        RouteDefinition condition = single(RestBindings
+                .builder()
+                .get("/books/{id}", new GetConditionalBookOperation())
+                .header("If-None-Match", ConditionalReadRequest::version)
+                .build());
+        assertThat(Objects.requireNonNull(condition.conditional().ifNoneMatch()).component().name())
+                .isEqualTo("version");
+        // An unbound VersionCondition on a read has no default source.
+        RouteDefinition unbound = single(
+                RestBindings.builder().get("/books/{id}", new GetConditionalBookOperation()).build());
+        assertThat(unbound.sources()).extracting(source -> source.component().name()).containsExactly("id");
     }
 
     @Test
@@ -1219,7 +1510,7 @@ class BindingValidatorTest {
         assertThat(noneMatch.conditional().ifMatch()).isNull();
 
         RouteDefinition byConvention = single(RestBindings.builder().put("/books/{id}", reviseBook).build(),
-                RestConventions.builder().header("If-Match", Long.class).build());
+                RestConventions.builder().header("If-Match", VersionCondition.class).build());
         assertThat(Objects.requireNonNull(byConvention.conditional().ifMatch()).component().name())
                 .isEqualTo("version");
     }
@@ -1235,56 +1526,170 @@ class BindingValidatorTest {
                 "ReviseBookRequest.title");
     }
 
-    @Test
-    void requireIfMatchNeedsAnIfMatchBinding() {
-        assertFails(RestBindings.builder().put("/books/{id}", reviseBook).requireIfMatch().build(),
-                "REST route PUT /books/{id} (revise-book): ", "requireIfMatch", "If-Match");
-        assertFails(RestBindings
-                .builder()
-                .put("/books/{id}", reviseBook)
-                .header("If-None-Match", ReviseBookRequest::version)
-                .requireIfMatch()
-                .build(), "requireIfMatch", "If-Match");
-
-        RouteDefinition delete = single(RestBindings
-                .builder()
-                .delete("/books/{id}", new RemoveBookOperation())
-                .header("If-Match", RemoveBookRequest::version)
-                .requireIfMatch()
-                .build());
-        assertThat(delete.conditional().requireIfMatch()).isTrue();
-        assertThat(Objects.requireNonNull(delete.conditional().ifMatch()).component().name()).isEqualTo("version");
-
-        RouteDefinition byConvention = single(
-                RestBindings.builder().put("/books/{id}", reviseBook).requireIfMatch().build(),
-                RestConventions.builder().header("If-Match", Long.class).build());
-        assertThat(byConvention.conditional().requireIfMatch()).isTrue();
-
-        RouteDefinition post = single(RestBindings
-                .builder()
-                .post("/books/{id}/revisions", reviseBook)
-                .header("If-Match", ReviseBookRequest::version)
-                .requireIfMatch()
-                .build());
-        assertThat(post.conditional().requireIfMatch()).isTrue();
-    }
-
-    @Test
-    void requireIfMatchOnGetFails() {
-        assertFails(RestBindings
-                .builder()
-                .get("/books/{id}", getVersionedBook)
-                .requireIfMatch()
-                .build(), "REST route GET /books/{id} (get-versioned-book): ", ".requireIfMatch()", "GET",
-                "POST, PUT and DELETE");
-        assertFails(RestBindings.builder().head("/books/{id}", getVersionedBook).requireIfMatch().build(),
-                ".requireIfMatch()", "HEAD");
-    }
-
     private RouteDefinition single(RestBindings bindings, RestConventions... conventions) {
         List<RouteDefinition> routes = validator.validate(bindings.routes(), List.of(conventions));
         assertThat(routes).hasSize(1);
         return routes.getFirst();
+    }
+
+    @Test
+    void versionMustBeMajorMinorPatch() {
+        String action = "Declare the version as numbers only, such as .version(\"2\") or .version(\"1.2\"), with no v "
+                + "prefix, + or blank: the route is served at /v<version> followed by its path.";
+        for (String version : List.of("2+", "v2", "", " 2", "1.2.3.4", "2.", "1..2", "-1", "99999999999")) {
+            assertFailsExactly(RestBindings.builder().get("/books/{id}", getBook).version(version).build(),
+                    "REST route GET /v" + version + "/books/{id} (get-book): .version(\"" + version + "\") is not a "
+                            + "version: a version is major[.minor[.patch]], such as 2 or 1.2",
+                    action);
+        }
+        List<RouteDefinition> routes = validator
+                .validate(RestBindings
+                        .builder()
+                        .get("/books/{id}", getBook)
+                        .version("1")
+                        .get("/books/{id}", getBook)
+                        .version("1.2")
+                        .get("/books/{id}", getBook)
+                        .version("1.2.3")
+                        .build()
+                        .routes(), List.of());
+        assertThat(routes)
+                .extracting(RouteDefinition::path)
+                .containsExactly("/v1/books/{id}", "/v1.2/books/{id}", "/v1.2.3/books/{id}");
+    }
+
+    @Test
+    void versionIsDeclaredOnce() {
+        assertFailsExactly(RestBindings.builder().get("/books/{id}", getBook).version("1").version("2").build(),
+                "REST route GET /v1/books/{id} (get-book): .version(\"2\") follows .version(\"1\"), but a route's "
+                        + "version is declared once",
+                "Keep one .version(...) on this route; to serve the route in another version too, declare it again "
+                        + "with that version.");
+    }
+
+    @Test
+    void sameRouteInTwoVersionsIsAllowed() {
+        List<RouteDefinition> routes = validator
+                .validate(RestBindings
+                        .builder()
+                        .get("/books", searchBooks)
+                        .version("1")
+                        .get("/books", searchBooks)
+                        .version("2")
+                        .get("/books", searchBooks)
+                        .get("/books/{id}", getBook)
+                        .version("2")
+                        .delete("/books/{id}", new GetPlainBookOperation())
+                        .version("2.0")
+                        .build()
+                        .routes(), List.of());
+
+        // Equal versions are allowed on different methods: GET and DELETE /books/{id} in 2 and 2.0.
+        assertThat(routes)
+                .extracting(RouteDefinition::method, RouteDefinition::path, RouteDefinition::version)
+                .containsExactly(tuple(HttpMethod.GET, "/v1/books", "1"), tuple(HttpMethod.GET, "/v2/books", "2"),
+                        tuple(HttpMethod.GET, "/books", null), tuple(HttpMethod.GET, "/v2/books/{id}", "2"),
+                        tuple(HttpMethod.DELETE, "/v2.0/books/{id}", "2.0"));
+        // Each version binds its input as an unversioned route would.
+        for (RouteDefinition route : routes.subList(0, 3)) {
+            assertThat(route.sources())
+                    .extracting(source -> source.getClass().getSimpleName() + " " + source.component().name())
+                    .containsExactly("Query author", "Query page", "Query limit", "Query available", "Query genre",
+                            "Query since", "Query tags");
+        }
+    }
+
+    @Test
+    void equalVersionsOfOneRouteFail() {
+        String action = "Declare each version of a route once, in one spelling, such as .version(\"2\").";
+        assertFailsExactly(RestBindings
+                .builder()
+                .get("/books", searchBooks)
+                .version("2")
+                .get("/books", searchBooks)
+                .version("2.0")
+                .build(),
+                "REST route GET /v2.0/books (search-books): versions 2 and 2.0 are equal, so this route and GET "
+                        + "/v2/books (search-books) are the same method and path in one version",
+                action);
+        // Path variables are compared by position, as for unversioned duplicates.
+        assertFailsExactly(RestBindings
+                .builder()
+                .get("/books/{id}", getBook)
+                .version("1.2.0")
+                .get("/books/{bookId}", new GetPlainBookOperation())
+                .path("bookId", GetBookRequest::id)
+                .version("01.2")
+                .build(),
+                "REST route GET /v01.2/books/{bookId} (get-plain-book): versions 1.2.0 and 01.2 are equal, so this "
+                        + "route and GET /v1.2.0/books/{id} (get-book) are the same method and path in one version",
+                action);
+        // The same version twice is a duplicate route.
+        assertFails(RestBindings
+                .builder()
+                .get("/books", searchBooks)
+                .version("2")
+                .get("/books", searchBooks)
+                .version("2")
+                .build(), "REST route GET /v2/books (search-books): ", "same method and path");
+    }
+
+    @Test
+    void pathVariablesOfVersionedRoutesStillBind() {
+        RouteDefinition route = single(RestBindings.builder().get("/books/{id}", getBook).version("2").build());
+
+        assertThat(route.path()).isEqualTo("/v2/books/{id}");
+        assertThat(route.pathVariables()).containsExactly("id");
+        assertThat(route.version()).isEqualTo("2");
+        assertThat(route.declaredPath()).isEqualTo("/books/{id}");
+        assertThat(source(route, "id"))
+                .isInstanceOfSatisfying(InputSource.Path.class, path -> assertThat(path.variable()).isEqualTo("id"));
+    }
+
+    @Test
+    void deprecationAndSunsetAreReservedOnVersionedRoutes() {
+        String action = "Use another header name; to deprecate a version, declare an ApiVersionDeprecationHandler "
+                + "bean, which sends Deprecation and Sunset.";
+        for (String name : List.of("Deprecation", "sunset")) {
+            assertFailsExactly(
+                    RestBindings
+                            .builder()
+                            .get("/books/{id}", getBook)
+                            .version("2")
+                            .header(name, BookResult::title)
+                            .build(),
+                    "REST route GET /v2/books/{id} (get-book): the output header " + name + " is reserved on a "
+                            + "versioned route: Spring's API versioning sets it",
+                    action);
+        }
+        assertFailsWith(RestBindings.builder().get("/books/{id}", getBook).version("2").build(),
+                List
+                        .of(RestConventions
+                                .builder()
+                                .responseHeader("Sunset", BookResult.class, BookResult::title)
+                                .build()),
+                "REST route GET /v2/books/{id} (get-book): the output header Sunset is reserved on a versioned route",
+                action);
+        // Without .version, Deprecation and Sunset are the route's to set.
+        RouteDefinition route = single(RestBindings
+                .builder()
+                .get("/books/{id}", getBook)
+                .header("Deprecation", BookResult::title)
+                .header("Sunset", BookResult::remaining)
+                .build());
+        assertThat(route.response().outputHeaders())
+                .extracting(OutputHeader::name)
+                .containsExactly("Deprecation", "Sunset");
+    }
+
+    /** Asserts a failure with exactly this description and action. */
+    private void assertFailsExactly(RestBindings bindings, String description, String action) {
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> validator.validate(bindings.routes(), List.of()))
+                .satisfies(e -> {
+                    assertThat(e.description()).isEqualTo(description);
+                    assertThat(e.action()).isEqualTo(action);
+                });
     }
 
     private void assertFails(RestBindings bindings, String... fragments) {
@@ -1298,6 +1703,17 @@ class BindingValidatorTest {
             assertThat(e.action()).isNotBlank();
         };
         assertThatExceptionOfType(SynapseConfigurationException.class).isThrownBy(call).satisfies(check);
+    }
+
+    /** Asserts a failure whose description contains {@code problem} and whose action is exactly {@code action}. */
+    private void assertFailsWith(RestBindings bindings, List<RestConventions> conventions, String problem,
+            String action) {
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> validator.validate(bindings.routes(), conventions))
+                .satisfies(e -> {
+                    assertThat(e.description()).contains(problem);
+                    assertThat(e.action()).isEqualTo(action);
+                });
     }
 
     private static InputSource source(RouteDefinition route, String component) {

@@ -207,7 +207,7 @@ class EscapeHatchRoutesIT {
             });
             registration.addUrlPatterns("/filter-fail");
             registration.setDispatcherTypes(DispatcherType.REQUEST);
-            registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 6);
+            registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 7);
             return registration;
         }
     }

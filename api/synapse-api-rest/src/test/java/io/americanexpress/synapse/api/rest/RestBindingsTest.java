@@ -277,6 +277,39 @@ class RestBindingsTest {
     }
 
     @Test
+    void versionPrefixesThePath() {
+        List<RouteDefinition> routes = RestBindings
+                .builder()
+                .get("/books/{id}", new GetBookOperation())
+                .version("2")
+                .get("/", new GetBookOperation())
+                .version("1.1")
+                .get("books", new GetBookOperation())
+                .version("3")
+                .get("/books", new SearchBooksOperation())
+                .build()
+                .routes();
+
+        RouteDefinition versioned = routes.get(0);
+        assertThat(versioned.path()).isEqualTo("/v2/books/{id}");
+        assertThat(versioned.version()).isEqualTo("2");
+        assertThat(versioned.declaredPath()).isEqualTo("/books/{id}");
+        assertThat(versioned.declarations()).containsExactly(new RouteDeclaration.Version("2"));
+        RouteDefinition root = routes.get(1);
+        assertThat(root.path()).isEqualTo("/v1.1");
+        assertThat(root.version()).isEqualTo("1.1");
+        assertThat(root.declaredPath()).isEqualTo("/");
+        // A path without its leading slash is served under the version prefix as Spring serves it unversioned.
+        RouteDefinition relative = routes.get(2);
+        assertThat(relative.path()).isEqualTo("/v3/books");
+        assertThat(relative.declaredPath()).isEqualTo("/books");
+        RouteDefinition unversioned = routes.get(3);
+        assertThat(unversioned.path()).isEqualTo("/books");
+        assertThat(unversioned.version()).isNull();
+        assertThat(unversioned.declaredPath()).isEqualTo("/books");
+    }
+
+    @Test
     void pagedRouteIsDeclaredWithoutPagingRules() {
         RouteDefinition route = RestBindings
                 .builder()

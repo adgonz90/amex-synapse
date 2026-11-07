@@ -32,7 +32,7 @@ import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
  * Reads the Synapse routes out of router functions: the routes served by an {@link OperationHandler}, in order, each
  * once (a {@code GET} route's handler also serves its implicit {@code HEAD} route).
  */
-final class OperationRoutes implements RouterFunctions.Visitor {
+public final class OperationRoutes implements RouterFunctions.Visitor {
 
     private final List<RouteDefinition> routes = new ArrayList<>();
 
@@ -45,7 +45,7 @@ final class OperationRoutes implements RouterFunctions.Visitor {
      * @param routerFunctions the router functions, in order
      * @return the routes
      */
-    static List<RouteDefinition> of(Iterable<? extends RouterFunction<?>> routerFunctions) {
+    public static List<RouteDefinition> of(Iterable<? extends RouterFunction<?>> routerFunctions) {
         OperationRoutes collector = new OperationRoutes();
         routerFunctions.forEach(function -> function.accept(collector));
         return List.copyOf(collector.routes);

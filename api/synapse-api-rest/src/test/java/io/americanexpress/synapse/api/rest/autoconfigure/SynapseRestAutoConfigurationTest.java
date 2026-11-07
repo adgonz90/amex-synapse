@@ -64,6 +64,8 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.ConfigurableWebApplicationContext;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.filter.CharacterEncodingFilter;
 import org.springframework.web.servlet.HandlerExecutionChain;
 import org.springframework.web.servlet.HandlerMapping;
@@ -73,6 +75,7 @@ import org.springframework.web.servlet.function.RouterFunction;
 import org.springframework.web.servlet.function.RouterFunctions;
 import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
+import org.springframework.web.servlet.handler.HandlerMappingIntrospector;
 import org.springframework.web.util.ServletRequestPathUtils;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -85,6 +88,8 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksRequest;
 import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
+import io.americanexpress.synapse.api.rest.internal.cors.SynapseCorsConfigurationSource;
+import io.americanexpress.synapse.api.rest.internal.cors.SynapseCorsFilter;
 import io.americanexpress.synapse.api.rest.internal.edge.ConcurrencyLimitFilter;
 import io.americanexpress.synapse.api.rest.internal.edge.DeadlinePolicy;
 import io.americanexpress.synapse.api.rest.internal.edge.InboundBaggage;
@@ -107,6 +112,7 @@ import io.americanexpress.synapse.api.rest.internal.route.MethodNotAllowedMappin
 import io.americanexpress.synapse.api.rest.internal.route.OperationHandler;
 import io.americanexpress.synapse.api.rest.internal.route.ResponseWriter;
 import io.americanexpress.synapse.api.rest.internal.route.RouteCompiler;
+import io.americanexpress.synapse.api.rest.internal.version.SynapseApiVersioning;
 import io.americanexpress.synapse.api.rest.paging.CursorCodec;
 import io.americanexpress.synapse.api.rest.paging.CursorScope;
 import io.americanexpress.synapse.api.rest.paging.InvalidCursorException;
@@ -166,6 +172,7 @@ class SynapseRestAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("synapseConcurrencyLimitFilter");
                     assertThat(context).doesNotHaveBean("synapseRequestSizeLimitFilter");
                     assertThat(context).doesNotHaveBean("synapseClientErrorFilter");
+                    assertThat(context).doesNotHaveBean("synapseCorsFilter");
                     assertThat(context).doesNotHaveBean(DeadlinePolicy.class);
                 });
     }
@@ -227,10 +234,10 @@ class SynapseRestAutoConfigurationTest {
             assertThat(inboundRegistration(context).getFilter()).isInstanceOf(CharacterEncodingFilter.class);
             assertThat(context)
                     .getBeans(FilterRegistrationBean.class)
-                    .hasSize(5)
+                    .hasSize(6)
                     .containsKeys("synapseInboundPropagationFilter", "synapseRestContextFilter",
                             "synapseConcurrencyLimitFilter", "synapseRequestSizeLimitFilter",
-                            "synapseClientErrorFilter");
+                            "synapseClientErrorFilter", "synapseCorsFilter");
         });
     }
 
@@ -250,20 +257,20 @@ class SynapseRestAutoConfigurationTest {
             assertThat(contextRegistration(context).getFilter()).isInstanceOf(CharacterEncodingFilter.class);
             assertThat(context)
                     .getBeans(FilterRegistrationBean.class)
-                    .hasSize(5)
+                    .hasSize(6)
                     .containsKeys("synapseInboundPropagationFilter", "synapseRestContextFilter",
                             "synapseConcurrencyLimitFilter", "synapseRequestSizeLimitFilter",
-                            "synapseClientErrorFilter");
+                            "synapseClientErrorFilter", "synapseCorsFilter");
             assertThat(inboundRegistration(context).getFilter()).isInstanceOf(InboundPropagationFilter.class);
         });
     }
 
     @Test
-    void registersConcurrencyLimitFilterInsideTheContextFilterForRequestDispatchesOnly() {
+    void registersConcurrencyLimitFilterInsideTheCorsFilterForRequestDispatchesOnly() {
         webRunner.run(context -> {
             FilterRegistrationBean<?> registration = concurrencyRegistration(context);
             assertThat(registration.getFilter()).isInstanceOf(ConcurrencyLimitFilter.class);
-            assertThat(registration.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 3);
+            assertThat(registration.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 4);
             assertThat(registration.determineDispatcherTypes()).isEqualTo(EnumSet.of(DispatcherType.REQUEST));
         });
     }
@@ -273,7 +280,7 @@ class SynapseRestAutoConfigurationTest {
         webRunner.run(context -> {
             FilterRegistrationBean<?> registration = sizeRegistration(context);
             assertThat(registration.getFilter()).isInstanceOf(RequestSizeLimitFilter.class);
-            assertThat(registration.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 4);
+            assertThat(registration.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 5);
             assertThat(registration.determineDispatcherTypes()).isEqualTo(EnumSet.of(DispatcherType.REQUEST));
         });
     }
@@ -283,7 +290,7 @@ class SynapseRestAutoConfigurationTest {
         webRunner.withUserConfiguration(UserLimitFilters.class).run(context -> {
             assertThat(concurrencyRegistration(context).getFilter()).isInstanceOf(CharacterEncodingFilter.class);
             assertThat(sizeRegistration(context).getFilter()).isInstanceOf(CharacterEncodingFilter.class);
-            assertThat(context).getBeans(FilterRegistrationBean.class).hasSize(5);
+            assertThat(context).getBeans(FilterRegistrationBean.class).hasSize(6);
         });
     }
 
@@ -292,7 +299,7 @@ class SynapseRestAutoConfigurationTest {
         webRunner.run(context -> {
             FilterRegistrationBean<?> registration = clientErrorRegistration(context);
             assertThat(registration.getFilter()).isInstanceOf(ClientErrorFilter.class);
-            assertThat(registration.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 5);
+            assertThat(registration.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 6);
             assertThat(registration.determineDispatcherTypes()).isEqualTo(EnumSet.of(DispatcherType.REQUEST));
         });
     }
@@ -302,7 +309,7 @@ class SynapseRestAutoConfigurationTest {
         webRunner.withUserConfiguration(UserClientErrorFilter.class).run(context -> {
             assertThat(clientErrorRegistration(context).getFilter()).isInstanceOf(CharacterEncodingFilter.class);
             assertThat(sizeRegistration(context).getFilter()).isInstanceOf(RequestSizeLimitFilter.class);
-            assertThat(context).getBeans(FilterRegistrationBean.class).hasSize(5);
+            assertThat(context).getBeans(FilterRegistrationBean.class).hasSize(6);
         });
     }
 
@@ -494,6 +501,205 @@ class SynapseRestAutoConfigurationTest {
                     .doesNotHaveBean(PageCursors.class)
                     .doesNotHaveBean(ExposureInventory.class);
         });
+    }
+
+    @Test
+    void apiVersioningBeanActivatesAndBacksOff() {
+        routesRunner.withUserConfiguration(Books.class).run(context -> {
+            assertThat(context).hasSingleBean(SynapseApiVersioning.class).hasBean("synapseApiVersioning");
+            assertThat(context.getBean("synapseApiVersioning")).isInstanceOf(SynapseApiVersioning.class);
+        });
+        WebMvcConfigurer user = new WebMvcConfigurer() {
+        };
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withBean("synapseApiVersioning", WebMvcConfigurer.class, () -> user)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(SynapseApiVersioning.class);
+                    assertThat(context.getBean("synapseApiVersioning")).isSameAs(user);
+                });
+        routesRunner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).doesNotHaveBean(SynapseApiVersioning.class).doesNotHaveBean("synapseApiVersioning");
+        });
+    }
+
+    @Test
+    void corsSourceIsAlwaysPresent() {
+        webRunner.run(context -> {
+            assertThat(context).hasSingleBean(SynapseCorsConfigurationSource.class);
+            assertThat(corsSource(context).getCorsConfiguration(new MockHttpServletRequest("GET", "/books"))).isNull();
+        });
+        routesRunner.withUserConfiguration(Books.class).run(context -> {
+            assertThat(context.getBean("corsConfigurationSource")).isInstanceOf(SynapseCorsConfigurationSource.class);
+            assertThat(corsSource(context).getCorsConfiguration(new MockHttpServletRequest("GET", "/books/1")))
+                    .isNull();
+        });
+        // Without bindings the source is there, so an environment file can still set the origins.
+        webRunner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=https://app.example.com")
+                .run(context -> assertThat(Objects
+                        .requireNonNull(corsSource(context)
+                                .getCorsConfiguration(new MockHttpServletRequest("GET", "/books")))
+                        .getAllowedOrigins()).containsExactly("https://app.example.com"));
+    }
+
+    @Test
+    void corsSourceBacksOffByName() {
+        // Spring MVC's HandlerMappingIntrospector is a CorsConfigurationSource too; it doesn't make the source back off.
+        routesRunner.withUserConfiguration(Books.class).run(context -> {
+            assertThat(context).hasSingleBean(HandlerMappingIntrospector.class);
+            assertThat(context).hasSingleBean(SynapseCorsConfigurationSource.class);
+        });
+        CorsConfigurationSource user = request -> null;
+        webRunner.withBean("corsConfigurationSource", CorsConfigurationSource.class, () -> user).run(context -> {
+            assertThat(context).doesNotHaveBean(SynapseCorsConfigurationSource.class);
+            assertThat(context.getBean("corsConfigurationSource")).isSameAs(user);
+        });
+    }
+
+    @Test
+    void bindsCorsProperties() {
+        webRunner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins[0]=https://app.example.com",
+                        "synapse.api.rest.cors.max-age=10m", "synapse.api.rest.cors.exposed-headers=X-A",
+                        "synapse.api.rest.cors.allowed-methods=GET,PATCH",
+                        "synapse.api.rest.cors.allowed-headers=X-Tenant",
+                        "synapse.api.rest.cors.allow-credentials=true", "synapse.correlation.header=X-Request-Id")
+                .run(context -> {
+                    SynapseRestProperties.Cors cors = context.getBean(SynapseRestProperties.class).cors();
+                    assertThat(cors.allowedOrigins()).containsExactly("https://app.example.com");
+                    assertThat(cors.maxAge()).isEqualTo(Duration.ofMinutes(10));
+                    assertThat(cors.exposedHeaders()).containsExactly("X-A");
+                    assertThat(cors.allowedMethods()).containsExactly("GET", "PATCH");
+                    assertThat(cors.allowedHeaders()).containsExactly("X-Tenant");
+                    assertThat(cors.allowCredentials()).isTrue();
+                    CorsConfiguration configuration = Objects
+                            .requireNonNull(corsSource(context)
+                                    .getCorsConfiguration(new MockHttpServletRequest("GET", "/books")));
+                    assertThat(configuration.getMaxAge()).isEqualTo(600L);
+                    assertThat(configuration.getAllowedMethods()).containsExactly("GET", "PATCH");
+                    assertThat(configuration.getAllowCredentials()).isTrue();
+                    assertThat(configuration.getExposedHeaders())
+                            .containsExactly("X-Request-Id", "ETag", "Link", "Location", "Retry-After",
+                                    "Deprecation", "Sunset", "X-A");
+                });
+    }
+
+    @Test
+    void wildcardWithCredentialsFailsStartup() {
+        webRunner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=*",
+                        "synapse.api.rest.cors.allow-credentials=true")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .rootCause()
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessage("synapse.api.rest.cors.allow-credentials can't be true while"
+                                    + " synapse.api.rest.cors.allowed-origins contains *: browsers refuse credentials"
+                                    + " for any origin. List the exact origins.");
+                });
+    }
+
+    @Test
+    void emptyCorsMethodsFailStartup() {
+        webRunner.withPropertyValues("synapse.api.rest.cors.allowed-methods=").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure())
+                    .rootCause()
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("synapse.api.rest.cors.allowed-methods must list at least one method (or *) but was"
+                            + " empty");
+        });
+    }
+
+    @Test
+    void wildcardOriginWarnsInEveryProfile() {
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+        ListAppender<ILoggingEvent> lines = new ListAppender<>();
+        lines.start();
+        logger.addAppender(lines);
+        try {
+            for (String profile : List.of("prod", "production", "test")) {
+                lines.list.clear();
+                webRunner
+                        .withPropertyValues("synapse.api.rest.cors.allowed-origins=*",
+                                "spring.profiles.active=" + profile)
+                        .run(context -> assertThat(context).hasNotFailed());
+                assertThat(lines.list)
+                        .as(profile)
+                        .filteredOn(line -> line.getFormattedMessage().contains("allowed-origins contains *"))
+                        .singleElement()
+                        .satisfies(line -> assertThat(line.getLevel()).isEqualTo(Level.WARN));
+            }
+        } finally {
+            logger.detachAppender(lines);
+        }
+    }
+
+    @Test
+    void corsSourceCoversManagementPathsWithoutActuator() {
+        webRunner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=https://app.example.com",
+                        "management.endpoints.web.base-path=/manage")
+                .run(context -> {
+                    // Actuator is not on this module's classpath, so no path is served by it and none is left to Boot.
+                    assertThat(corsSource(context)
+                            .getCorsConfiguration(new MockHttpServletRequest("GET", "/manage/health"))).isNotNull();
+                    assertThat(corsSource(context).getCorsConfiguration(new MockHttpServletRequest("GET", "/books")))
+                            .isNotNull();
+                });
+    }
+
+    @Test
+    void registersCorsFilterBeforeTheLimitsForRequestAndErrorDispatches() {
+        webRunner.run(context -> {
+            FilterRegistrationBean<?> registration = corsRegistration(context);
+            assertThat(registration.getFilter()).isInstanceOf(SynapseCorsFilter.class);
+            assertThat(registration.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 3);
+            assertThat(registration.determineDispatcherTypes())
+                    .isEqualTo(EnumSet.of(DispatcherType.REQUEST, DispatcherType.ERROR));
+        });
+    }
+
+    @Test
+    void corsFilterActivatesAndBacksOff() {
+        String app = "https://app.example.com";
+        // With bindings, next to Spring MVC's HandlerMappingIntrospector, which is a CorsConfigurationSource too.
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=" + app)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(HandlerMappingIntrospector.class);
+                    assertThat(corsFiltered(context, app).getHeader("Access-Control-Allow-Origin")).isEqualTo(app);
+                });
+        // Without bindings, so an environment file can still turn CORS on.
+        webRunner.withPropertyValues("synapse.api.rest.cors.allowed-origins=" + app).run(context -> {
+            assertThat(corsFiltered(context, app).getHeader("Access-Control-Allow-Origin")).isEqualTo(app);
+            MockHttpServletResponse rejected = corsFiltered(context, "https://evil.example");
+            assertThat(rejected.getStatus()).isEqualTo(403);
+            assertThat(rejected.getContentAsString()).contains("\"code\":\"CORS_REJECTED\"");
+        });
+        // It applies the bean named corsConfigurationSource, a user's own included.
+        CorsConfiguration userConfiguration = new CorsConfiguration();
+        userConfiguration.addAllowedOrigin("https://user.example.com");
+        CorsConfigurationSource user = request -> userConfiguration;
+        webRunner
+                .withBean("corsConfigurationSource", CorsConfigurationSource.class, () -> user)
+                .run(context -> assertThat(corsFiltered(context, "https://user.example.com")
+                        .getHeader("Access-Control-Allow-Origin")).isEqualTo("https://user.example.com"));
+        // A user's registration with the same name replaces it.
+        webRunner.withUserConfiguration(UserCorsFilter.class).run(context -> {
+            assertThat(corsRegistration(context).getFilter()).isInstanceOf(CharacterEncodingFilter.class);
+            assertThat(context).getBeans(FilterRegistrationBean.class).hasSize(6);
+        });
+        // Absent outside a servlet application.
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations
+                        .of(SynapseCoreAutoConfiguration.class, SynapseRestAutoConfiguration.class))
+                .run(context -> assertThat(context).doesNotHaveBean("synapseCorsFilter"));
     }
 
     @Test
@@ -881,6 +1087,10 @@ class SynapseRestAutoConfigurationTest {
                 "X-Correlation-Id");
     }
 
+    private static CorsConfigurationSource corsSource(AssertableWebApplicationContext context) {
+        return context.getBean("corsConfigurationSource", CorsConfigurationSource.class);
+    }
+
     private static FilterRegistrationBean<?> inboundRegistration(AssertableWebApplicationContext context) {
         return context.getBean("synapseInboundPropagationFilter", FilterRegistrationBean.class);
     }
@@ -899,6 +1109,21 @@ class SynapseRestAutoConfigurationTest {
 
     private static FilterRegistrationBean<?> clientErrorRegistration(AssertableWebApplicationContext context) {
         return context.getBean("synapseClientErrorFilter", FilterRegistrationBean.class);
+    }
+
+    private static FilterRegistrationBean<?> corsRegistration(AssertableWebApplicationContext context) {
+        return context.getBean("synapseCorsFilter", FilterRegistrationBean.class);
+    }
+
+    /** Sends {@code GET /books/1} from the origin through the CORS filter, to a chain that does nothing. */
+    private static MockHttpServletResponse corsFiltered(AssertableWebApplicationContext context, String origin)
+            throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/books/1");
+        request.addHeader("Origin", origin);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        Objects.requireNonNull(corsRegistration(context).getFilter()).doFilter(request, response, (in, out) -> {
+        });
+        return response;
     }
 
     private static HttpServletRequest filter(AssertableWebApplicationContext context, MockHttpServletRequest request)
@@ -1083,6 +1308,15 @@ class SynapseRestAutoConfigurationTest {
         @Override
         public VersionedBook execute(VersionedBookId input) {
             return new VersionedBook(input.id(), 3);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class UserCorsFilter {
+
+        @Bean
+        FilterRegistrationBean<CharacterEncodingFilter> synapseCorsFilter() {
+            return new FilterRegistrationBean<>(new CharacterEncodingFilter());
         }
     }
 

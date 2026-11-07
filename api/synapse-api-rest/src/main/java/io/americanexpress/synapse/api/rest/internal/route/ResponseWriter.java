@@ -15,7 +15,6 @@ package io.americanexpress.synapse.api.rest.internal.route;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -35,18 +34,14 @@ import org.springframework.util.ReflectionUtils;
 import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
 import tools.jackson.core.JsonGenerator;
-import tools.jackson.databind.BeanDescription;
-import tools.jackson.databind.JavaType;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.SerializationConfig;
 import tools.jackson.databind.SerializationContext;
-import tools.jackson.databind.introspect.BeanPropertyDefinition;
-import tools.jackson.databind.introspect.ClassIntrospector;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.module.SimpleModule;
 import tools.jackson.databind.node.ObjectNode;
 import tools.jackson.databind.ser.std.StdSerializer;
 
+import io.americanexpress.synapse.api.rest.internal.binding.JsonNames;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules.OutputHeader;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
@@ -394,7 +389,9 @@ public final class ResponseWriter {
         }
         JsonNode tree = mapper.valueToTree(output);
         if (tree instanceof ObjectNode object) {
-            Map<String, String> names = jsonNames.computeIfAbsent(output.getClass(), this::serializedNames);
+            Map<String, String> names = jsonNames
+                    .computeIfAbsent(output.getClass(),
+                            type -> JsonNames.serialized(mapper, type));
             for (String component : removed) {
                 String name = names.get(component);
                 if (name != null) {
@@ -403,20 +400,6 @@ public final class ResponseWriter {
             }
         }
         return tree;
-    }
-
-    /** Maps each component the mapper writes to its JSON property name (naming strategy and annotations applied). */
-    private Map<String, String> serializedNames(Class<?> type) {
-        SerializationConfig config = mapper.serializationConfig();
-        JavaType javaType = mapper.constructType(type);
-        ClassIntrospector introspector = config.classIntrospectorInstance();
-        BeanDescription description = introspector
-                .introspectForSerialization(javaType, introspector.introspectClassAnnotations(javaType));
-        Map<String, String> names = new HashMap<>();
-        for (BeanPropertyDefinition property : description.findProperties()) {
-            names.put(property.getInternalName(), property.getName());
-        }
-        return Map.copyOf(names);
     }
 
     private static @Nullable Object componentValue(ResolvedComponent component, Object record) {

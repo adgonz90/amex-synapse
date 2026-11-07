@@ -38,9 +38,10 @@ import io.americanexpress.synapse.core.paging.SortOrder;
 
 /**
  * Converts between the operation's raw cursors and the opaque tokens the client sees, at the edge. A token is bound to
- * its {@link CursorScope}: the operation name, the sort and the {@link InputDigest} of the request's filters. The scope
- * is the operation, not the route: a token issued by {@code GET /books} works on {@code POST /books/search} when both
- * routes call the same operation with the same filters and sort. The raw cursor never reaches the client, and a token
+ * its {@link CursorScope}: the operation name, the sort and the {@link InputDigest} of the request's filters and the
+ * route's version. The scope is the operation, not the route: a token issued by {@code GET /books} works on
+ * {@code POST /books/search} when both routes call the same operation, in the same version, with the same filters and
+ * sort; a token issued by {@code GET /v1/books} is rejected by {@code GET /v2/books}. The raw cursor never reaches the client, and a token
  * the codec rejects is the one cursor violation, whatever the reason. The codec logs the reason at DEBUG; this class
  * logs nothing about a token. Unwrapping rebuilds the input record with its canonical constructor, so a compact
  * constructor runs twice: on the bound input, and on the input with the raw cursor.

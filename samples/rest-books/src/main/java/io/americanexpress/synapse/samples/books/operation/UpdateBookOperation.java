@@ -17,7 +17,6 @@ import org.springframework.stereotype.Component;
 
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.samples.books.business.ReviseBook;
-import io.americanexpress.synapse.samples.books.business.model.BookRevision;
 import io.americanexpress.synapse.samples.books.model.Book;
 import io.americanexpress.synapse.samples.books.model.UpdateBookRequest;
 
@@ -38,8 +37,6 @@ public class UpdateBookOperation implements CommandOperation<UpdateBookRequest, 
 
     @Override
     public Book execute(UpdateBookRequest request) {
-        BookRevision revision = new BookRevision(request.id(), request.isbn(), request.title(), request.author(),
-                request.year(), request.version());
-        return BookMapping.toBook(reviseBook.execute(revision));
+        return BookMapping.toBook(reviseBook.execute(BookMapping.toRevision(request)));
     }
 }

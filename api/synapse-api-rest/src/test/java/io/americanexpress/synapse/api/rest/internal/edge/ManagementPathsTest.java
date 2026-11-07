@@ -18,6 +18,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.mock.web.MockHttpServletRequest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,6 +67,14 @@ class ManagementPathsTest {
     }
 
     @Test
+    void serverAdditionalPathsStayWithARootBasePath() {
+        // The endpoints are at the root and have no prefix, but a health group's server: path is still Actuator's.
+        assertThat(paths("management.endpoints.web.base-path", "/",
+                "management.endpoint.health.group.readiness.additional-path", "server:/healthz"))
+                .containsExactly("/healthz");
+    }
+
+    @Test
     void serverAdditionalPathsStayWhenManagementHasItsOwnPort() {
         assertThat(paths("management.server.port", "9000", "management.endpoint.health.group.readiness.additional-path",
                 "server:/health")).containsExactly("/health");
@@ -93,6 +102,110 @@ class ManagementPathsTest {
                 .excludedPrefixes(environment,
                         new FilteredClassLoader("org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier")))
                 .isEmpty();
+    }
+
+    @Test
+    void managementRequestNeedsTheRawAndTheMappedPathUnderOnePrefix() {
+        List<String> prefixes = List.of("/actuator", "/health");
+
+        assertThat(ManagementPaths.isManagementRequest(new MockHttpServletRequest("GET", "/actuator/health"), prefixes))
+                .isTrue();
+        assertThat(ManagementPaths.isManagementRequest(new MockHttpServletRequest("GET", "/health"), prefixes))
+                .isTrue();
+        assertThat(ManagementPaths.isManagementRequest(new MockHttpServletRequest("GET", "/healthy"), prefixes))
+                .isFalse();
+        assertThat(ManagementPaths.isManagementRequest(new MockHttpServletRequest("GET", "/actuator"), List.of()))
+                .isFalse();
+        MockHttpServletRequest traversal = new MockHttpServletRequest("GET", "/app/files/../actuator/health");
+        traversal.setContextPath("/app");
+        traversal.setServletPath("/actuator/health");
+        assertThat(ManagementPaths.isManagementRequest(traversal, prefixes)).isFalse();
+    }
+
+    @Test
+    void eitherPathUnderAPrefixIsEnough() {
+        List<String> prefixes = List.of("/actuator");
+
+        assertThat(ManagementPaths.isUnderEitherPath(new MockHttpServletRequest("GET", "/actuator/env"), List.of()))
+                .isFalse();
+        for (String uri : List
+                .of("/actuator", "/actuator/", "/files/../actuator/health", "/%61ctuator/env",
+                        "/actuator;x/env", "/actuator;jsessionid=1", "//actuator/env", "/./actuator/env",
+                        "/../actuator/env",
+                        "/files/%2e%2e/actuator/env", "/app/actuator/env",
+                        // Spring MVC matches these raw segments against /actuator/health/{*path}.
+                        "/actuator/../books/1", "/actuator/health/../..", "/actuator/health/%2e%2e/%2e%2e",
+                        "/actuator/health/x/../../../books", "/actuator/health/..;/..;/books",
+                        "/app/actuator/health/../..", "/app/actuator/health/%2e%2e/%2e%2e",
+                        "/app/actuator/health/x/../../../books", "/app/actuator/health/..;/..;/books")) {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", uri);
+            if (uri.startsWith("/app")) {
+                request.setContextPath("/app");
+            }
+            assertThat(ManagementPaths.isUnderEitherPath(request, prefixes)).as(uri).isTrue();
+        }
+        // As Tomcat maps them: the mapped path and the normalized raw URI are both outside the prefix.
+        MockHttpServletRequest escaped = new MockHttpServletRequest("GET", "/app/actuator/health/x/../../../books");
+        escaped.setContextPath("/app");
+        escaped.setServletPath("/books");
+        assertThat(ManagementPaths.isUnderEitherPath(escaped, prefixes)).isTrue();
+        for (String uri : List.of("/", "/books/1", "/actuatorx", "/files/actuator/env", "/books;v=1/7")) {
+            assertThat(ManagementPaths.isUnderEitherPath(new MockHttpServletRequest("GET", uri), prefixes))
+                    .as(uri)
+                    .isFalse();
+        }
+        // The mapped path alone, the raw URI alone.
+        MockHttpServletRequest mapped = new MockHttpServletRequest("GET", "/books/1");
+        mapped.setServletPath("/actuator");
+        mapped.setPathInfo("/env");
+        assertThat(ManagementPaths.isUnderEitherPath(mapped, prefixes)).isTrue();
+        MockHttpServletRequest raw = new MockHttpServletRequest("GET", "/files/../actuator/env");
+        raw.setServletPath("/books/1");
+        assertThat(ManagementPaths.isUnderEitherPath(raw, prefixes)).isTrue();
+        // An invalid escape is matched undecoded.
+        assertThat(ManagementPaths.isUnderEitherPath(new MockHttpServletRequest("GET", "/actuator/%zz"), prefixes))
+                .isTrue();
+        assertThat(ManagementPaths.isUnderEitherPath(new MockHttpServletRequest("GET", "/books/%zz"), prefixes))
+                .isFalse();
+    }
+
+    @Test
+    void rawPathUnderAPrefixInAnyViewIsEnough() {
+        List<String> prefixes = List.of("/actuator");
+
+        for (String raw : List
+                .of("/actuator", "/actuator/health", "/files/../actuator/env", "/actuator;x=1/env", "/%61ctuator/env",
+                        "//actuator/env", "/actuator/health/../..")) {
+            assertThat(ManagementPaths.isUnderEitherPath(raw, prefixes)).as(raw).isTrue();
+        }
+        for (String raw : List.of("/books/1", "/actuatorx", "/files/actuator/health", "/books/%zz", "/")) {
+            assertThat(ManagementPaths.isUnderEitherPath(raw, prefixes)).as(raw).isFalse();
+        }
+        assertThat(ManagementPaths.isUnderEitherPath("/actuator/health", List.of())).isFalse();
+    }
+
+    @Test
+    void originalUriIsCanonicalizedWithTheContextPath() {
+        List<String> prefixes = List.of("/actuator");
+
+        // Tomcat routes each of these to the /ctx context, and its error dispatch reports the context path as /ctx.
+        for (String original : List
+                .of("/ctx/actuator/env", "/%63tx/actuator/env", "/c%74x/actuator/env", "//ctx/actuator/env",
+                        "/foo/../ctx/actuator/env", "/ctx;x=1/actuator/env", "/ctx/./actuator/env",
+                        "/ctx//actuator/env", "/ctx/%61ctuator/env", "/ctx/books/../actuator/env", "/ctx/actuator")) {
+            assertThat(ManagementPaths.isOriginalUnderEitherPath(original, "/ctx", prefixes)).as(original).isTrue();
+        }
+        for (String original : List.of("/ctx/books/1", "/ctxfoo/actuator/env", "/ctx/actuatorx", "/ctx")) {
+            assertThat(ManagementPaths.isOriginalUnderEitherPath(original, "/ctx", prefixes)).as(original).isFalse();
+        }
+        // A context path spelled like the original is canonicalized too.
+        assertThat(ManagementPaths.isOriginalUnderEitherPath("/c%74x/actuator/env", "/%63tx", prefixes)).isTrue();
+        // At the root, the original is a path within the application.
+        assertThat(ManagementPaths.isOriginalUnderEitherPath("/files/../actuator/env", "", prefixes)).isTrue();
+        assertThat(ManagementPaths.isOriginalUnderEitherPath("/books/1", "", prefixes)).isFalse();
+        // Failing closed: a view under a prefix counts with or without the context path.
+        assertThat(ManagementPaths.isOriginalUnderEitherPath("/actuator/env", "/ctx", prefixes)).isTrue();
+        assertThat(ManagementPaths.isOriginalUnderEitherPath("/ctx/actuator/env", "/ctx", List.of())).isFalse();
     }
 
     private static List<String> paths(String... properties) {

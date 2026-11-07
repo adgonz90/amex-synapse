@@ -52,6 +52,9 @@ import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.accept.InvalidApiVersionException;
+import org.springframework.web.accept.MissingApiVersionException;
+import org.springframework.web.accept.NotAcceptableApiVersionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingPathVariableException;
 import org.springframework.web.bind.MissingRequestCookieException;
@@ -459,6 +462,27 @@ class SynapseRestExceptionResolverTest {
     void otherServiceUnavailableResponseIsUnavailable(CapturedOutput output) {
         assertClientError(new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "secret-text"), 503,
                 "UNAVAILABLE", output);
+    }
+
+    @Test
+    void apiVersionExceptionsHaveTheirCodes(CapturedOutput output) {
+        record Case(Exception ex, String code) {
+        }
+        List<Case> cases = List
+                .of(new Case(new MissingApiVersionException(), "MISSING_API_VERSION"),
+                        new Case(new InvalidApiVersionException("9"), "UNSUPPORTED_API_VERSION"),
+                        new Case(new NotAcceptableApiVersionException("9"), "UNSUPPORTED_API_VERSION"));
+        for (Case c : cases) {
+            MockHttpServletResponse each = new MockHttpServletResponse();
+            ModelAndView mav = resolver.resolveException(request, each, null, c.ex());
+            assertThat(mav).as(c.code()).isNotNull();
+            assertThat(each.getStatus()).as(c.code()).isEqualTo(400);
+            JsonNode body = MAPPER.readTree(each.getContentAsByteArray());
+            assertThat(body.get("code").asString()).as(c.ex().toString()).isEqualTo(c.code());
+            assertThat(body.toString()).doesNotContain("Exception").doesNotContain("'9'");
+        }
+        // Client errors: logged at DEBUG, never as an error.
+        assertThat(errorLines(output)).isZero();
     }
 
     @Test

@@ -37,14 +37,16 @@ import io.americanexpress.synapse.core.error.SynapseErrors;
 /**
  * Caps the requests handled at the same time ({@code synapse.api.rest.max-concurrent-requests}). A request that finds
  * the limit reached is answered {@code UNAVAILABLE} (503) with {@code Retry-After: 1}, and nothing behind this filter
- * runs. It sits inside the context filter, so the 503 carries the request's correlation id.
+ * runs. It sits inside the context filter and the CORS filter, so the 503 carries the request's correlation id and,
+ * for an allowed origin, the CORS headers.
  *
  * <p>
  * A request holds its permit until the chain returns or throws, or, when the handler started async processing, until
  * the async request completes, fails or times out. The permit is released once. Requests to the management paths
  * ({@link ManagementPaths}) are never counted, so health probes are answered under full load; a request counts as one
- * only when both the path the container mapped and the raw request URI are under the management path. The semaphore
- * is not fair: a request either gets a permit at once or is rejected, and never waits.
+ * only when both the path the container mapped and the raw request URI are under the management path
+ * ({@link ManagementPaths#isManagementRequest}). The semaphore is not fair: a request either gets a permit at once or
+ * is rejected, and never waits.
  */
 public final class ConcurrencyLimitFilter extends OncePerRequestFilter implements Ordered {
 
@@ -73,13 +75,13 @@ public final class ConcurrencyLimitFilter extends OncePerRequestFilter implement
 
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 3;
+        return Ordered.HIGHEST_PRECEDENCE + 4;
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (isExcluded(request)) {
+        if (ManagementPaths.isManagementRequest(request, excludedPrefixes)) {
             chain.doFilter(request, response);
             return;
         }
@@ -112,44 +114,6 @@ public final class ConcurrencyLimitFilter extends OncePerRequestFilter implement
             LOG.debug("Released the permit of {} {}: {}", request.getMethod(), request.getRequestURI(), e.toString());
             permit.release();
         }
-    }
-
-    private boolean isExcluded(HttpServletRequest request) {
-        if (excludedPrefixes.isEmpty()) {
-            return false;
-        }
-        // Both the path the container mapped and the raw URI must be under the same prefix: a raw URI whose dot
-        // segments only normalize to a management path, such as /files/../actuator/health, is counted.
-        String raw = rawPathWithinApplication(request);
-        String mapped = mappedPath(request, raw);
-        for (String prefix : excludedPrefixes) {
-            if (isUnder(mapped, prefix) && isUnder(raw, prefix)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isUnder(String path, String prefix) {
-        return path.startsWith(prefix) && (path.length() == prefix.length() || path.charAt(prefix.length()) == '/');
-    }
-
-    /**
-     * The decoded, normalized path the container mapped: servlet path plus path info. When the container gives neither
-     * (no servlet mapping yet), the raw path.
-     */
-    private static String mappedPath(HttpServletRequest request, String raw) {
-        String servletPath = request.getServletPath();
-        String pathInfo = request.getPathInfo();
-        String mapped = pathInfo == null ? servletPath : servletPath + pathInfo;
-        return mapped.isEmpty() ? raw : mapped;
-    }
-
-    /** The request URI as the caller sent it, neither decoded nor normalized, without the context path. */
-    private static String rawPathWithinApplication(HttpServletRequest request) {
-        String uri = request.getRequestURI();
-        String contextPath = request.getContextPath();
-        return uri.startsWith(contextPath) ? uri.substring(contextPath.length()) : uri;
     }
 
     /** One request's permit, released exactly once, also from the container's async listener callbacks. */

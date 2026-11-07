@@ -97,7 +97,7 @@ class ClientErrorFilterTest {
 
     @Test
     void runsInsideTheOtherEdgeFiltersAndOutsideBootsFormContentFilter() {
-        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 5);
+        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 6);
         // Boot's FormContentFilter is ordered at -9900.
         assertThat(filter.getOrder()).isLessThan(-9900);
     }

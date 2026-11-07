@@ -14,12 +14,15 @@
 package io.americanexpress.synapse.api.rest.autoconfigure;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.jspecify.annotations.Nullable;
@@ -40,11 +43,13 @@ import org.springframework.util.unit.DataSize;
  * @param errors Error status overrides for every operation.
  * @param paging Paging settings.
  * @param operations Settings per operation, keyed by operation name.
+ * @param cors Cross-origin resource sharing (CORS) settings of the REST routes.
  */
 @ConfigurationProperties("synapse.api.rest")
 public record SynapseRestProperties(@DefaultValue Context context, @DefaultValue Deadline deadline,
         @DefaultValue("200") int maxConcurrentRequests, @DefaultValue("1MB") DataSize maxRequestSize,
-        @DefaultValue Errors errors, @DefaultValue Paging paging, Map<String, OperationSettings> operations) {
+        @DefaultValue Errors errors, @DefaultValue Paging paging, Map<String, OperationSettings> operations,
+        @DefaultValue Cors cors) {
 
     /**
      * Validates the properties.
@@ -225,5 +230,97 @@ public record SynapseRestProperties(@DefaultValue Context context, @DefaultValue
      * @param errors Error status overrides for this operation; they win over the plugin-wide ones.
      */
     public record OperationSettings(@DefaultValue Errors errors) {
+    }
+
+    /**
+     * Cross-origin resource sharing (CORS) settings of the REST routes. Actuator's paths are left to Spring Boot's
+     * management.endpoints.web.cors settings.
+     *
+     * @param allowedOrigins Origins whose browser pages may call the API, each * or http(s)://host[:port] with a port
+     *     from 1 to 65535, for example https://app.example.com. Without any, CORS is off and browsers refuse
+     *     cross-origin calls. * allows any website and is logged as a warning at startup. Origins are read back in
+     *     lower case.
+     * @param allowedMethods HTTP methods allowed on cross-origin requests: standard method names, or *. Must not be
+     *     empty.
+     * @param allowedHeaders Request headers allowed on cross-origin requests, or * for any.
+     * @param exposedHeaders Response headers, besides the ones Synapse always exposes (the correlation header, ETag,
+     *     Link, Location, Retry-After, Deprecation and Sunset), that browser pages may read, or * for any while
+     *     credentials are not allowed.
+     * @param allowCredentials Whether browsers send cookies and credentials on cross-origin requests. Can't be true
+     *     while allowed-origins or exposed-headers contains *.
+     * @param maxAge How long browsers may cache a pre-flight response. Must not be negative.
+     */
+    public record Cors(List<String> allowedOrigins,
+            @DefaultValue({
+                    "GET", "HEAD", "POST", "PUT", "DELETE"}) List<String> allowedMethods,
+            @DefaultValue("*") List<String> allowedHeaders, List<String> exposedHeaders,
+            @DefaultValue("false") boolean allowCredentials, @DefaultValue("30m") Duration maxAge) {
+
+        /** Any origin, method or header. */
+        private static final String ANY = "*";
+
+        /** {@code http(s)://host[:port]}: a host name or bracketed IPv6 address, no user info, path or query. */
+        private static final Pattern ORIGIN = Pattern
+                .compile("(?i)https?://(\\[[0-9a-f:.]+\\]|[^/?#*\\s:@\\[\\]]+)(:\\d{1,5})?");
+
+        private static final Set<String> STANDARD_METHODS = Set
+                .of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE");
+
+        /**
+         * Normalizes and validates the properties: origins are lower-cased.
+         *
+         * @throws IllegalArgumentException when an origin, its port or a method is invalid, there is no method, the
+         *     maximum age is negative, or credentials are allowed for any origin or with any exposed header
+         */
+        public Cors {
+            allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
+            allowedHeaders = allowedHeaders == null ? List.of() : List.copyOf(allowedHeaders);
+            exposedHeaders = exposedHeaders == null ? List.of() : List.copyOf(exposedHeaders);
+            List<String> origins = new ArrayList<>();
+            for (String origin : allowedOrigins == null ? List.<String>of() : allowedOrigins) {
+                Matcher matcher = ORIGIN.matcher(origin);
+                if (!ANY.equals(origin) && !matcher.matches()) {
+                    throw new IllegalArgumentException("synapse.api.rest.cors.allowed-origins must each be * or"
+                            + " http(s)://host[:port], without a path, query, trailing slash or other *, but one was '"
+                            + origin + "'");
+                }
+                String port = ANY.equals(origin) ? null : matcher.group(2);
+                if (port != null && !isPort(Integer.parseInt(port.substring(1)))) {
+                    throw new IllegalArgumentException("synapse.api.rest.cors.allowed-origins must each have a port"
+                            + " from 1 to 65535, but one was '" + origin + "'");
+                }
+                // Spring compares origins ignoring case; lower-casing only normalizes what the settings read back.
+                origins.add(origin.toLowerCase(Locale.ROOT));
+            }
+            allowedOrigins = List.copyOf(origins);
+            if (allowedMethods.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "synapse.api.rest.cors.allowed-methods must list at least one method (or *) but was empty");
+            }
+            for (String method : allowedMethods) {
+                if (!ANY.equals(method) && !STANDARD_METHODS.contains(method)) {
+                    throw new IllegalArgumentException("synapse.api.rest.cors.allowed-methods must each be * or one of"
+                            + " GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS and TRACE, but one was '" + method + "'");
+                }
+            }
+            if (maxAge.isNegative()) {
+                throw new IllegalArgumentException(
+                        "synapse.api.rest.cors.max-age must not be negative but was " + maxAge);
+            }
+            if (allowCredentials && allowedOrigins.contains(ANY)) {
+                throw new IllegalArgumentException("synapse.api.rest.cors.allow-credentials can't be true while"
+                        + " synapse.api.rest.cors.allowed-origins contains *: browsers refuse credentials for any"
+                        + " origin. List the exact origins.");
+            }
+            if (allowCredentials && exposedHeaders.contains(ANY)) {
+                throw new IllegalArgumentException("synapse.api.rest.cors.allow-credentials can't be true while"
+                        + " synapse.api.rest.cors.exposed-headers contains *: browsers read it as a header named * on"
+                        + " a request with credentials, not as any header. List the exact headers.");
+            }
+        }
+
+        private static boolean isPort(int port) {
+            return port >= 1 && port <= 65_535;
+        }
     }
 }

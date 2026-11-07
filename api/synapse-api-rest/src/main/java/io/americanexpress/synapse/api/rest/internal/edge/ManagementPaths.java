@@ -13,15 +13,21 @@
  */
 package io.americanexpress.synapse.api.rest.internal.edge;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
+import jakarta.servlet.http.HttpServletRequest;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.core.env.Environment;
 import org.springframework.util.ClassUtils;
+import org.springframework.web.util.UriUtils;
 
 /**
  * The paths at which the application's own server serves Actuator, so that the edge limits leave them alone. Without
@@ -48,6 +54,11 @@ public final class ManagementPaths {
     private static final String SERVER_NAMESPACE = "server:";
 
     private static final int DEFAULT_SERVER_PORT = 8080;
+
+    /** A {@code ;} path parameter of a segment, up to the next {@code /}. */
+    private static final Pattern PATH_PARAMETERS = Pattern.compile(";[^/]*");
+
+    private static final Pattern REPEATED_SLASHES = Pattern.compile("/{2,}");
 
     private ManagementPaths() {
     }
@@ -96,6 +107,199 @@ public final class ManagementPaths {
             }
         }
         return List.copyOf(prefixes);
+    }
+
+    /**
+     * Tells whether a request is to one of the management paths. Both the path the container mapped and the raw request
+     * URI must be under the same prefix: a raw URI whose dot segments only normalize to a management path, such as
+     * {@code /files/../actuator/health}, is not a management request.
+     *
+     * @param request the request
+     * @param prefixes the management path prefixes within the application ({@link #excludedPrefixes})
+     * @return whether the request is under one of the prefixes; {@code false} when there are none
+     */
+    public static boolean isManagementRequest(HttpServletRequest request, List<String> prefixes) {
+        if (prefixes.isEmpty()) {
+            return false;
+        }
+        String raw = rawPathWithinApplication(request);
+        String mapped = mappedPath(request, raw);
+        for (String prefix : prefixes) {
+            if (isUnder(mapped, prefix) && isUnder(raw, prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Tells whether a request may reach a management path, failing closed: it does when any of three views of its path
+     * is under a prefix.
+     * <ul>
+     * <li>The path the container mapped: servlet path plus path info, with dot segments and repeated {@code /}
+     * resolved.</li>
+     * <li>The raw request URI as Spring MVC matches it: without the context path, with its {@code ;} path parameters
+     * removed, percent-decoded (left as sent when an escape is invalid) and repeated {@code /} collapsed, but with its
+     * dot segments kept. Spring matches these segments as they are, so {@code /actuator/health/../..} reaches
+     * {@code /actuator/health/{*path}} although the container maps it to {@code /}.</li>
+     * <li>That raw path with its dot segments resolved, so {@code /files/../actuator/env} is one too.</li>
+     * </ul>
+     * For settings that must not reach a management response, such as CORS; {@link #isManagementRequest} is the strict
+     * match for exemptions.
+     *
+     * @param request the request
+     * @param prefixes the management path prefixes within the application ({@link #excludedPrefixes})
+     * @return whether any view of the path is under one of the prefixes; {@code false} when there are none
+     */
+    public static boolean isUnderEitherPath(HttpServletRequest request, List<String> prefixes) {
+        if (prefixes.isEmpty()) {
+            return false;
+        }
+        String servletPath = request.getServletPath();
+        String pathInfo = request.getPathInfo();
+        String mapped = normalize(pathInfo == null ? servletPath : servletPath + pathInfo);
+        return isUnderAny(mapped, prefixes) || isUnderEitherPath(rawPathWithinApplication(request), prefixes);
+    }
+
+    /**
+     * Tells whether a raw path within the application may reach a management path, failing closed, when there is no
+     * request for it, such as the original URI the container reports on an error dispatch. It applies the views of
+     * {@link #isUnderEitherPath(HttpServletRequest, List)}: the path as Spring MVC matches it ({@code ;} path
+     * parameters removed, percent-decoded, repeated {@code /} collapsed, dot segments kept), and that path with its
+     * dot segments resolved, which also stands in for the path the container would map.
+     *
+     * @param rawPath the path as the caller sent it, without the context path
+     * @param prefixes the management path prefixes within the application ({@link #excludedPrefixes})
+     * @return whether any view of the path is under one of the prefixes; {@code false} when there are none
+     */
+    public static boolean isUnderEitherPath(String rawPath, List<String> prefixes) {
+        if (prefixes.isEmpty()) {
+            return false;
+        }
+        String springRaw = springView(rawPath);
+        return isUnderAny(springRaw, prefixes) || isUnderAny(normalize(springRaw), prefixes);
+    }
+
+    /**
+     * Tells whether the original URI the container reports on an error dispatch
+     * ({@code jakarta.servlet.error.request_uri}) may reach a management path, failing closed. On the error dispatch
+     * Tomcat gives the context path canonically ({@code /ctx}), while the original URI is as the caller sent it, and
+     * Tomcat routes spellings such as {@code /%63tx/actuator/env}, {@code //ctx/actuator/env},
+     * {@code /foo/../ctx/actuator/env} and {@code /ctx;x=1/actuator/env} to the context. So both are canonicalized into
+     * the views of {@link #isUnderEitherPath(String, List)} (the path as Spring MVC matches it, and that path with its
+     * dot segments resolved), and the context path is removed from a view only on a segment boundary. The URI may reach
+     * a management path when any view, with or without the context path removed, is under a prefix, or under the
+     * context path followed by a prefix.
+     *
+     * @param originalUri the original request URI, with the context path, as the caller sent it
+     * @param contextPath the context path the container gives on the error dispatch ({@code ""} for the root)
+     * @param prefixes the management path prefixes within the application ({@link #excludedPrefixes})
+     * @return whether any view of the URI is under one of the prefixes; {@code false} when there are none
+     */
+    public static boolean isOriginalUnderEitherPath(String originalUri, String contextPath, List<String> prefixes) {
+        if (prefixes.isEmpty()) {
+            return false;
+        }
+        String spring = springView(originalUri);
+        List<String> contexts = contextViews(contextPath);
+        for (String view : List.of(spring, normalize(spring))) {
+            if (isUnderAny(view, prefixes)) {
+                return true;
+            }
+            for (String context : contexts) {
+                String withinApplication = withoutContext(view, context);
+                if (withinApplication != null && isUnderAny(withinApplication, prefixes)) {
+                    return true;
+                }
+                for (String prefix : prefixes) {
+                    if (isUnder(view, context + prefix)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The path as Spring MVC matches it: {@code ;} parameters removed, percent-decoded, repeated {@code /} collapsed. */
+    private static String springView(String rawPath) {
+        return REPEATED_SLASHES.matcher(decode(PATH_PARAMETERS.matcher(rawPath).replaceAll(""))).replaceAll("/");
+    }
+
+    /** The canonical views of a context path, without the root, which has nothing to remove. */
+    private static List<String> contextViews(String contextPath) {
+        String spring = springView(contextPath);
+        List<String> views = new ArrayList<>();
+        for (String view : List.of(spring, normalize(spring))) {
+            if (!view.isEmpty() && !"/".equals(view) && !views.contains(view)) {
+                views.add(view);
+            }
+        }
+        return views;
+    }
+
+    /** The view without the context path when it starts with it on a segment boundary; otherwise {@code null}. */
+    private static @Nullable String withoutContext(String view, String context) {
+        if (view.equals(context)) {
+            return "/";
+        }
+        return view.startsWith(context + "/") ? view.substring(context.length()) : null;
+    }
+
+    private static boolean isUnderAny(String path, List<String> prefixes) {
+        for (String prefix : prefixes) {
+            if (isUnder(path, prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String decode(String path) {
+        try {
+            return UriUtils.decode(path, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            // An invalid escape: the container rejects or keeps it, so match the path as sent.
+            return path;
+        }
+    }
+
+    /** The path with {@code .} and {@code ..} segments resolved and empty segments dropped; {@code /} for the root. */
+    private static String normalize(String path) {
+        Deque<String> segments = new ArrayDeque<>();
+        for (String segment : path.split("/")) {
+            if (segment.isEmpty() || ".".equals(segment)) {
+                continue;
+            }
+            if ("..".equals(segment)) {
+                segments.pollLast();
+            } else {
+                segments.addLast(segment);
+            }
+        }
+        return "/" + String.join("/", segments);
+    }
+
+    private static boolean isUnder(String path, String prefix) {
+        return path.startsWith(prefix) && (path.length() == prefix.length() || path.charAt(prefix.length()) == '/');
+    }
+
+    /**
+     * The decoded, normalized path the container mapped: servlet path plus path info. When the container gives neither
+     * (no servlet mapping yet), the raw path.
+     */
+    private static String mappedPath(HttpServletRequest request, String raw) {
+        String servletPath = request.getServletPath();
+        String pathInfo = request.getPathInfo();
+        String mapped = pathInfo == null ? servletPath : servletPath + pathInfo;
+        return mapped.isEmpty() ? raw : mapped;
+    }
+
+    /** The request URI as the caller sent it, neither decoded nor normalized, without the context path. */
+    private static String rawPathWithinApplication(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        return uri.startsWith(contextPath) ? uri.substring(contextPath.length()) : uri;
     }
 
     /** Boot's {@code ManagementPortType}: the endpoints share the server's port. */

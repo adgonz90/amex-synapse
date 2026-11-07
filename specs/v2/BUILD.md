@@ -189,8 +189,8 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   - a jar or directory that ships `META-INF/synapse/` also ships a root `application.*`;
   - a module ships the same file as both `.yaml` and `.properties`.
 - **Safe in every environment.** Every safety setting defaults to its safe value, and an environment file turns a
-  convenience on (for example `synapse.errors.include-detail: true` in `application-local.yaml`). Synapse never
-  branches on the environment's name.
+  convenience on (for example `synapse.errors.include-detail: true` or `springdoc.api-docs.enabled: true` in
+  `application-local.yaml`). Synapse never branches on the environment's name.
 - **Startup report.** After startup, Synapse logs one INFO block. The first line names the environment and where it was
   set (`Synapse environment: e2 (spring.profiles.active=${ENV}, application.yaml)`). Then it lists every property
   source, highest priority first, by name and origin: command line, environment variables, each config file with the
@@ -309,11 +309,12 @@ Business → `model` is allowed here and narrowed to `model.event` by the *Forbi
 | `PublisherOperation<E>` | `void publish(E event)` blocks until the broker acknowledges; `CompletableFuture<Void> publishAsync(E event)`. Broker-neutral. |
 | `RequestContext` | Read-only view: correlation id, principal (verified identity, if any), locale, deadline (optional), string attributes. `RequestContext.current()`. Never contains servlet, gRPC or GraphQL types. |
 | `PageQuery`, `PageResult<T>` | `PageQuery`: cursor **or** offset, size, sort. `PageResult<T>`: items, next cursor, optional total. One-call conversion from Spring Data `Page`/`Slice`. |
+| `VersionCondition<V>` | The version a conditional write depends on, protocol-neutral and sealed: `AnyVersion` (any current version; REST `If-Match: *`) or `Version(v)` (exactly `v`; one entity tag). A `null` component means the request named no version. `matches(current)` compares. On a write route, every input component bound from `If-Match` or `If-None-Match` is a `VersionCondition<V>` (startup check), so `*` and an absent header never look alike. Its nullability is the operation's contract on every protocol: `@Nullable` makes the condition optional, and a non-null component makes it required (a request without it is `PRECONDITION_REQUIRED` before the operation runs). |
 | `BinaryContent` | Protocol-neutral file/stream content: stream supplier, content type, filename, size (see *REST*). |
 | `ErrorDetails` | `String code(); String messageTemplate(); ErrorCategory category();` implemented by team enums. |
 | `ErrorCategory` | `INVALID_INPUT, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, RATE_LIMITED, UNAVAILABLE, TIMEOUT, INTERNAL`. Protocol-neutral, domain-only. |
 | `SynapseException` | `SynapseException(ErrorDetails, Object... args)` and `(ErrorDetails, Throwable, Object... args)`. Message formatted from the template with `MessageFormat`; a `MessageSource` entry keyed by `code()` overrides it. |
-| `SynapseErrors` | The framework's own `ErrorDetails` enum: `MALFORMED_REQUEST`, `VALIDATION_FAILED` (`INVALID_INPUT`), `NOT_FOUND`, `UNAUTHENTICATED`, `FORBIDDEN`, `CONFLICT`, `STALE_VERSION` (`CONFLICT`: a version check or optimistic lock failed), `PRECONDITION_FAILED`, `RATE_LIMITED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED` (`TIMEOUT`), `INTERNAL`, each with its matching category unless stated. |
+| `SynapseErrors` | The framework's own `ErrorDetails` enum: `MALFORMED_REQUEST`, `VALIDATION_FAILED` (`INVALID_INPUT`), `NOT_FOUND`, `UNAUTHENTICATED`, `FORBIDDEN`, `CONFLICT`, `STALE_VERSION` (`CONFLICT`: a version check or optimistic lock failed), `PRECONDITION_FAILED`, `PRECONDITION_REQUIRED` (`PRECONDITION_FAILED`: the input requires a precondition the request lacks; REST 428), `RATE_LIMITED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED` (`TIMEOUT`), `INTERNAL`, each with its matching category unless stated. |
 | `ExceptionTranslator` | SPI: turns a non-Synapse exception into a `SynapseException`. Modules contribute translators (data access, Spring Security, clients, Kafka); core has no data or security dependency. |
 | `@OperationName`, `@OperationGroup` | Operation classes are named `<UseCase>Operation` (inputs `<UseCase>Request`, outputs nouns such as `Book`). The operation name defaults to the class name without the `Operation` suffix, in kebab-case (`GetBookOperation` → `get-book`); `@OperationName("…")` overrides it; `@OperationGroup("books")` groups operations into a gRPC service/REST resource and drives docs. |
 | `@Incubating` | Marks evolving public API (see *API stability*). |
@@ -499,8 +500,12 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   the `correlationId` member is the lookup key. Full detail and cause are logged server-side.
 - **Protocol-only failures** never reach an operation; the plugin answers them in the same error shape with fixed
   codes: REST `ROUTE_NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405 (+ `Allow`), `NOT_ACCEPTABLE` 406,
-  `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400, `PRECONDITION_FAILED` 412 (a weak `If-Match`, or an `If-Match`/`If-None-Match` that the route doesn't bind), `PRECONDITION_REQUIRED` 428 (`.requireIfMatch()` without `If-Match`); gRPC `UNIMPLEMENTED` and
+  `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `MALFORMED_REQUEST` 400, `PRECONDITION_FAILED` 412 (a weak `If-Match`, or an `If-Match`/`If-None-Match` that the route doesn't bind), `CORS_REJECTED` 403 (a cross-origin request the CORS settings don't allow), `MISSING_API_VERSION` 400 and `UNSUPPORTED_API_VERSION` 400 (when Boot's `spring.mvc.apiversion.*` settings make Spring reject a request's version); gRPC `UNIMPLEMENTED` and
   `RESOURCE_EXHAUSTED` (message too large).
+- **Required preconditions** are not protocol-only: a non-null `VersionCondition` component makes the precondition
+  part of the operation's input contract, and every plugin answers a request without it with core's
+  `PRECONDITION_REQUIRED` (category `PRECONDITION_FAILED`) before the operation runs. REST maps it to 428 (RFC 6585
+  §3).
 
 ### 6.2 REST (`synapse-api-rest`)
 **Bindings.** A `RestBindings` bean compiled to Spring MVC functional routes:
@@ -579,16 +584,22 @@ raw cursor never reaches the client.
 
   On unsafe methods the operation's conditional write enforces the precondition. `If-Match` (and `If-None-Match`)
   bound to a component are parsed as entity tags (`.header("If-Match", UpdateBookRequest::version)`):
-  - one strong tag is unquoted and converted;
-  - `*` binds `null` (the component must be `@Nullable`);
+  - on a write route the component is a `VersionCondition<V>`: one strong tag binds `Version(v)`, its
+    unquoted value converted to `V`; `*` binds `AnyVersion`; no header binds `null` when the component is
+    `@Nullable`, and is 428 `PRECONDITION_REQUIRED` when it isn't (see below). A component of any other type
+    bound from either header on a write route fails startup, and a `VersionCondition` binds from nothing else (except
+    `.context`/`.from`). On `GET`/`HEAD` a plain `@Nullable` component still works (`*` and no header bind `null`);
   - a list or an unquoted value is `INVALID_INPUT`;
   - a weak `If-Match` is 412 without calling the operation.
 
   A `STALE_VERSION` failure is 412 `PRECONDITION_FAILED` when the request carried a bound `If-Match`, and 409
   otherwise. Other failures map as usual, and a missing resource is 404. An `If-Match` or `If-None-Match` on an unsafe
   route that doesn't bind it is 412: the precondition can't be verified. `If-Unmodified-Since` and
-  `If-Modified-Since` are ignored (Synapse emits no `Last-Modified`). `.requireIfMatch()` answers 428
-  `PRECONDITION_REQUIRED` when `If-Match` is absent (`*` counts as present).
+  `If-Modified-Since` are ignored (Synapse emits no `Last-Modified`). Whether a precondition is required is the
+  operation's input contract, not a route setting: a write whose `If-Match` or `If-None-Match` component is a
+  non-null `VersionCondition` answers a request without that header 428 `PRECONDITION_REQUIRED`, with a violation per
+  missing header, before the operation runs (`*` counts as present). It comes after binding's 400s and the 412s
+  above. A `@Nullable` component keeps the header optional. On `GET`/`HEAD` the component must be `@Nullable`.
 - Errors are RFC 9457 `application/problem+json` with extension members `code`, `correlationId` and `violations[]`
   (each `{field, message}`). With `synapse.errors.type-base-uri` unset, `type` is `about:blank` and `title` is the HTTP
   status phrase; when set, `type` is the base URI plus the code and `title` comes from the category. `status` always
@@ -598,15 +609,26 @@ raw cursor never reaches the client.
 - No generic `{data, meta}` wrapper: a single resource is the body itself, and a `PageResult` is the page object above.
   The correlation id, the paging `Link` and `ETag` travel in headers.
 
-**API versioning:** off unless a binding uses `.version("2")`. Then Synapse enables Spring Framework 7's API versioning
-with a path-segment strategy and a predicate so that only versioned routes are parsed; versioned routes require a
-version, unversioned routes keep working. All of it is tunable with Boot's `spring.mvc.apiversion.*` properties.
-Deprecated versions emit Spring's deprecation/sunset headers.
+**API versioning:** off unless a binding uses `.version("2")`. A versioned route is served with `v` and its version as
+the first path segment: `.get("/books/{id}", getBook).version("2")` serves `/v2/books/{id}`. A version is
+`major[.minor[.patch]]`. Synapse then enables Spring Framework 7's API versioning with a path-segment resolver and a
+predicate so that only the paths of versioned routes are parsed, and makes the version optional (Spring requires one by
+default), so unversioned routes keep working; a versioned route carries its version in its path. A version that no route
+declares is 404 `ROUTE_NOT_FOUND`. The rest is tunable with Boot's `spring.mvc.apiversion.*` properties (`supported`,
+`detect-supported`, `default`, `use.header` and the other resolvers for escape-hatch controllers, and `required`, which
+then applies to every route). `spring.mvc.apiversion.use.path-segment` fails startup while a route is versioned:
+Boot's resolver would parse every path. Deprecated versions emit Spring's `Deprecation`, `Sunset` and `Link` headers
+through a bean of Spring's `ApiVersionDeprecationHandler`, which Boot applies.
 
-**CORS:** off by default. `synapse.api.rest.cors.allowed-origins`, `.allowed-methods`, `.allowed-headers`,
-`.exposed-headers`, `.allow-credentials`, `.max-age`, applied to all routes through a `CorsConfigurationSource` bean
-(which Spring Security also uses when present). Startup fails on `*` with credentials and warns on `*` in every
-environment.
+**CORS:** off by default. `synapse.api.rest.cors.allowed-origins` (exact origins such as `https://app.example.com`, or
+`*`), `.allowed-methods` (default `GET, HEAD, POST, PUT, DELETE`), `.allowed-headers` (default `*`), `.exposed-headers`
+(added to the response headers Synapse writes, which are always exposed: the correlation header, `ETag`, `Link`,
+`Location`, `Retry-After`, `Deprecation`, `Sunset`), `.allow-credentials` (default `false`), `.max-age` (default 30
+minutes). An edge filter applies them to every path except Actuator's management paths (Boot's
+`management.endpoints.web.cors.*` covers those), on REQUEST and ERROR dispatches, through a
+`UrlBasedCorsConfigurationSource` bean named `corsConfigurationSource` (which Spring Security also uses when present).
+A rejected cross-origin request is 403 `CORS_REJECTED` problem+json. Startup fails on `*` with credentials and warns on
+`*` in every environment.
 
 **Limits:** request body 1 MB (`synapse.api.rest.max-request-size`; per route `.maxRequestSize(...)`), rejected with
 413 without reading the whole body. Header size uses Boot's `server.max-http-request-header-size`; Synapse sets its
@@ -616,8 +638,15 @@ default to 16 KB at lowest precedence.
 generates OpenAPI 3.1 from `RestBindings`, `RestConventions` and the record types: Jakarta Validation constraints,
 statuses, mapped headers, problem+json responses, paging parameters, `ETag`/`If-Match`, versions. It uses Synapse's own
 schema generator on Jackson 3, so property names match what the app's `JsonMapper` writes, and springdoc (3.x) serves
-the result at `/v3/api-docs`. Toggles use springdoc's own properties; Synapse defaults Swagger UI to off and the API
-docs to on, at lowest precedence.
+the result at `/v3/api-docs`. Toggles use springdoc's own properties; Synapse defaults Swagger UI to off, the API
+docs to off and their version to OpenAPI 3.1, at lowest precedence. An environment's file turns the API docs on
+(`springdoc.api-docs.enabled: true`), as for every exposure (3.6). Under AOT that toggle is build-time: springdoc
+3.2.0's configuration is `@ConditionalOnProperty(springdoc.api-docs.enabled, matchIfMissing = true)`, so the value at
+`process-aot` decides whether AOT artifacts serve the document in every environment, and `openapi.adoc` says how to
+set it for the build (`process-aot` profiles, or `-Dspring-boot.aot.jvmArguments=-Dspringdoc.api-docs.enabled=true`).
+Plan 5 adds a startup check (below). While the document is off, the startup pass still honours springdoc's path
+filters, read from the environment. Escape-hatch controllers are documented by springdoc
+itself (with its own, Jackson 2 based, schemas).
 
 **Binary content (P4):** `BinaryContent` components map to multipart parts or a raw body on input and stream back as a
 download on output. Responses always carry `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment`
@@ -1046,7 +1075,8 @@ over REST and gRPC on Postgres with Flyway.
 5. An unexpected exception yields 500/`INTERNAL`; no stack trace or class name in any response.
 6. Correlation id: accepted from the header/metadata, generated if absent, returned, in MDC, logs and spans; an
    invalid value (newline, bad characters, over 128) is replaced and never logged unsanitized.
-7. `/v3/api-docs` (OpenAPI 3.1) includes every route with schemas, statuses and problem responses.
+7. `/v3/api-docs` (OpenAPI 3.1), turned on by the environment's file, includes every route with schemas, statuses
+   and problem responses; without that setting it is 404.
 8. Data: a single store and two named stores (`books`, `legacy` on a second Postgres container) are each configured
    under `synapse.data.stores.<name>` and built by Synapse with their own DataSource, EntityManagerFactory,
    transaction manager, repositories, health contributor and Flyway migrations (`db/migration/<store>`);
@@ -1068,7 +1098,7 @@ over REST and gRPC on Postgres with Flyway.
 12. Input binding and response mapping: `UpdateBookRequest` receives its id from the path, `version` from `If-Match`, a
     `WriteOptions` component from the query string via `RestConventions`, and the rest from the body; a mismatched
     body id returns 400; `PageQuery` binds on GET and POST; an unknown sort key is 400; a cursor that was tampered with, or replayed for another operation or with another sort, is 400; `.created` yields 201 + `Location`; `.accepted` yields 202 + `Location`; an empty `Optional` yields the
-    route's `.notFound` code; a header-mapped output component is absent from the body; `If-None-Match` yields 304 with `ETag`, also on HEAD; a stale `If-Match` yields 412 without changing the resource, including when a concurrent write wins after the operation's read; a version clash without `If-Match` yields 409; a weak `If-Match` yields 412 without calling the operation; `.requireIfMatch()` without `If-Match` yields 428; renaming a record
+    route's `.notFound` code; a header-mapped output component is absent from the body; `If-None-Match` yields 304 with `ETag`, also on HEAD; a stale `If-Match` yields 412 without changing the resource, including when a concurrent write wins after the operation's read; a version clash without `If-Match` yields 409; a weak `If-Match` yields 412 without calling the operation; a write whose input requires `If-Match` (a non-null `VersionCondition`) yields 428 without it; renaming a record
     component breaks compilation of the binding, not startup.
 13. Context: an allow-listed header lands in `RequestContext`, survives `@Async` and virtual threads, appears in MDC;
     with `synapse.context.inbound.trusted=false` it is dropped; baggage over the limits is dropped and logged once.
@@ -1105,7 +1135,8 @@ uses it in plan 5). Plan 2b covers the rest of 11 (page size over the cap via RE
 
 **Done (plan 2b, REST paging and conditional requests):** paging (`PageQuery` binding, `.sortable` allow-lists, the
 offset cap, the page object and `Link`, AES-256-GCM cursors through a replaceable `CursorCodec`) and conditional
-requests (`.etag`, 304, `If-Match` binding, `STALE_VERSION`, `.requireIfMatch()`) are built in `synapse-api-rest`,
+requests (`.etag`, 304, `If-Match` binding, `STALE_VERSION`, a required `If-Match` with 428, declared per route until
+a non-null `VersionCondition` replaced that on 2026-11-07) are built in `synapse-api-rest`,
 documented in `rest.adoc` (*Paging*, *Conditional requests*) and `core.adoc`, and shown in `samples/rest-books`. They
 cover acceptance items 11 (REST: a page size over the cap is `INVALID_INPUT`), 12 (`PageQuery` on GET and POST, an
 unknown sort key, tampered cursors and cursors replayed for another operation or with another sort, `version` from
@@ -1122,6 +1153,21 @@ off by default, the generated cursor key logs a WARN in every environment, and `
 `testing.adoc` updated. They cover acceptance items 21 and 3 (the environment part: no `detail` unless
 `include-detail=true`). The module files and source names in a native image are not verified yet (DESIGN.md *Open
 questions*; plan 5).
+
+**Done (plan 2c, REST versioning, CORS and OpenAPI):** `VersionCondition` on writes (`If-Match` and `If-None-Match`
+bind `Version(v)`, `AnyVersion` for `*` and `null` without the header; a plain type on a write fails startup; a
+non-null `VersionCondition` makes the header required, 428 `PRECONDITION_REQUIRED` without it), API
+versioning (`.version("2")` serves `/v2/...`, the version is optional, a version no route declares is 404, Boot's
+`spring.mvc.apiversion.*` tunes the rest, `use.path-segment` fails startup, deprecation through a bean of Spring's
+`ApiVersionDeprecationHandler`, which Boot applies) and CORS (`synapse.api.rest.cors.*`, off by default, the
+`synapseCorsFilter` edge filter on REQUEST and ERROR dispatches, `CORS_REJECTED`, management paths left to Boot) are built in
+`synapse-api-rest`. OpenAPI 3.1 at `/v3/api-docs` is built in `synapse-api-rest-openapi`, served by springdoc 3.2.0
+with Synapse's own schema generator on Jackson 3, off by default and turned on by an environment's file. Documented in `rest.adoc` (*API versioning*, *CORS*), `openapi.adoc`,
+`core.adoc` and `environments.adoc`, and shown in `samples/rest-books` (version 2 of the read, CORS for a local front
+end, the document). They cover acceptance items 7 (`/v3/api-docs` with every route, its schemas, statuses and problem
+responses) and 10 (REST and OpenAPI modules: the new beans' context-runner tests and AOT tests). Spring Security's use
+of the `corsConfigurationSource` bean is verified by `synapse-security` (P4); springdoc, the schema generator and the
+CORS filter in a native image by the native build (plan 5).
 
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
@@ -1144,7 +1190,11 @@ questions*; plan 5).
   concept (`include-detail` off by default, the cursor-key WARN in every environment, `SynapseEnvironment` removed),
   `application-test.yaml` wherever tests start a context, and `rest-books` running as `local`. It covers acceptance 21
   and the environment part of 3. Done (see the *Done (environments plan)* note above).
-- Plan 2c (REST versioning, CORS, OpenAPI): API versioning, CORS (including the 405/OPTIONS fallback mapping, which has no CORS configuration today), and OpenAPI in `synapse-api-rest-openapi`.
+- Plan 2c (REST versioning, CORS, OpenAPI)
+  ([plans/2026-11-05-p1-rest-versioning-cors-openapi.md](plans/2026-11-05-p1-rest-versioning-cors-openapi.md)):
+  `VersionCondition` for `If-Match`/`If-None-Match` on writes (first), API versioning, CORS (including the 405/OPTIONS
+  fallback mapping), and OpenAPI in `synapse-api-rest-openapi`. It covers acceptance 7. Done (see the *Done (plan 2c)*
+  note above).
 - Plan 3 (gRPC edge):
   - The REST edge's Synapse fields include only REST attribute names; with both plugins, include
     `synapse.api.grpc.context.metadata` names so trusted-mode REST callers can't set gRPC attribute baggage
@@ -1159,6 +1209,10 @@ questions*; plan 5).
     Java agent, in the Synapse agent extension.
   - The archetype's environment files (section 13, *Environments*), and an environment for `process-aot` and the
     AOT-cache training run (3.3), verified with the first native and image builds.
+  - `OpenApiAotCheck` in `synapse-api-rest-openapi`: when the application runs with AOT-generated artifacts, startup
+    fails when `springdoc.api-docs.enabled` at runtime differs from the value `process-aot` saw (springdoc's beans
+    exist only for the build's value, so an environment file can't turn the document on or off there). The AOT build
+    records its value; the failure names both values and how to set the build's (6.2 *OpenAPI*, `openapi.adoc`).
   - The first native test checks, in a native image, that `ClassLoader.getResources` returns one URL per jar for
     `META-INF/synapse/config*.yaml`, that Boot's `Config resource` source names are unchanged, and that the service's
     `application-<env>.yaml` is found (DESIGN.md *Open questions*).

@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.api.rest.internal.binding.fixture;
 
+import java.io.Serializable;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -34,6 +36,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ValueDeserializer;
 import tools.jackson.databind.annotation.JsonDeserialize;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.CommandOperation;
@@ -405,6 +408,27 @@ public final class BindingFixtures {
         }
     }
 
+    /**
+     * Read through a delegating factory, from a map with its own keys ({@code name}, {@code count}); its canonical
+     * constructor's names ({@code title}, {@code copies}) are not what the mapper reads.
+     */
+    public record DelegatedBookRequest(@Nullable UUID id, String title, int copies) {
+
+        @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+        public static DelegatedBookRequest of(Map<String, Object> fields) {
+            Object count = fields.get("count");
+            return new DelegatedBookRequest(null, String.valueOf(fields.get("name")),
+                    count instanceof Number number ? number.intValue() : 0);
+        }
+    }
+
+    public static class DelegatedBookOperation implements CommandOperation<DelegatedBookRequest, BookResult> {
+        @Override
+        public BookResult execute(DelegatedBookRequest input) {
+            return BOOK;
+        }
+    }
+
     public record PathDatedRequest(@JsonFormat(pattern = "dd/MM/yyyy") LocalDate day, String title) {
     }
 
@@ -624,7 +648,7 @@ public final class BindingFixtures {
     }
 
     /** A write whose version comes from {@code If-Match}. */
-    public record ReviseBookRequest(UUID id, @Nullable Long version, String title) {
+    public record ReviseBookRequest(UUID id, @Nullable VersionCondition<Long> version, String title) {
     }
 
     public static class ReviseBookOperation implements CommandOperation<ReviseBookRequest, VersionedBook> {
@@ -645,7 +669,7 @@ public final class BindingFixtures {
         }
     }
 
-    public record RemoveBookRequest(UUID id, @Nullable Long version) {
+    public record RemoveBookRequest(UUID id, @Nullable VersionCondition<Long> version) {
     }
 
     public static class RemoveBookOperation implements CommandOperation<RemoveBookRequest, VersionedBook> {
@@ -655,13 +679,200 @@ public final class BindingFixtures {
         }
     }
 
-    /** A write whose tag components are strings, bound from {@code If-None-Match} or another header. */
+    /** A write whose tag components are strings, bound from a header other than {@code If-None-Match}. */
     public record TaggedBookRequest(UUID id, @Nullable String etag, @Nullable String other) {
     }
 
     public static class TaggedBookOperation implements CommandOperation<TaggedBookRequest, VersionedBook> {
         @Override
         public VersionedBook execute(TaggedBookRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A read whose tag is a plain string, bound from {@code If-None-Match}. */
+    public record TaggedReadRequest(UUID id, @Nullable String tag) {
+    }
+
+    public static class GetTaggedBookOperation implements QueryOperation<TaggedReadRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(TaggedReadRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A read whose tag is a version condition, which reads may bind too. */
+    public record ConditionalReadRequest(UUID id, @Nullable VersionCondition<Long> version) {
+    }
+
+    public static class GetConditionalBookOperation
+            implements
+            QueryOperation<ConditionalReadRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(ConditionalReadRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A read whose version condition can't be null, which a read can't require. */
+    public record StrictConditionalReadRequest(UUID id, VersionCondition<Long> version) {
+    }
+
+    public static class GetStrictConditionalBookOperation
+            implements
+            QueryOperation<StrictConditionalReadRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(StrictConditionalReadRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A query record with a version condition, which no query parameter can fill. */
+    public record ConditionFilter(@Nullable VersionCondition<Long> version) {
+    }
+
+    public record ConditionFilterRequest(@Nullable ConditionFilter filter) {
+    }
+
+    public static class ConditionFilterOperation implements QueryOperation<ConditionFilterRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(ConditionFilterRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A required version condition: on a write, a request without the header is answered 428. */
+    public record StrictConditionRequest(UUID id, VersionCondition<Long> version) {
+    }
+
+    public static class StrictConditionOperation implements CommandOperation<StrictConditionRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(StrictConditionRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A create-only {@code PUT}: {@code If-None-Match: *} binds {@code AnyVersion}. */
+    public record PutBookRequest(UUID id, @Nullable VersionCondition<Long> unless, String title) {
+    }
+
+    public static class PutBookOperation implements CommandOperation<PutBookRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(PutBookRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /**
+     * Read whole by its own deserializer, which leaves the id and the version to the other sources; {@code If-Match} is
+     * required.
+     */
+    @JsonDeserialize(using = WholeRevisionDeserializer.class)
+    public record WholeRevisionRequest(UUID id, VersionCondition<Long> version, String title) {
+    }
+
+    public static class WholeRevisionDeserializer extends ValueDeserializer<WholeRevisionRequest> {
+        @Override
+        @SuppressWarnings("NullAway") // The path and If-Match fill id and version once Jackson has read the body.
+        public WholeRevisionRequest deserialize(JsonParser parser, DeserializationContext context) {
+            return new WholeRevisionRequest(null, null, context.readTree(parser).required("title").asString());
+        }
+    }
+
+    public static class WholeRevisionOperation implements CommandOperation<WholeRevisionRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(WholeRevisionRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** As {@link WholeRevisionRequest}, but its constructor rejects a null version, so Jackson can't build it. */
+    @JsonDeserialize(using = GuardedRevisionDeserializer.class)
+    public record GuardedRevisionRequest(UUID id, VersionCondition<Long> version, String title) {
+        public GuardedRevisionRequest {
+            Objects.requireNonNull(version, "version");
+        }
+    }
+
+    public static class GuardedRevisionDeserializer extends ValueDeserializer<GuardedRevisionRequest> {
+        @Override
+        @SuppressWarnings("NullAway") // Deliberately what a deserializer that ignores the other sources does.
+        public GuardedRevisionRequest deserialize(JsonParser parser, DeserializationContext context) {
+            return new GuardedRevisionRequest(null, null, context.readTree(parser).required("title").asString());
+        }
+    }
+
+    public static class GuardedRevisionOperation implements CommandOperation<GuardedRevisionRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(GuardedRevisionRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A write that requires both {@code If-Match} and {@code If-None-Match}. */
+    public record StrictBothRequest(UUID id, VersionCondition<Long> version, VersionCondition<Long> unless) {
+    }
+
+    public static class StrictBothOperation implements CommandOperation<StrictBothRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(StrictBothRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A {@code PUT} that requires {@code If-None-Match}: its condition can't be null. */
+    public record StrictPutBookRequest(UUID id, VersionCondition<Long> unless, String title) {
+    }
+
+    public static class StrictPutBookOperation implements CommandOperation<StrictPutBookRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(StrictPutBookRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /** A write with a plain version type, which a write can't bind from {@code If-Match} or {@code If-None-Match}. */
+    public record PlainVersionRequest(UUID id, @Nullable Long version, @Nullable String title) {
+    }
+
+    public static class PlainVersionOperation implements CommandOperation<PlainVersionRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(PlainVersionRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /**
+     * Version conditions without a usable version type (raw, wildcard, {@code Object}, and one no string converts
+     * to), and version conditions wrapped in another type.
+     */
+    @SuppressWarnings("rawtypes")
+    public record LooseConditionRequest(UUID id, @Nullable VersionCondition raw,
+            @Nullable VersionCondition<?> wildcard, @Nullable VersionCondition<Object> object,
+            @Nullable VersionCondition<PairFilter> pair, @Nullable List<VersionCondition<Long>> list,
+            @Nullable Optional<VersionCondition<Long>> optional) {
+    }
+
+    public static class LooseConditionOperation implements CommandOperation<LooseConditionRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(LooseConditionRequest input) {
+            return VERSIONED;
+        }
+    }
+
+    /**
+     * Version types that a {@code String} is assignable to: the binder keeps the header's text as is, so only
+     * {@code String} and {@code CharSequence} can equal the version the operation reads.
+     */
+    public record SupertypeConditionRequest(UUID id, @Nullable VersionCondition<Serializable> serializable,
+            @Nullable VersionCondition<Comparable<?>> comparable, @Nullable VersionCondition<CharSequence> text,
+            @Nullable VersionCondition<String> string) {
+    }
+
+    public static class SupertypeConditionOperation
+            implements CommandOperation<SupertypeConditionRequest, VersionedBook> {
+        @Override
+        public VersionedBook execute(SupertypeConditionRequest input) {
             return VERSIONED;
         }
     }

@@ -24,10 +24,12 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.client.RestTestClient;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.PageResult;
 import io.americanexpress.synapse.core.paging.SortOrder;
 import io.americanexpress.synapse.samples.books.model.Book;
+import io.americanexpress.synapse.samples.books.model.BookV2;
 import io.americanexpress.synapse.samples.books.model.CatalogStats;
 import io.americanexpress.synapse.samples.books.model.CreateBookRequest;
 import io.americanexpress.synapse.samples.books.model.DeleteBookRequest;
@@ -37,6 +39,7 @@ import io.americanexpress.synapse.samples.books.model.UpdateBookRequest;
 import io.americanexpress.synapse.samples.books.operation.CreateBookOperation;
 import io.americanexpress.synapse.samples.books.operation.DeleteBookOperation;
 import io.americanexpress.synapse.samples.books.operation.GetBookOperation;
+import io.americanexpress.synapse.samples.books.operation.GetBookV2Operation;
 import io.americanexpress.synapse.samples.books.operation.GetCatalogStatsOperation;
 import io.americanexpress.synapse.samples.books.operation.SearchBooksOperation;
 import io.americanexpress.synapse.samples.books.operation.UpdateBookOperation;
@@ -65,6 +68,9 @@ class BooksRestTest {
 
     @MockitoBean
     GetBookOperation getBook;
+
+    @MockitoBean
+    GetBookV2Operation getBookV2;
 
     @MockitoBean
     SearchBooksOperation searchBooks;
@@ -131,6 +137,64 @@ class BooksRestTest {
                 .valueEquals("ETag", "\"1\"")
                 .expectBody()
                 .isEmpty();
+    }
+
+    @Test
+    void versionTwoRouteWorksInTheSlice() {
+        given(getBookV2.execute(new GetBookRequest(ID)))
+                .willReturn(Optional.of(new BookV2(ID, "978-0441172719", "Dune", List.of("Frank Herbert"), 1965, 1)));
+        given(getBook.execute(new GetBookRequest(ID))).willReturn(Optional.of(DUNE));
+
+        client
+                .get()
+                .uri("/v2/books/{id}", ID)
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectHeader()
+                .valueEquals("ETag", "\"1\"")
+                .expectBody()
+                .jsonPath("$.authors")
+                .isEqualTo(List.of("Frank Herbert"))
+                .jsonPath("$.author")
+                .doesNotExist()
+                .jsonPath("$.addedVia")
+                .doesNotExist();
+        // Version 1 stays on /books/{id}, with its own operation.
+        client
+                .get()
+                .uri("/books/{id}", ID)
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectBody()
+                .jsonPath("$.author")
+                .isEqualTo("Frank Herbert")
+                .jsonPath("$.authors")
+                .doesNotExist();
+        then(getBookV2).should().execute(new GetBookRequest(ID));
+        then(getBook).should().execute(new GetBookRequest(ID));
+
+        // A version no route declares is no route at all.
+        client
+                .get()
+                .uri("/v3/books/{id}", ID)
+                .exchange()
+                .expectStatus()
+                .isNotFound()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("ROUTE_NOT_FOUND");
+        given(getBookV2.execute(any())).willReturn(Optional.empty());
+        client
+                .get()
+                .uri("/v2/books/{id}", ID)
+                .exchange()
+                .expectStatus()
+                .isNotFound()
+                .expectBody()
+                .jsonPath("$.code")
+                .isEqualTo("BOOK_NOT_FOUND");
     }
 
     @Test
@@ -334,7 +398,8 @@ class BooksRestTest {
 
     @Test
     void ifMatchFillsTheVersion() {
-        UpdateBookRequest request = new UpdateBookRequest(ID, "978-0441172719", "Dune", "Frank Herbert", 1965, 3L);
+        UpdateBookRequest request = new UpdateBookRequest(ID, "978-0441172719", "Dune", "Frank Herbert", 1965,
+                VersionCondition.of(3L));
         given(updateBook.execute(request)).willReturn(DUNE);
 
         client
@@ -378,7 +443,14 @@ class BooksRestTest {
                 .isNoContent()
                 .expectBody()
                 .isEmpty();
-        then(deleteBook).should().execute(new DeleteBookRequest(ID, 1L));
+        then(deleteBook).should().execute(new DeleteBookRequest(ID, VersionCondition.of(1L)));
+    }
+
+    @Test
+    void deleteWithIfMatchAnyIs204() {
+        // * counts as present: the required version is AnyVersion.
+        client.delete().uri("/books/{id}", ID).header("If-Match", "*").exchange().expectStatus().isNoContent();
+        then(deleteBook).should().execute(new DeleteBookRequest(ID, VersionCondition.any()));
     }
 
     @Test

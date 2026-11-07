@@ -16,15 +16,35 @@ package io.americanexpress.synapse.api.rest;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 
+import static io.americanexpress.synapse.core.error.ErrorCategory.FORBIDDEN;
 import static io.americanexpress.synapse.core.error.ErrorCategory.INVALID_INPUT;
 import static io.americanexpress.synapse.core.error.ErrorCategory.NOT_FOUND;
-import static io.americanexpress.synapse.core.error.ErrorCategory.PRECONDITION_FAILED;
 
 /**
  * Errors the REST edge reports for requests that never reach an operation. Each has a fixed HTTP status because the
- * status comes from the protocol, not from an operation's category.
+ * status comes from the protocol, not from an operation's category. A request without a precondition the operation's
+ * input requires is core's {@code SynapseErrors.PRECONDITION_REQUIRED}, which every protocol can raise; REST answers
+ * it 428.
  */
 public enum RestErrors implements ErrorDetails {
+
+    /**
+     * The request names no API version, and Boot's {@code spring.mvc.apiversion.required} requires one.
+     */
+    MISSING_API_VERSION("The request must name an API version", INVALID_INPUT, 400),
+
+    /**
+     * The request names an API version that is not supported, from a header, query parameter or media type parameter
+     * Boot's {@code spring.mvc.apiversion.use.*} settings read. A version in the path that no route declares is
+     * {@link #ROUTE_NOT_FOUND}.
+     */
+    UNSUPPORTED_API_VERSION("The requested API version is not supported", INVALID_INPUT, 400),
+
+    /**
+     * The request comes from a browser page whose origin, method or request headers
+     * {@code synapse.api.rest.cors} doesn't allow, or its {@code Origin} is malformed.
+     */
+    CORS_REJECTED("The cross-origin request is not allowed", FORBIDDEN, 403),
 
     /** No route matches the request path. */
     ROUTE_NOT_FOUND("No route matches the request", NOT_FOUND, 404),
@@ -39,10 +59,7 @@ public enum RestErrors implements ErrorDetails {
     PAYLOAD_TOO_LARGE("The request body is too large", INVALID_INPUT, 413),
 
     /** The route does not consume the media type of the request body. */
-    UNSUPPORTED_MEDIA_TYPE("The request media type is not supported", INVALID_INPUT, 415),
-
-    /** The route requires a conditional request and the request has no precondition header. */
-    PRECONDITION_REQUIRED("The request must be conditional", PRECONDITION_FAILED, 428);
+    UNSUPPORTED_MEDIA_TYPE("The request media type is not supported", INVALID_INPUT, 415);
 
     private final String messageTemplate;
 

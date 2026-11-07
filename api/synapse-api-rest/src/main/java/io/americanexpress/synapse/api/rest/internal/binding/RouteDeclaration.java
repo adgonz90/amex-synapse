@@ -130,8 +130,10 @@ public sealed interface RouteDeclaration {
     }
 
     /**
-     * {@code .requireIfMatch()}: a request without {@code If-Match} is answered 428.
+     * {@code .version(version)}: the route is served at {@code /v<version>} followed by its path.
+     *
+     * @param version the version as declared, such as {@code 2} or {@code 1.2}
      */
-    record RequireIfMatch() implements RouteDeclaration {
+    record Version(String version) implements RouteDeclaration {
     }
 }

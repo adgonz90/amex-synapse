@@ -51,6 +51,12 @@
             <groupId>io.americanexpress.synapse</groupId>
             <artifactId>synapse-api-rest</artifactId>
         </dependency>
+        <!-- The OpenAPI 3.1 document of the REST bindings at /v3/api-docs, served by springdoc (no Swagger UI; see
+             README.md for adding it locally). -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-api-rest-openapi</artifactId>
+        </dependency>
         <!-- Prescriptive logging: synchronous Log4j2 with ECS JSON on the console. Logback must be absent, hence the
              spring-boot-starter-logging exclusions below. -->
         <dependency>

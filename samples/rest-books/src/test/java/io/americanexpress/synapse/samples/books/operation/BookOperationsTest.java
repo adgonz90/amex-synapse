@@ -21,14 +21,18 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.PageResult;
 import io.americanexpress.synapse.core.paging.SortOrder;
+import io.americanexpress.synapse.samples.books.business.model.BookRemoval;
+import io.americanexpress.synapse.samples.books.business.model.BookRevision;
 import io.americanexpress.synapse.samples.books.contract.BookErrors;
 import io.americanexpress.synapse.samples.books.data.InMemoryBookStore;
 import io.americanexpress.synapse.samples.books.model.Book;
+import io.americanexpress.synapse.samples.books.model.BookV2;
 import io.americanexpress.synapse.samples.books.model.CreateBookRequest;
 import io.americanexpress.synapse.samples.books.model.DeleteBookRequest;
 import io.americanexpress.synapse.samples.books.model.GetBookRequest;
@@ -52,6 +56,9 @@ class BookOperationsTest {
     GetBookOperation getBook;
 
     @Autowired
+    GetBookV2Operation getBookV2;
+
+    @Autowired
     SearchBooksOperation searchBooks;
 
     @Autowired
@@ -71,6 +78,26 @@ class BookOperationsTest {
         assertThat(created.addedVia()).isEqualTo("web");
         assertThat(created.version()).isEqualTo(1);
         assertThat(getBook.execute(new GetBookRequest(created.id()))).contains(created);
+    }
+
+    @Test
+    void bookV2SplitsAuthors() {
+        Book twoAuthors = createBook
+                .execute(new CreateBookRequest("isbn-v2-two", "Good Omens", "Terry Pratchett, Neil Gaiman", 1990,
+                        "web"));
+        Book oneAuthor = createBook
+                .execute(new CreateBookRequest("isbn-v2-one", "Dune Messiah", "Frank Herbert", null,
+                        null));
+
+        assertThat(getBookV2.execute(new GetBookRequest(twoAuthors.id())))
+                .contains(new BookV2(twoAuthors.id(), "isbn-v2-two", "Good Omens",
+                        List.of("Terry Pratchett", "Neil Gaiman"), 1990, 1));
+        assertThat(getBookV2.execute(new GetBookRequest(oneAuthor.id())))
+                .contains(new BookV2(oneAuthor.id(), "isbn-v2-one", "Dune Messiah", List.of("Frank Herbert"), null, 1));
+        assertThat(getBookV2.execute(new GetBookRequest(UUID.randomUUID()))).isEmpty();
+        // Version 1 is unchanged: one author string.
+        assertThat(getBook.execute(new GetBookRequest(twoAuthors.id()))).contains(twoAuthors);
+        assertThat(twoAuthors.author()).isEqualTo("Terry Pratchett, Neil Gaiman");
     }
 
     @Test
@@ -103,27 +130,58 @@ class BookOperationsTest {
         Book created = createBook.execute(new CreateBookRequest("isbn-update-version", "Title", "Author", null, null));
 
         Book updated = updateBook
-                .execute(new UpdateBookRequest(created.id(), "isbn-update-version", "New title", "Author", null, 1L));
+                .execute(new UpdateBookRequest(created.id(), "isbn-update-version", "New title", "Author", null,
+                        VersionCondition.of(1L)));
 
         assertThat(updated.version()).isEqualTo(2);
         assertThatSynapseException(() -> updateBook
-                .execute(new UpdateBookRequest(created.id(), "isbn-update-version", "Lost", "Author", null, 1L)))
+                .execute(new UpdateBookRequest(created.id(), "isbn-update-version", "Lost", "Author", null,
+                        VersionCondition.of(1L))))
                 .hasCode(SynapseErrors.STALE_VERSION)
                 .hasCategory(ErrorCategory.CONFLICT);
         assertThat(getBook.execute(new GetBookRequest(created.id()))).contains(updated);
     }
 
     @Test
+    void versionConditionMapsToTheRevision() {
+        UUID id = UUID.randomUUID();
+        assertThat(BookMapping
+                .toRevision(new UpdateBookRequest(id, "i", "t", "a", null, VersionCondition.of(3L)))
+                .version()).isEqualTo(3L);
+        assertThat(BookMapping.toRevision(new UpdateBookRequest(id, "i", "t", "a", null, VersionCondition.any())))
+                .isEqualTo(new BookRevision(id, "i", "t", "a", null, null));
+        assertThat(BookMapping.toRevision(new UpdateBookRequest(id, "i", "t", "a", null, null)).version()).isNull();
+        // A delete always carries its condition: DeleteBookRequest.version isn't @Nullable.
+        assertThat(BookMapping.toRemoval(new DeleteBookRequest(id, VersionCondition.of(3L))))
+                .isEqualTo(new BookRemoval(id, VersionCondition.of(3L)));
+        assertThat(BookMapping.toRemoval(new DeleteBookRequest(id, VersionCondition.any())))
+                .isEqualTo(new BookRemoval(id, VersionCondition.any()));
+    }
+
+    @Test
     void deletesABookOnce() {
         Book created = createBook.execute(new CreateBookRequest("isbn-delete", "Title", "Author", null, null));
 
-        assertThatSynapseException(() -> deleteBook.execute(new DeleteBookRequest(created.id(), 2L)))
+        assertThatSynapseException(
+                () -> deleteBook.execute(new DeleteBookRequest(created.id(), VersionCondition.of(2L))))
                 .hasCode(SynapseErrors.STALE_VERSION);
-        deleteBook.execute(new DeleteBookRequest(created.id(), 1L));
+        deleteBook.execute(new DeleteBookRequest(created.id(), VersionCondition.of(1L)));
 
         assertThat(getBook.execute(new GetBookRequest(created.id()))).isEmpty();
-        assertThatSynapseException(() -> deleteBook.execute(new DeleteBookRequest(created.id(), null)))
+        assertThatSynapseException(
+                () -> deleteBook.execute(new DeleteBookRequest(created.id(), VersionCondition.any())))
                 .hasCode(BookErrors.BOOK_NOT_FOUND);
+    }
+
+    @Test
+    void deletesAnyVersionOfABook() {
+        Book created = createBook
+                .execute(new CreateBookRequest("isbn-delete-any", "Title", "Author", null, null));
+
+        // AnyVersion (If-Match: *): RemoveBook deletes the version it reads.
+        deleteBook.execute(new DeleteBookRequest(created.id(), VersionCondition.any()));
+
+        assertThat(getBook.execute(new GetBookRequest(created.id()))).isEmpty();
     }
 
     @Test

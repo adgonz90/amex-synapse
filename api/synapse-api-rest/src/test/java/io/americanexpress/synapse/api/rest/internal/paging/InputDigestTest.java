@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
@@ -92,12 +93,19 @@ class InputDigestTest {
                 .header("If-None-Match", VersionedRequest::unless)
                 .build());
 
-        String first = digest.of(versioned, new VersionedRequest("a", 1L, "x", PageQuery.first(10)));
+        String first = digest
+                .of(versioned, new VersionedRequest("a", VersionCondition.of(1L), VersionCondition.of("x"),
+                        PageQuery.first(10)));
 
         assertThat(first)
-                .isEqualTo(digest.of(versioned, new VersionedRequest("a", 2L, "y", PageQuery.first(10))))
+                .isEqualTo(digest
+                        .of(versioned,
+                                new VersionedRequest("a", VersionCondition.of(2L), VersionCondition.any(),
+                                        PageQuery.first(10))))
                 .isEqualTo(sha256("{\"author\":\"a\"}"))
-                .isNotEqualTo(digest.of(versioned, new VersionedRequest("b", 1L, "x", PageQuery.first(10))));
+                .isNotEqualTo(digest
+                        .of(versioned, new VersionedRequest("b", VersionCondition.of(1L), VersionCondition.of("x"),
+                                PageQuery.first(10))));
     }
 
     @Test
@@ -108,6 +116,32 @@ class InputDigestTest {
                 .isEqualTo(digest.of(all, new PageQuery("token", null, 5, List.of())))
                 .isEqualTo(sha256("{}"));
         assertThat(digest.of(all, null)).isEqualTo(sha256("{}"));
+    }
+
+    @Test
+    void aVersionedRouteBindsTheDigestToItsVersion() {
+        SearchOperation operation = new SearchOperation();
+        List<RouteDefinition> routes = new BindingValidator(PagingSettings.defaults())
+                .validate(RestBindings
+                        .builder()
+                        .get("/books", operation)
+                        .version("1")
+                        .get("/books", operation)
+                        .version("2")
+                        .post("/books/search", operation)
+                        .version("1.0")
+                        .build()
+                        .routes(), List.of());
+        SearchRequest input = new SearchRequest("a", PageQuery.first(10));
+
+        String v1 = digest.of(routes.get(0), input);
+        // The version is written by its parsed value, under a key no component name can take.
+        assertThat(v1)
+                .isEqualTo(sha256("{\"@version\":\"1.0.0\",\"author\":\"a\"}"))
+                .isNotEqualTo(digest.of(search, input))
+                .isNotEqualTo(digest.of(routes.get(1), input));
+        // Versions that parse equal share the scope, as two routes of one operation do.
+        assertThat(digest.of(routes.get(2), input)).isEqualTo(v1);
     }
 
     @Test
@@ -199,7 +233,8 @@ class InputDigestTest {
         }
     }
 
-    record VersionedRequest(String author, @Nullable Long version, @Nullable String unless, PageQuery page) {
+    record VersionedRequest(String author, @Nullable VersionCondition<Long> version,
+            @Nullable VersionCondition<String> unless, PageQuery page) {
     }
 
     static class VersionedOperation implements CommandOperation<VersionedRequest, PageResult<String>> {

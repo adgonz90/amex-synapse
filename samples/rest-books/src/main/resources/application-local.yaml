@@ -5,3 +5,17 @@ synapse:
     # Problem responses carry "detail" (the formatted message), which helps while trying the service. Every other
     # environment keeps the default (off).
     include-detail: true
+  api:
+    rest:
+      cors:
+        # Lets a front end served locally on port 3000 (npm start, for example) call the API from the browser. CORS
+        # is off without origins, the default in every environment: a real environment lists the exact origins of its
+        # own front ends in its application-<env>.yaml. Actuator's paths are left to management.endpoints.web.cors.*.
+        allowed-origins:
+          - http://localhost:3000
+springdoc:
+  api-docs:
+    # Serves the OpenAPI document at /v3/api-docs. It describes every route to anyone who can reach the service, so
+    # it is off by default in every environment; an environment that wants it (here, local runs) turns it on. With
+    # AOT-generated artifacts (a native image) this file can't change it: the value at build time decides.
+    enabled: true

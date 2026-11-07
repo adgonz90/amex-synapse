@@ -31,9 +31,14 @@ class RestErrorsTest {
         assertError(RestErrors.PAYLOAD_TOO_LARGE, "The request body is too large", ErrorCategory.INVALID_INPUT, 413);
         assertError(RestErrors.UNSUPPORTED_MEDIA_TYPE, "The request media type is not supported",
                 ErrorCategory.INVALID_INPUT, 415);
-        assertError(RestErrors.PRECONDITION_REQUIRED, "The request must be conditional",
-                ErrorCategory.PRECONDITION_FAILED, 428);
-        assertThat(RestErrors.values()).hasSize(6);
+        assertError(RestErrors.MISSING_API_VERSION, "The request must name an API version",
+                ErrorCategory.INVALID_INPUT, 400);
+        assertError(RestErrors.UNSUPPORTED_API_VERSION, "The requested API version is not supported",
+                ErrorCategory.INVALID_INPUT, 400);
+        assertError(RestErrors.CORS_REJECTED, "The cross-origin request is not allowed", ErrorCategory.FORBIDDEN,
+                403);
+        // PRECONDITION_REQUIRED is core's (SynapseErrors), so that every protocol can raise it.
+        assertThat(RestErrors.values()).hasSize(8);
     }
 
     private static void assertError(RestErrors error, String message, ErrorCategory category, int status) {

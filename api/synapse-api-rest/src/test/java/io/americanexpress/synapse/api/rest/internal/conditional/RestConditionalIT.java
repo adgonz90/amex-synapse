@@ -43,6 +43,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.error.BookErrors;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.CommandOperation;
@@ -88,6 +89,9 @@ class RestConditionalIT {
     @Autowired
     private UpdateNoteOperation updateNote;
 
+    @Autowired
+    private PutDraftOperation putDraft;
+
     /** A response: its status, headers and body. */
     record Result(int status, HttpHeaders headers, String body) {
 
@@ -111,6 +115,8 @@ class RestConditionalIT {
         updateBook.inputs().clear();
         deleteBook.inputs().clear();
         updateNote.calls().set(0);
+        putDraft.drafts().clear();
+        putDraft.inputs().clear();
     }
 
     @Test
@@ -261,7 +267,8 @@ class RestConditionalIT {
         assertThat(updated.status()).isEqualTo(200);
         assertThat(updated.json().get("version").asLong()).isEqualTo(2);
         assertThat(updated.json().get("title").asString()).isEqualTo("Dune Messiah");
-        assertThat(updateBook.inputs()).containsExactly(new UpdateBookRequest("1", 1L, "Dune Messiah"));
+        assertThat(updateBook.inputs())
+                .containsExactly(new UpdateBookRequest("1", VersionCondition.of(1L), "Dune Messiah"));
     }
 
     @Test
@@ -356,11 +363,14 @@ class RestConditionalIT {
 
         assertThat(missing.status()).isEqualTo(404);
         assertThat(missing.json().get("code").asString()).isEqualTo("BOOK_NOT_FOUND");
-        assertThat(updateBook.inputs()).containsExactly(new UpdateBookRequest("missing", null, "Dune Messiah"));
+        assertThat(updateBook.inputs())
+                .containsExactly(new UpdateBookRequest("missing", VersionCondition.any(), "Dune Messiah"));
     }
 
     @Test
-    void requireIfMatchIs428() {
+    @Tag("smoke")
+    void aRequiredIfMatchIs428WhenAbsent() {
+        // DeleteBookRequest.version isn't @Nullable, so the route requires If-Match.
         Result required = call(client.delete().uri("/books/1"));
 
         assertThat(required.status()).isEqualTo(428);
@@ -383,8 +393,29 @@ class RestConditionalIT {
 
         assertThat(deleted.status()).isEqualTo(204);
         assertThat(deleteBook.inputs())
-                .containsExactly(new DeleteBookRequest("1", 9L), new DeleteBookRequest("1", 1L));
+                .containsExactly(new DeleteBookRequest("1", VersionCondition.of(9L)),
+                        new DeleteBookRequest("1", VersionCondition.of(1L)));
         assertThat(store.find("1")).isEmpty();
+
+        // * counts as present: the operation gets AnyVersion, and a missing book is its 404.
+        Result any = call(client.delete().uri("/books/1").header("If-Match", "*"));
+
+        assertThat(any.status()).isEqualTo(404);
+        assertThat(any.json().get("code").asString()).isEqualTo("BOOK_NOT_FOUND");
+        assertThat(deleteBook.inputs()).last().isEqualTo(new DeleteBookRequest("1", VersionCondition.any()));
+    }
+
+    @Test
+    void aNullableIfMatchMayBeAbsent() {
+        // UpdateBookRequest.version is @Nullable: no If-Match is an unconditional write.
+        Result updated = call(client
+                .put()
+                .uri("/books/1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"title\":\"Dune Messiah\"}"));
+
+        assertThat(updated.status()).as(updated.body()).isEqualTo(200);
+        assertThat(updateBook.inputs()).containsExactly(new UpdateBookRequest("1", null, "Dune Messiah"));
     }
 
     @Test
@@ -395,7 +426,7 @@ class RestConditionalIT {
 
         assertThat(lost.status()).isEqualTo(412);
         assertThat(lost.json().get("code").asString()).isEqualTo("PRECONDITION_FAILED");
-        assertThat(deleteBook.inputs()).containsExactly(new DeleteBookRequest("1", 1L));
+        assertThat(deleteBook.inputs()).containsExactly(new DeleteBookRequest("1", VersionCondition.of(1L)));
         assertThat(store.find("1")).contains(new Book("1", "Concurrent", 2));
     }
 
@@ -413,6 +444,38 @@ class RestConditionalIT {
             assertThat(unbound.json().get("code").asString()).as(header).isEqualTo("PRECONDITION_FAILED");
         }
         assertThat(updateNote.calls()).hasValue(0);
+    }
+
+    @Test
+    void createOnlyPutUsesAnyVersion() {
+        Result created = sendDraft("*", "first");
+
+        assertThat(created.status()).isEqualTo(200);
+        assertThat(created.json().get("text").asString()).isEqualTo("first");
+
+        // The draft exists now, so a second create-only PUT fails, and nothing changes.
+        Result again = sendDraft("*", "second");
+
+        assertThat(again.status()).isEqualTo(412);
+        assertThat(again.json().get("code").asString()).isEqualTo("PRECONDITION_FAILED");
+        assertThat(putDraft.drafts()).containsEntry("1", new Draft("1", "first"));
+
+        // Without If-None-Match the operation sees no condition and overwrites.
+        Result overwritten = sendDraft(null, "third");
+
+        assertThat(overwritten.status()).isEqualTo(200);
+        assertThat(putDraft.drafts()).containsEntry("1", new Draft("1", "third"));
+        assertThat(putDraft.inputs())
+                .extracting(PutDraftRequest::unless)
+                .containsExactly(VersionCondition.any(), VersionCondition.any(), null);
+    }
+
+    private Result sendDraft(@Nullable String ifNoneMatch, String text) {
+        RestTestClient.RequestBodySpec request = client.put().uri("/drafts/1");
+        if (ifNoneMatch != null) {
+            request.header("If-None-Match", ifNoneMatch);
+        }
+        return call(request.contentType(MediaType.APPLICATION_JSON).body("{\"text\":\"" + text + "\"}"));
     }
 
     @Test
@@ -507,8 +570,14 @@ class RestConditionalIT {
         }
 
         @Bean
+        PutDraftOperation putDraftOperation() {
+            return new PutDraftOperation();
+        }
+
+        @Bean
         RestBindings conditional(GetBookOperation getBook, CreateBookOperation createBook,
-                UpdateBookOperation updateBook, DeleteBookOperation deleteBook, UpdateNoteOperation updateNote) {
+                UpdateBookOperation updateBook, DeleteBookOperation deleteBook, UpdateNoteOperation updateNote,
+                PutDraftOperation putDraft) {
             return RestBindings
                     .builder()
                     .get("/books/{id}", getBook)
@@ -522,8 +591,9 @@ class RestConditionalIT {
                     .notFound(BookErrors.BOOK_NOT_FOUND)
                     .delete("/books/{id}", deleteBook)
                     .header("If-Match", DeleteBookRequest::version)
-                    .requireIfMatch()
                     .put("/notes/{id}", updateNote)
+                    .put("/drafts/{id}", putDraft)
+                    .header("If-None-Match", PutDraftRequest::unless)
                     .build();
         }
     }
@@ -537,17 +607,25 @@ class RestConditionalIT {
     record CreateBookRequest(String title) {
     }
 
-    record UpdateBookRequest(String id, @Nullable Long version, String title) {
+    record UpdateBookRequest(String id, @Nullable VersionCondition<Long> version, String title) {
     }
 
     /** Deletes a book; the version is bound from {@code If-Match}, which the route requires. */
-    record DeleteBookRequest(String id, @Nullable Long version) {
+    /** A delete that requires a version: its condition isn't {@code @Nullable}. */
+    record DeleteBookRequest(String id, VersionCondition<Long> version) {
     }
 
     record Note(String id, String text) {
     }
 
     record UpdateNoteRequest(String id, String text) {
+    }
+
+    record Draft(String id, String text) {
+    }
+
+    /** Puts a draft; {@code If-None-Match: *} makes it create-only. */
+    record PutDraftRequest(String id, @Nullable VersionCondition<Long> unless, String text) {
     }
 
     /**
@@ -697,8 +775,8 @@ class RestConditionalIT {
                 return found;
             }
             Book current = found.get();
-            Long expected = input.version();
-            if (expected != null && expected != current.version()) {
+            VersionCondition<Long> expected = input.version();
+            if (expected != null && !expected.matches(current.version())) {
                 throw new SynapseException(SynapseErrors.STALE_VERSION);
             }
             Book replacement = new Book(current.id(), input.title(), current.version() + 1);
@@ -734,8 +812,8 @@ class RestConditionalIT {
             Book current = store
                     .find(input.id())
                     .orElseThrow(() -> new SynapseException(BookErrors.BOOK_NOT_FOUND, input.id()));
-            Long expected = input.version();
-            if (expected != null && expected != current.version()) {
+            // Never null: the route requires If-Match, so a request without it is 428 before this runs.
+            if (!input.version().matches(current.version())) {
                 throw new SynapseException(SynapseErrors.STALE_VERSION);
             }
             if (!store.removeIfVersion(current.id(), current.version())) {
@@ -757,6 +835,36 @@ class RestConditionalIT {
         public Note execute(UpdateNoteRequest input) {
             calls.incrementAndGet();
             return new Note(input.id(), input.text());
+        }
+    }
+
+    /**
+     * Creates or replaces a draft. Given {@code AnyVersion} ({@code If-None-Match: *}) it only creates: a draft that
+     * exists already is {@code PRECONDITION_FAILED}. Without a condition it overwrites.
+     */
+    static class PutDraftOperation implements CommandOperation<PutDraftRequest, Draft> {
+
+        private final Map<String, Draft> drafts = new ConcurrentHashMap<>();
+
+        private final List<PutDraftRequest> inputs = new CopyOnWriteArrayList<>();
+
+        public Map<String, Draft> drafts() {
+            return drafts;
+        }
+
+        public List<PutDraftRequest> inputs() {
+            return inputs;
+        }
+
+        @Override
+        public Draft execute(PutDraftRequest input) {
+            inputs.add(input);
+            if (input.unless() instanceof VersionCondition.AnyVersion<Long> && drafts.containsKey(input.id())) {
+                throw new SynapseException(SynapseErrors.PRECONDITION_FAILED);
+            }
+            Draft draft = new Draft(input.id(), input.text());
+            drafts.put(draft.id(), draft);
+            return draft;
         }
     }
 }

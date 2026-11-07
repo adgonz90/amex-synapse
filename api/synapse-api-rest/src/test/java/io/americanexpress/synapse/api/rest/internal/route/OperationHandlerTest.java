@@ -43,6 +43,7 @@ import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetBookO
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksRequest;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.ReviseVersionedBookOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.RevisionRequest;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.VersionedBook;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
@@ -186,7 +187,7 @@ class OperationHandlerTest {
         OperationHandler revising = new OperationHandler(route(RestBindings
                 .builder()
                 .put("/books/{id}", revise)
-                .header("If-Match", VersionedBook::version)
+                .header("If-Match", RevisionRequest::version)
                 .build()), binder, writer, CURSORS);
 
         // A bad body is 400 even with an If-Match the route doesn't bind: binding comes first.
@@ -219,7 +220,7 @@ class OperationHandlerTest {
         OperationHandler stale = new OperationHandler(route(RestBindings
                 .builder()
                 .put("/books/{id}", new StaleBookOperation())
-                .header("If-Match", VersionedBook::version)
+                .header("If-Match", RevisionRequest::version)
                 .build()), binder, writer, CURSORS);
 
         assertThatExceptionOfType(SynapseException.class)
@@ -236,9 +237,9 @@ class OperationHandlerTest {
     }
 
     /** Always loses the race: its compare-and-set fails. */
-    static class StaleBookOperation implements CommandOperation<VersionedBook, VersionedBook> {
+    static class StaleBookOperation implements CommandOperation<RevisionRequest, VersionedBook> {
         @Override
-        public VersionedBook execute(VersionedBook input) {
+        public VersionedBook execute(RevisionRequest input) {
             throw new SynapseException(SynapseErrors.STALE_VERSION);
         }
     }

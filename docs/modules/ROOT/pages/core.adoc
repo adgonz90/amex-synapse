@@ -141,6 +141,7 @@ The framework's own `SynapseErrors`:
 |`CONFLICT` |`CONFLICT` |The request conflicts with the current state of the resource
 |`STALE_VERSION` |`CONFLICT` |The resource was changed by another request
 |`PRECONDITION_FAILED` |`PRECONDITION_FAILED` |A precondition failed
+|`PRECONDITION_REQUIRED` |`PRECONDITION_FAILED` |The request must be conditional
 |`RATE_LIMITED` |`RATE_LIMITED` |Too many requests
 |`UNAVAILABLE` |`UNAVAILABLE` |The service is unavailable
 |`DEADLINE_EXCEEDED` |`TIMEOUT` |The deadline expired
@@ -169,6 +170,51 @@ the offset against `synapse.api.rest.paging.max-offset`, a cursor combined with 
 the route's `.sortable` allow-list. It reports violations under the query parameter names (`size`, `offset`,
 `cursor`, `sort`), so core's check never reports them a second time. The edge also encrypts the operation's cursor
 into an opaque token bound to the operation, the sort and the other inputs. See xref:rest.adoc#paging[REST paging].
+
+[#version-condition]
+== Version conditions
+
+`VersionCondition<V>` (package `io.americanexpress.synapse.core.conditional`) is the version a write is conditional on,
+as the client sent it. It is sealed, with two cases: `Version(v)` for one version and `AnyVersion` for any current
+version. `VersionCondition.of(v)` and `VersionCondition.any()` create one (`any()` returns a shared instance),
+`matches(current)` tells whether the current version satisfies it, and `toString()` gives the wire form (`"5"` or
+`*`).
+
+Its nullability in the input record is the operation's contract, the same over every protocol:
+
+* `@Nullable VersionCondition<V>`: the condition is optional, and `null` means the request has none (an unconditional
+  write).
+* `VersionCondition<V>`, not `@Nullable`: the condition is required. The operation never sees a request without one:
+  the API plugin answers it `SynapseErrors.PRECONDITION_REQUIRED` ("The request must be conditional", category
+  `PRECONDITION_FAILED`) before the operation runs, with a violation that says how to resubmit. Over REST that is 428
+  (RFC 6585 §3). `AnyVersion` counts as a condition, so a client that means "whatever version is current" says so.
+
+Google's AIP-154 puts the same choice in the request message: an `etag` field is annotated `REQUIRED` or `OPTIONAL`.
+
+An operation reads it with a `switch`, and maps it to its business model where the protocol value enters:
+
+[source,java]
+----
+public record UpdateBookRequest(UUID id, String title, @Nullable VersionCondition<Long> version) {
+}
+
+public record DeleteBookRequest(UUID id, VersionCondition<Long> version) {
+}
+
+@Nullable Long expected = switch (update.version()) {
+    case null -> null;                          // no condition: an unconditional update
+    case AnyVersion<Long> any -> null;          // any current version
+    case Version<Long>(Long version) -> version;
+};
+
+long toDelete = switch (delete.version()) {     // never null: a delete must name its version
+    case AnyVersion<Long> any -> current.version();
+    case Version<Long>(Long version) -> version;
+};
+----
+
+Over REST it binds from `If-Match` or `If-None-Match`: `"5"` is `Version(5)`, `*` is `AnyVersion`, and no header is
+`null`, or 428 when the component is required (see xref:rest.adoc#conditional-requests[Conditional requests]).
 
 == Masking
 

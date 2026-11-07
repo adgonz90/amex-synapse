@@ -228,7 +228,7 @@ class RequestSizeLimitFilterTest {
 
     @Test
     void filterOrderFollowsTheContextAndConcurrencyFilters() {
-        assertThat(new RequestSizeLimitFilter(ONE_MB).getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 4);
+        assertThat(new RequestSizeLimitFilter(ONE_MB).getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 5);
     }
 
     @Test

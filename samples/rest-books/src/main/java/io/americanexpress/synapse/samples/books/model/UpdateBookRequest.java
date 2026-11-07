@@ -19,6 +19,8 @@ import jakarta.validation.constraints.Positive;
 
 import org.jspecify.annotations.Nullable;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
+
 /**
  * Replaces the details of a book.
  *
@@ -27,10 +29,11 @@ import org.jspecify.annotations.Nullable;
  * @param title the title
  * @param author the author
  * @param year the year of publication, if known
- * @param version the version this change is based on, or {@code null}. The REST binding fills it from
- *        {@code If-Match}; without one (or with {@code If-Match: *}) the update applies to the version it reads, and a
+ * @param version the version this change is conditional on, or {@code null} for none. The REST binding fills it
+ *        from {@code If-Match}: {@code "1"} is {@code Version(1)}, {@code *} is {@code AnyVersion}, and no header is
+ *        {@code null}. With {@code AnyVersion} or {@code null} the update applies to the version it reads, and a
  *        concurrent change between that read and the write still fails
  */
 public record UpdateBookRequest(UUID id, @NotBlank String isbn, @NotBlank String title, @NotBlank String author,
-        @Positive @Nullable Integer year, @Nullable Long version) {
+        @Positive @Nullable Integer year, @Nullable VersionCondition<Long> version) {
 }

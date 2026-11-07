@@ -35,8 +35,13 @@ import io.americanexpress.synapse.core.paging.PageResult;
  * resolved routes, with a source for every input component that has one and the convention header rules applied;
  * request binding and response writing read only resolved routes.
  *
+ * <p>
+ * A route declared with {@code .version(v)} is served at {@code /v<v>} followed by its declared path ({@code /v<v>}
+ * alone for {@code /}). {@link #path()} is that served path, which every route check and the routing use;
+ * {@link #declaredPath()} is the path as declared.
+ *
  * @param method the HTTP method
- * @param path the path template
+ * @param path the served path template: the declared path, prefixed with {@code /v<version>} on a versioned route
  * @param operation the operation bean (possibly a proxy)
  * @param operationName the operation name
  * @param inputType the operation's input type {@code I}
@@ -47,10 +52,13 @@ import io.americanexpress.synapse.core.paging.PageResult;
  * @param paging how the route reads {@code PageQuery} from the paging parameters, or {@code null} when the route
  *        doesn't bind {@code PageQuery} (always {@code null} until resolved)
  * @param conditional the conditional request rules ({@link ConditionalRules#NONE} until resolved)
+ * @param version the route's version as declared by the first {@code .version(...)}, or {@code null} for an
+ *        unversioned route
  */
 public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?, ?> operation, String operationName,
         Class<?> inputType, Class<?> outputType, List<InputSource> sources, ResponseRules response,
-        List<RouteDeclaration> declarations, @Nullable PagingRules paging, ConditionalRules conditional) {
+        List<RouteDeclaration> declarations, @Nullable PagingRules paging, ConditionalRules conditional,
+        @Nullable String version) {
 
     /** A template variable, {@code {name}} or a catch-all {@code {*name}}: group 1 is the name. */
     private static final Pattern VARIABLE = Pattern.compile("\\{\\*?([A-Za-z_$][\\w$]*)");
@@ -69,6 +77,7 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
      * @param declarations the declarations
      * @param paging the paging rules, or {@code null}
      * @param conditional the conditional request rules
+     * @param version the version, or {@code null}
      */
     public RouteDefinition {
         sources = List.copyOf(sources);
@@ -77,10 +86,11 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
 
     /**
      * Creates a route as declared, resolving the operation's name and its input and output types from the operation
-     * class (through a CGLIB or Spring AOP proxy).
+     * class (through a CGLIB or Spring AOP proxy). The version is the first {@link RouteDeclaration.Version}'s, and
+     * the path is the served path (see {@link #path()}).
      *
      * @param method the method
-     * @param path the path template
+     * @param path the path template as declared
      * @param operation the operation
      * @param declarations the component calls, in order
      * @param response the response rules as declared
@@ -89,9 +99,47 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
     public static RouteDefinition declared(HttpMethod method, String path, ServiceOperation<?, ?> operation,
             List<RouteDeclaration> declarations, ResponseRules response) {
         Class<?> operationClass = operationClass(operation);
-        return new RouteDefinition(method, path, operation, OperationNames.nameOf(operationClass),
+        String version = declarations
+                .stream()
+                .filter(RouteDeclaration.Version.class::isInstance)
+                .map(declaration -> ((RouteDeclaration.Version) declaration).version())
+                .findFirst()
+                .orElse(null);
+        return new RouteDefinition(method, servedPath(path, version), operation, OperationNames.nameOf(operationClass),
                 generic(operationClass, 0).resolve(Object.class), generic(operationClass, 1).resolve(Object.class),
-                List.of(), response, declarations, null, ConditionalRules.NONE);
+                List.of(), response, declarations, null, ConditionalRules.NONE, version);
+    }
+
+    /**
+     * Returns the path as declared, without the {@code /v<version>} prefix of a versioned route ({@code /} for a
+     * route declared on {@code /}). A versioned route's declared path always starts with {@code /}.
+     *
+     * @return the declared path template
+     */
+    public String declaredPath() {
+        if (version == null) {
+            return path;
+        }
+        String declared = path.substring(prefix(version).length());
+        return declared.isEmpty() ? "/" : declared;
+    }
+
+    /**
+     * Returns the served path: {@code /v<version>} followed by the declared path, or the declared path when the route
+     * has no version. A declared path without its leading {@code /} gets one, as Spring's routing adds it.
+     */
+    private static String servedPath(String path, @Nullable String version) {
+        if (version == null) {
+            return path;
+        }
+        if (path.isEmpty() || "/".equals(path)) {
+            return prefix(version);
+        }
+        return prefix(version) + (path.startsWith("/") ? path : "/" + path);
+    }
+
+    private static String prefix(String version) {
+        return "/v" + version;
     }
 
     /**
@@ -129,7 +177,7 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
     }
 
     /**
-     * Returns these resolved sources and output rules applied to this route.
+     * Returns these resolved sources and output rules applied to this route, which keeps its path and version.
      *
      * @param resolvedSources the sources
      * @param resolvedResponse the response rules
@@ -140,7 +188,7 @@ public record RouteDefinition(HttpMethod method, String path, ServiceOperation<?
     RouteDefinition resolved(List<InputSource> resolvedSources, ResponseRules resolvedResponse,
             @Nullable PagingRules resolvedPaging, ConditionalRules resolvedConditional) {
         return new RouteDefinition(method, path, operation, operationName, inputType, outputType, resolvedSources,
-                resolvedResponse, declarations, resolvedPaging, resolvedConditional);
+                resolvedResponse, declarations, resolvedPaging, resolvedConditional, version);
     }
 
     static Class<?> operationClass(ServiceOperation<?, ?> operation) {

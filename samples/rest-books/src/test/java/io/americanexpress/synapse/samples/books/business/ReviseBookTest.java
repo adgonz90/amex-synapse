@@ -18,6 +18,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.samples.books.business.model.BookRemoval;
 import io.americanexpress.synapse.samples.books.business.model.BookRevision;
@@ -128,15 +129,16 @@ class ReviseBookTest {
     @Test
     void removesABookAndReturnsIt() {
         CatalogBook removed = SynapseOperations
-                .invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, 1L));
+                .invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, VersionCondition.of(1L)));
 
         assertThat(removed.title()).isEqualTo("Dune");
         assertThat(store.find(InMemoryBookStore.DUNE)).isEmpty();
     }
 
     @Test
-    void removingWithoutAVersionChecksTheVersionItRead() {
-        SynapseOperations.invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, null));
+    void removingAnyVersionRemovesTheVersionItRead() {
+        SynapseOperations
+                .invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, VersionCondition.any()));
 
         assertThat(store.find(InMemoryBookStore.DUNE)).isEmpty();
     }
@@ -144,7 +146,7 @@ class ReviseBookTest {
     @Test
     void removingWithAStaleVersionIsStaleVersionAndKeepsTheBook() {
         assertThatSynapseException(() -> SynapseOperations
-                .invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, 5L)))
+                .invoke(new RemoveBook(store), new BookRemoval(InMemoryBookStore.DUNE, VersionCondition.of(5L))))
                 .hasCode(SynapseErrors.STALE_VERSION);
         assertThat(store.find(InMemoryBookStore.DUNE)).contains(DUNE);
     }
@@ -152,7 +154,8 @@ class ReviseBookTest {
     @Test
     void removingAnUnknownBookIsBookNotFound() {
         assertThatSynapseException(
-                () -> SynapseOperations.invoke(new RemoveBook(store), new BookRemoval(UUID.randomUUID(), null)))
+                () -> SynapseOperations
+                        .invoke(new RemoveBook(store), new BookRemoval(UUID.randomUUID(), VersionCondition.any())))
                 .hasCode(BookErrors.BOOK_NOT_FOUND);
     }
 
@@ -162,7 +165,7 @@ class ReviseBookTest {
         given(racing.find(InMemoryBookStore.DUNE)).willReturn(Optional.of(DUNE));
         given(racing.remove(InMemoryBookStore.DUNE, 1L)).willReturn(WriteOutcome.STALE, WriteOutcome.NOT_FOUND);
         RemoveBook removeBook = new RemoveBook(racing);
-        BookRemoval removal = new BookRemoval(InMemoryBookStore.DUNE, 1L);
+        BookRemoval removal = new BookRemoval(InMemoryBookStore.DUNE, VersionCondition.of(1L));
 
         // Changed by a concurrent request since it was read...
         assertThatSynapseException(() -> SynapseOperations.invoke(removeBook, removal))

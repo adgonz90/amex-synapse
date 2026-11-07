@@ -21,7 +21,6 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.servlet.function.ServerRequest;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
-import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateBookOperation;
@@ -31,6 +30,12 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StockBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBothOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBothRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictPutBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictPutBookRequest;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
@@ -51,12 +56,33 @@ class PreconditionsTest {
             .header("If-Match", ReviseBookRequest::version)
             .build());
 
-    /** A DELETE that binds and requires {@code If-Match}. */
+    /** A DELETE that binds {@code If-Match} to a non-null {@code VersionCondition}, so it requires it. */
     private static final RouteDefinition REMOVE = route(RestBindings
+            .builder()
+            .delete("/books/{id}", new StrictConditionOperation())
+            .header("If-Match", StrictConditionRequest::version)
+            .build());
+
+    /** The same DELETE with a {@code @Nullable} condition: {@code If-Match} is optional. */
+    private static final RouteDefinition REMOVE_OPTIONAL = route(RestBindings
             .builder()
             .delete("/books/{id}", new RemoveBookOperation())
             .header("If-Match", RemoveBookRequest::version)
-            .requireIfMatch()
+            .build());
+
+    /** A PUT that binds {@code If-None-Match} to a non-null {@code VersionCondition}, so it requires it. */
+    private static final RouteDefinition CREATE_ONLY = route(RestBindings
+            .builder()
+            .put("/books/{id}", new StrictPutBookOperation())
+            .header("If-None-Match", StrictPutBookRequest::unless)
+            .build());
+
+    /** A PUT whose input requires both precondition headers. */
+    private static final RouteDefinition BOTH = route(RestBindings
+            .builder()
+            .put("/books/{id}", new StrictBothOperation())
+            .header("If-Match", StrictBothRequest::version)
+            .header("If-None-Match", StrictBothRequest::unless)
             .build());
 
     /** A PUT that binds neither precondition header. */
@@ -98,8 +124,9 @@ class PreconditionsTest {
         assertPreconditionFailed(STOCK, request("PUT", "If-Match", ""));
         // The route binds If-Match only: If-None-Match is still unbound.
         assertPreconditionFailed(REVISE, request("PUT", "If-None-Match", "\"1\""));
-        // The unbound header is judged before .requireIfMatch().
+        // The unbound header is judged before the missing required If-Match.
         assertPreconditionFailed(REMOVE, request("DELETE", "If-None-Match", "*"));
+        assertPreconditionFailed(CREATE_ONLY, request("PUT", "If-Match", "\"1\""));
     }
 
     @Test
@@ -108,7 +135,7 @@ class PreconditionsTest {
         for (HttpMethod method : List.of(HttpMethod.PATCH, HttpMethod.valueOf("PURGE"))) {
             RouteDefinition unsafe = new RouteDefinition(method, STOCK.path(), STOCK.operation(),
                     STOCK.operationName(), STOCK.inputType(), STOCK.outputType(), STOCK.sources(), STOCK.response(),
-                    STOCK.declarations(), STOCK.paging(), STOCK.conditional());
+                    STOCK.declarations(), STOCK.paging(), STOCK.conditional(), STOCK.version());
 
             assertPreconditionFailed(unsafe, request(method.name(), "If-Match", "\"1\""));
             assertPreconditionFailed(unsafe, request(method.name(), "If-None-Match", "*"));
@@ -137,19 +164,58 @@ class PreconditionsTest {
     }
 
     @Test
-    void requireIfMatchWithoutHeaderIs428() {
-        assertThatExceptionOfType(SynapseException.class)
-                .isThrownBy(() -> Preconditions.check(REMOVE, request("DELETE")))
-                .satisfies(e -> {
-                    assertThat(e.details()).isEqualTo(RestErrors.PRECONDITION_REQUIRED);
-                    assertThat(e.code()).isEqualTo("PRECONDITION_REQUIRED");
-                    assertThat(e.violations())
-                            .containsExactly(
-                                    new Violation("If-Match",
-                                            "is required; send the ETag from a GET of this resource"));
-                });
+    void aRequiredConditionWithoutItsHeaderIs428() {
+        assertPreconditionRequired(REMOVE, request("DELETE"),
+                new Violation("If-Match", "is required; send the ETag from a GET of this resource"));
         assertPasses(REMOVE, request("DELETE", "If-Match", "*"));
         assertPasses(REMOVE, request("DELETE", "If-Match", "\"1\""));
+
+        assertPreconditionRequired(CREATE_ONLY, request("PUT"), new Violation("If-None-Match",
+                "is required; send * to write only if the resource doesn't exist, or the ETag the resource must not "
+                        + "have"));
+        assertPasses(CREATE_ONLY, request("PUT", "If-None-Match", "*"));
+        assertPasses(CREATE_ONLY, request("PUT", "If-None-Match", "\"1\""));
+    }
+
+    @Test
+    void aRouteThatRequiresBothHeadersGetsAViolationForEachMissingOne() {
+        Violation ifMatch = new Violation("If-Match", "is required; send the ETag from a GET of this resource");
+        Violation ifNoneMatch = new Violation("If-None-Match",
+                "is required; send * to write only if the resource doesn't exist, or the ETag the resource must not "
+                        + "have");
+        assertPreconditionRequired(BOTH, request("PUT"), ifMatch, ifNoneMatch);
+        assertPreconditionRequired(BOTH, request("PUT", "If-Match", "\"1\""), ifNoneMatch);
+        assertPreconditionRequired(BOTH, request("PUT", "If-None-Match", "*"), ifMatch);
+        assertPasses(BOTH, request("PUT", "If-Match", "\"1\"", "If-None-Match", "\"2\""));
+    }
+
+    @Test
+    void missingPreconditionAnswersInCheckOrder() {
+        // What binding throws when the input can't be built: the 428, unless an unverifiable header comes first.
+        SynapseException required = Preconditions.missingPrecondition(BOTH, request("PUT"));
+        assertThat(required.code()).isEqualTo("PRECONDITION_REQUIRED");
+        assertThat(required.violations()).hasSize(2);
+        SynapseException weak = Preconditions.missingPrecondition(REMOVE, request("DELETE", "If-None-Match", "*"));
+        assertThat(weak.details()).isEqualTo(SynapseErrors.PRECONDITION_FAILED);
+        assertThat(weak.violations()).isEmpty();
+    }
+
+    @Test
+    void aNullableConditionWithoutItsHeaderPasses() {
+        assertPasses(REMOVE_OPTIONAL, request("DELETE"));
+        assertPasses(REVISE, request("PUT"));
+    }
+
+    private static void assertPreconditionRequired(RouteDefinition route, ServerRequest request,
+            Violation... violations) {
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> Preconditions.check(route, request))
+                .satisfies(e -> {
+                    assertThat(e.code()).isEqualTo("PRECONDITION_REQUIRED");
+                    // Core's code, which every protocol can raise; REST answers it 428.
+                    assertThat(e.details()).isInstanceOf(SynapseErrors.class);
+                    assertThat(e.violations()).containsExactly(violations);
+                });
     }
 
     @Test

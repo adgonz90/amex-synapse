@@ -230,9 +230,17 @@ public final class RouteSpec<I, O> {
      * {@code List} or a {@code PageResult} fails startup. The component must be a string, number, boolean, enum or
      * {@code java.time} value, or a {@code List} or {@code Optional} of one, formatted with Spring MVC's conversion
      * service; {@code Location}, {@code Link}, {@code Content-Type}, {@code Content-Length} and {@code ETag} are
-     * reserved, and so are {@code Cache-Control} and {@code Vary} on a route with {@link #etag}. An input component
-     * bound from {@code If-Match} or {@code If-None-Match} receives the entity tag's value, and must be
-     * {@code @Nullable}: {@code *} and an absent header bind {@code null}.
+     * reserved, and so are {@code Cache-Control} and {@code Vary} on a route with {@link #etag}.
+     *
+     * <p>
+     * An input component bound from {@code If-Match} or {@code If-None-Match} must be {@code @Nullable}, and one
+     * component at most binds each of them. On a write (every method but {@code GET} and {@code HEAD}) it is a
+     * {@code @Nullable VersionCondition<V>} with a declared version type {@code V}: one entity tag binds
+     * {@code Version(v)}, its opaque value converted to {@code V} (strong or weak; a weak {@code If-Match} is then
+     * answered 412), {@code *} binds {@code AnyVersion}, and an absent header binds {@code null}. A read may also bind a
+     * plain type, which receives the tag's converted value, and {@code null} for {@code *}. A {@code VersionCondition}
+     * component can't bind from any other header, a path variable, the query string, a cookie or the body. Anything
+     * else fails startup.
      *
      * @param name the header name
      * @param component a component of the input or the output record
@@ -323,14 +331,23 @@ public final class RouteSpec<I, O> {
     }
 
     /**
-     * Answers 428 {@code PRECONDITION_REQUIRED} to a request without {@code If-Match}; {@code If-Match: *} counts as
-     * present. The route must be a {@code POST}, {@code PUT} or {@code DELETE} and must bind {@code If-Match} to an
-     * input component, on the route ({@code .header("If-Match", ...)}) or by a convention; otherwise startup fails.
+     * Serves this route in an API version, at {@code /v<version>} followed by its path: {@code .get("/books/{id}", op)
+     * .version("2")} answers {@code /v2/books/{id}}, and a route on {@code /} answers {@code /v<version>}. A version
+     * is {@code major[.minor[.patch]]} ({@code 1}, {@code 1.2} or {@code 1.2.3}), without a {@code v} prefix, and is
+     * exact: the route answers only its own version, and a version that no route declares is 404.
      *
+     * <p>
+     * {@code .version} is declared at most once per route; to serve a route in several versions, declare it once per
+     * version. Two versions of the same method and path that are equal ({@code 2} and {@code 2.0}) fail startup, and
+     * so does an output header named {@code Deprecation} or {@code Sunset}, which Spring's API versioning sets on a
+     * versioned route. API versioning is turned on by the first versioned route; routes without a version answer as
+     * before.
+     *
+     * @param version the version, such as {@code "2"} or {@code "1.2"}
      * @return this route
      */
-    public RouteSpec<I, O> requireIfMatch() {
-        return declare(new RouteDeclaration.RequireIfMatch());
+    public RouteSpec<I, O> version(String version) {
+        return declare(new RouteDeclaration.Version(version));
     }
 
     /**

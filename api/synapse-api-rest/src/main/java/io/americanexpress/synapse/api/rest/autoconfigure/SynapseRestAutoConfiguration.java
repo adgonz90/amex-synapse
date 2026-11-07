@@ -39,6 +39,8 @@ import org.springframework.core.Ordered;
 import org.springframework.core.convert.ConversionService;
 import org.springframework.core.env.Environment;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.servlet.function.RouterFunction;
 import org.springframework.web.servlet.function.ServerResponse;
 import tools.jackson.databind.json.JsonMapper;
@@ -48,6 +50,8 @@ import io.americanexpress.synapse.api.rest.RestConventions;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
+import io.americanexpress.synapse.api.rest.internal.cors.SynapseCorsConfigurationSource;
+import io.americanexpress.synapse.api.rest.internal.cors.SynapseCorsFilter;
 import io.americanexpress.synapse.api.rest.internal.edge.ConcurrencyLimitFilter;
 import io.americanexpress.synapse.api.rest.internal.edge.DeadlinePolicy;
 import io.americanexpress.synapse.api.rest.internal.edge.InboundPropagationFilter;
@@ -65,6 +69,7 @@ import io.americanexpress.synapse.api.rest.internal.route.ExposureInventory;
 import io.americanexpress.synapse.api.rest.internal.route.MethodNotAllowedMapping;
 import io.americanexpress.synapse.api.rest.internal.route.ResponseWriter;
 import io.americanexpress.synapse.api.rest.internal.route.RouteCompiler;
+import io.americanexpress.synapse.api.rest.internal.version.SynapseApiVersioning;
 import io.americanexpress.synapse.api.rest.paging.CursorCodec;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextProperties;
@@ -74,9 +79,9 @@ import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 
 /**
- * Auto-configuration for the REST API plugin: its properties, the edge filters, and the routes compiled from the
- * {@link RestBindings} beans (with the beans that build them, present only when there are bindings). Active in servlet
- * web applications only.
+ * Auto-configuration for the REST API plugin: its properties, the edge filters, the CORS configuration, and the routes
+ * compiled from the {@link RestBindings} beans (with the beans that build them, present only when there are
+ * bindings). Active in servlet web applications only.
  */
 @AutoConfiguration(after = {WebMvcAutoConfiguration.class, WebMvcObservationAutoConfiguration.class,
         SynapseContextAutoConfiguration.class, SynapseOperationAutoConfiguration.class})
@@ -154,11 +159,35 @@ public class SynapseRestAutoConfiguration {
     }
 
     /**
+     * The edge filter that applies the CORS configuration ({@code synapse.api.rest.cors}): it answers valid
+     * pre-flights, rejects disallowed cross-origin requests with a {@code CORS_REJECTED} problem (403), and sets the
+     * CORS headers before the rest of the chain runs, so the limits' and the error handling's responses carry them. It
+     * runs inside the context filter, so a rejection carries the correlation id, and it handles REQUEST and ERROR
+     * dispatches. It reads the bean named {@code corsConfigurationSource}: Spring MVC's
+     * {@code HandlerMappingIntrospector} is a {@link CorsConfigurationSource} too. Define a bean with the same name to
+     * replace it.
+     *
+     * @param source the CORS configuration source
+     * @param writer writes the rejections
+     * @return the filter registration
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseCorsFilter")
+    FilterRegistrationBean<SynapseCorsFilter> synapseCorsFilter(
+            @Qualifier("corsConfigurationSource") CorsConfigurationSource source, ProblemWriter writer) {
+        SynapseCorsFilter filter = new SynapseCorsFilter(source, writer);
+        FilterRegistrationBean<SynapseCorsFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setDispatcherTypes(DispatcherType.REQUEST, DispatcherType.ERROR);
+        registration.setOrder(filter.getOrder());
+        return registration;
+    }
+
+    /**
      * The edge filter that caps the requests handled at the same time ({@code synapse.api.rest.max-concurrent-requests})
-     * and answers the others 503 with {@code Retry-After: 1}. It runs inside the context filter, so the 503 carries the
-     * correlation id. Requests to Actuator on the application's port are never counted; their paths come from Boot's
-     * {@code management.*} properties ({@link ManagementPaths}). It handles REQUEST dispatches only. Define a bean
-     * with the same name to replace it.
+     * and answers the others 503 with {@code Retry-After: 1}. It runs inside the context and CORS filters, so the 503
+     * carries the correlation id and the CORS headers. Requests to Actuator on the application's port are never
+     * counted; their paths come from Boot's {@code management.*} properties ({@link ManagementPaths}). It handles
+     * REQUEST dispatches only. Define a bean with the same name to replace it.
      *
      * @param properties the REST properties, for the limit
      * @param environment the environment, for the management paths
@@ -217,6 +246,28 @@ public class SynapseRestAutoConfiguration {
     }
 
     /**
+     * The CORS configuration of the REST routes, from {@code synapse.api.rest.cors}: none without allowed origins, so
+     * CORS is off, and none for Actuator's paths on the application's port ({@link ManagementPaths}), which Boot's
+     * {@code management.endpoints.web.cors} settings cover. It exists with or without {@link RestBindings} beans and
+     * origins, so an environment's file can set the origins. A {@code *} origin is logged as a warning. Define a bean
+     * with the same name to replace it.
+     *
+     * @param properties the REST properties, for the CORS settings
+     * @param correlation the correlation properties, for the correlation header, which is always exposed
+     * @param environment the environment, for the management paths
+     * @param resourceLoader the application's resource loader, whose class loader tells whether Actuator is present
+     * @return the CORS configuration source
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "corsConfigurationSource")
+    UrlBasedCorsConfigurationSource corsConfigurationSource(SynapseRestProperties properties,
+            SynapseCorrelationProperties correlation, Environment environment, ResourceLoader resourceLoader) {
+        return SynapseCorsConfigurationSource
+                .of(properties.cors(), correlation.header(),
+                        ManagementPaths.excludedPrefixes(environment, resourceLoader.getClassLoader()));
+    }
+
+    /**
      * The functional routes of every {@link RestBindings} bean, most specific template first. The bindings are resolved
      * and checked here, so a binding mistake fails startup. Define a bean with the same name to replace it.
      *
@@ -248,6 +299,24 @@ public class SynapseRestAutoConfiguration {
     MethodNotAllowedMapping synapseRestMethodNotAllowedMapping(
             @Qualifier("synapseRestRoutes") RouterFunction<?> routes) {
         return new MethodNotAllowedMapping(routes);
+    }
+
+    /**
+     * Turns Spring's API versioning on when a route declares {@code .version(...)}: the version is optional and is
+     * read only from the first path segment of a versioned route's path, and the declared versions are supported. It
+     * runs before Boot's Spring MVC configuration, so a {@code spring.mvc.apiversion.*} setting wins, and it fails
+     * startup when {@code spring.mvc.apiversion.use.path-segment} is set while a route is versioned. Without a
+     * versioned route it does nothing. Define a bean with the same name to replace it.
+     *
+     * @param bindings the bindings
+     * @param environment the environment, for {@code spring.mvc.apiversion.use.path-segment}
+     * @return the API versioning configuration
+     */
+    @Bean
+    @ConditionalOnBean(RestBindings.class)
+    @ConditionalOnMissingBean(name = "synapseApiVersioning")
+    SynapseApiVersioning synapseApiVersioning(ObjectProvider<RestBindings> bindings, Environment environment) {
+        return new SynapseApiVersioning(bindings, environment);
     }
 
     /**

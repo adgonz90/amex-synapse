@@ -24,7 +24,8 @@ import io.americanexpress.synapse.core.paging.SortOrder;
  *
  * @param operation the name of the operation the route calls
  * @param sort the sort of the request, in order
- * @param inputDigest a digest of the request's other inputs (everything but the paging parameters)
+ * @param inputDigest a digest of the request's other inputs (everything but the paging parameters) and, on a
+ *        versioned route, of the route's version
  */
 @Incubating
 public record CursorScope(String operation, List<SortOrder> sort, String inputDigest) {

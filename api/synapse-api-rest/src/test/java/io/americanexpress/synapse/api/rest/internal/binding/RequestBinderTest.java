@@ -56,6 +56,7 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CheckedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ClashOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CodedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConditionalReadRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConvertOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConvertRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CountedBookOperation;
@@ -64,16 +65,24 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CustomBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CustomBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DatedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DelegatedBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DelegatedBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.FindBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.FindBooksRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetConditionalBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetTaggedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GuardedOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GuardedRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GuardedRevisionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GuardedRevisionRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HeaderRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HeadersOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HiddenOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Isbn;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseConditionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseConditionRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PairFilter;
@@ -83,6 +92,8 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathDatedRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathFilterOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PingOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PutBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PutBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeQuery;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchRequest;
@@ -98,17 +109,27 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StockBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBothOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBothRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictPutBookOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictPutBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedReadRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TenantId;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ThrowingRecordOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.UpdateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.UpdateBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WholeRevisionOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WholeRevisionRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WriteOptions;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.api.rest.internal.edge.SizeLimitedRequest;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
@@ -737,6 +758,22 @@ class RequestBinderTest {
     }
 
     @Test
+    void recordWithADelegatingFactoryIsReadByTheFactory() {
+        RouteDefinition delegated = route(
+                RestBindings.builder().put("/delegated/{id}", new DelegatedBookOperation()).build());
+        binder.checkBindable(delegated);
+
+        // The factory reads its own keys; the path still supplies the id.
+        assertThat(bind(delegated,
+                json(MockMvcRequestBuilders.put("/delegated/{id}", ONE), "{\"name\":\"Dune\",\"count\":2}"),
+                Map.of("id", ONE.toString()))).isEqualTo(new DelegatedBookRequest(ONE, "Dune", 2));
+        // The canonical constructor's names mean nothing to the factory.
+        assertThat(bind(delegated,
+                json(MockMvcRequestBuilders.put("/delegated/{id}", ONE), "{\"title\":\"Dune\",\"copies\":2}"),
+                Map.of("id", ONE.toString()))).isEqualTo(new DelegatedBookRequest(ONE, "null", 0));
+    }
+
+    @Test
     void formattedComponentBoundFromThePathBinds() {
         RouteDefinition dated = route(RestBindings.builder().put("/p/{day}", new PathDatedOperation()).build());
         LocalDate day = LocalDate.of(2026, 12, 24);
@@ -1031,58 +1068,245 @@ class RequestBinderTest {
     }
 
     @Test
-    void strongTagBindsUnquotedAndConverted() {
-        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "\"5\"")).version()).isEqualTo(5L);
+    void strongTagBindsVersion() {
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "\"5\"")).version())
+                .isEqualTo(VersionCondition.of(5L));
     }
 
     @Test
-    void wildcardBindsNull() {
-        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "*")).version()).isNull();
+    void wildcardAndAbsentBindDifferently() {
+        RouteDefinition ifMatch = ifMatchRoute();
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatch, "*")).version()).isSameAs(VersionCondition.any());
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatch)).version()).isNull();
+
+        RouteDefinition createOnly = route(RestBindings
+                .builder()
+                .put("/books/{id}", new PutBookOperation())
+                .header("If-None-Match", PutBookRequest::unless)
+                .build());
+        assertThat(putBook(createOnly, "*").unless()).isSameAs(VersionCondition.any());
+        assertThat(putBook(createOnly, null).unless()).isNull();
+        assertThat(putBook(createOnly, "\"7\"").unless()).isEqualTo(VersionCondition.of(7L));
     }
 
     @Test
-    void absentHeaderBindsNull() {
+    void aRequiredConditionWithoutItsHeaderIs428() {
+        RouteDefinition remove = strictRemoveRoute();
+        // * counts as present, and one tag binds its version.
+        assertThat(strictRemove(remove, "If-Match", "*").version()).isSameAs(VersionCondition.any());
+        assertThat(strictRemove(remove, "If-Match", "\"3\"").version()).isEqualTo(VersionCondition.of(3L));
+        // Without the header: 428 with the violation that says how to retry, not 400 "must not be null".
+        assertPreconditionRequired(() -> strictRemove(remove), new Violation("If-Match", IF_MATCH_REQUIRED));
+
+        RouteDefinition createOnly = strictPutRoute();
+        assertThat(strictPut(createOnly, "{\"title\":\"T\"}", "*").unless()).isSameAs(VersionCondition.any());
+        assertThat(strictPut(createOnly, "{\"title\":\"T\"}", "\"7\"").unless()).isEqualTo(VersionCondition.of(7L));
+        assertPreconditionRequired(() -> strictPut(createOnly, "{\"title\":\"T\"}", null),
+                new Violation("If-None-Match", IF_NONE_MATCH_REQUIRED));
+    }
+
+    @Test
+    void aMissingRequiredConditionComesAfterTheBindingFailuresAndTheUnboundPreconditions() {
+        // A body that doesn't bind is 400 first.
+        assertViolations(() -> strictPut(strictPutRoute(), "{}", null), new Violation("title", "must not be null"));
+        // An If-None-Match the route doesn't bind is 412 before the missing If-Match is 428, as Preconditions orders them.
+        assertError(() -> strictRemove(strictRemoveRoute(), "If-None-Match", "\"1\""),
+                SynapseErrors.PRECONDITION_FAILED);
+    }
+
+    @Test
+    void bothRequiredHeadersMissingGetBothViolations() {
+        RouteDefinition both = route(RestBindings
+                .builder()
+                .put("/books/{id}", new StrictBothOperation())
+                .header("If-Match", StrictBothRequest::version)
+                .header("If-None-Match", StrictBothRequest::unless)
+                .build());
+        MockHttpServletRequestBuilder request = MockMvcRequestBuilders.put("/books/{id}", ONE);
+
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> bind(both, request, Map.of("id", ONE.toString())))
+                .satisfies(e -> {
+                    assertThat(e.code()).isEqualTo("PRECONDITION_REQUIRED");
+                    assertThat(e.violations())
+                            .containsExactly(new Violation("If-Match", IF_MATCH_REQUIRED),
+                                    new Violation("If-None-Match", IF_NONE_MATCH_REQUIRED));
+                });
+    }
+
+    @Test
+    void aRecordReadWholeStillGets428ForAMissingRequiredCondition() {
+        RouteDefinition whole = route(RestBindings
+                .builder()
+                .put("/books/{id}", new WholeRevisionOperation())
+                .header("If-Match", WholeRevisionRequest::version)
+                .build());
+        Map<String, String> id = Map.of("id", ONE.toString());
+
+        assertThat(bind(whole, json(MockMvcRequestBuilders.put("/books/{id}", ONE), "{\"title\":\"T\"}")
+                .header("If-Match", "\"4\""), id))
+                .isEqualTo(new WholeRevisionRequest(ONE, VersionCondition.of(4L), "T"));
+        assertPreconditionRequired(
+                () -> bind(whole, json(MockMvcRequestBuilders.put("/books/{id}", ONE), "{\"title\":\"T\"}"), id),
+                new Violation("If-Match", IF_MATCH_REQUIRED));
+
+        // Jackson builds a record it reads whole before the other sources are read, so a constructor that rejects
+        // the null version fails it as 400, with the header or without (documented in rest.adoc).
+        RouteDefinition guarded = route(RestBindings
+                .builder()
+                .put("/books/{id}", new GuardedRevisionOperation())
+                .header("If-Match", GuardedRevisionRequest::version)
+                .build());
+        assertError(() -> bind(guarded, json(MockMvcRequestBuilders.put("/books/{id}", ONE), "{\"title\":\"T\"}")
+                .header("If-Match", "\"4\""), id), SynapseErrors.MALFORMED_REQUEST);
+        assertError(
+                () -> bind(guarded, json(MockMvcRequestBuilders.put("/books/{id}", ONE), "{\"title\":\"T\"}"), id),
+                SynapseErrors.MALFORMED_REQUEST);
+    }
+
+    @Test
+    void aNullableConditionWithoutItsHeaderBindsNull() {
         assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute())).version()).isNull();
+    }
+
+    private static final String IF_MATCH_REQUIRED = "is required; send the ETag from a GET of this resource";
+
+    private static final String IF_NONE_MATCH_REQUIRED = "is required; send * to write only if the resource doesn't "
+            + "exist, or the ETag the resource must not have";
+
+    private static RouteDefinition strictRemoveRoute() {
+        return route(RestBindings
+                .builder()
+                .delete("/books/{id}", new StrictConditionOperation())
+                .header("If-Match", StrictConditionRequest::version)
+                .build());
+    }
+
+    private static RouteDefinition strictPutRoute() {
+        return route(RestBindings
+                .builder()
+                .put("/books/{id}", new StrictPutBookOperation())
+                .header("If-None-Match", StrictPutBookRequest::unless)
+                .build());
+    }
+
+    private StrictConditionRequest strictRemove(RouteDefinition route, String... header) {
+        MockHttpServletRequestBuilder request = MockMvcRequestBuilders.delete("/books/{id}", ONE);
+        for (int i = 0; i < header.length; i += 2) {
+            request.header(header[i], header[i + 1]);
+        }
+        return Objects.requireNonNull((StrictConditionRequest) bind(route, request, Map.of("id", ONE.toString())));
+    }
+
+    private StrictPutBookRequest strictPut(RouteDefinition route, String body, @Nullable String ifNoneMatch) {
+        MockHttpServletRequestBuilder request = json(MockMvcRequestBuilders.put("/books/{id}", ONE), body);
+        if (ifNoneMatch != null) {
+            request.header("If-None-Match", ifNoneMatch);
+        }
+        return Objects.requireNonNull((StrictPutBookRequest) bind(route, request, Map.of("id", ONE.toString())));
+    }
+
+    private static void assertPreconditionRequired(Runnable call, Violation violation) {
+        assertThatExceptionOfType(SynapseException.class).isThrownBy(call::run).satisfies(e -> {
+            assertThat(e.code()).isEqualTo("PRECONDITION_REQUIRED");
+            assertThat(e.details()).isInstanceOf(SynapseErrors.class);
+            assertThat(e.violations()).containsExactly(violation);
+        });
     }
 
     @Test
     void weakTagBindsItsValue() {
-        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "W/\"5\"")).version()).isEqualTo(5L);
+        assertThat(Objects.requireNonNull(bindIfMatch(ifMatchRoute(), "W/\"5\"")).version())
+                .isEqualTo(VersionCondition.of(5L));
     }
 
     @Test
-    void listIsAViolation() {
+    void listMalformedAndUnconvertibleKeepTheirViolations() {
         RouteDefinition route = ifMatchRoute();
         Violation single = new Violation("version", "must be a single entity tag");
         assertViolations(() -> bindIfMatch(route, "\"5\", \"6\""), single);
         assertViolations(() -> bindIfMatch(route, "\"5\"", "\"6\""), single);
-    }
-
-    @Test
-    void unquotedOrMalformedIsAViolation() {
-        RouteDefinition route = ifMatchRoute();
         for (String bad : List.of("5", "\"5", "*, \"5\"", "\"5\",,", "", "\"5\" \"6\"")) {
             assertViolations(() -> bindIfMatch(route, bad), new Violation("version", "must be an entity tag"));
         }
+        assertViolations(() -> bindIfMatch(route, "\"abc\""), new Violation("version", "is not a valid value"));
+        // An empty tag converts to no number, so it names no version.
+        assertViolations(() -> bindIfMatch(route, "\"\""), new Violation("version", "is not a valid value"));
     }
 
     @Test
-    void unconvertibleTagIsAViolation() {
-        assertViolations(() -> bindIfMatch(ifMatchRoute(), "\"abc\""),
-                new Violation("version", "is not a valid value"));
-    }
-
-    @Test
-    void ifNoneMatchBindsTheSameWay() {
+    void readRouteStillBindsPlainTypes() {
         RouteDefinition route = route(RestBindings
                 .builder()
-                .put("/books/{id}", new TaggedBookOperation())
-                .header("If-None-Match", TaggedBookRequest::etag)
+                .get("/books/{id}", new GetTaggedBookOperation())
+                .header("If-None-Match", TaggedReadRequest::tag)
                 .build());
-        assertThat(tagged(route, "\"x\"").etag()).isEqualTo("x");
-        assertThat(tagged(route, "*").etag()).isNull();
-        assertThat(tagged(route, "W/\"x\"").etag()).isEqualTo("x");
-        assertViolations(() -> tagged(route, "x"), new Violation("etag", "must be an entity tag"));
+        assertThat(taggedRead(route, "\"x\"").tag()).isEqualTo("x");
+        assertThat(taggedRead(route, "*").tag()).isNull();
+        assertThat(taggedRead(route, "W/\"x\"").tag()).isEqualTo("x");
+        assertViolations(() -> taggedRead(route, "x"), new Violation("tag", "must be an entity tag"));
+    }
+
+    @Test
+    void readRouteMayBindAVersionCondition() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .get("/books/{id}", new GetConditionalBookOperation())
+                .header("If-None-Match", ConditionalReadRequest::version)
+                .build());
+        binder.checkBindable(route);
+        assertThat(conditionalRead(route, "\"3\"").version()).isEqualTo(VersionCondition.of(3L));
+        assertThat(conditionalRead(route, "*").version()).isSameAs(VersionCondition.any());
+        assertThat(conditionalRead(route, null).version()).isNull();
+    }
+
+    private ConditionalReadRequest conditionalRead(RouteDefinition route, @Nullable String ifNoneMatch) {
+        MockHttpServletRequestBuilder request = MockMvcRequestBuilders.get("/books/{id}", ONE);
+        if (ifNoneMatch != null) {
+            request.header("If-None-Match", ifNoneMatch);
+        }
+        return Objects.requireNonNull((ConditionalReadRequest) bind(route, request, Map.of("id", ONE.toString())));
+    }
+
+    @Test
+    void versionTypeMustConvertFromAString() {
+        assertNotConvertible(
+                RestBindings
+                        .builder()
+                        .delete("/books/{id}", new LooseConditionOperation())
+                        .header("If-Match", LooseConditionRequest::pair)
+                        .build(),
+                "LooseConditionRequest.pair (type io.americanexpress.synapse.core.conditional.VersionCondition<");
+    }
+
+    @Test
+    void bodyVersionIsComparedWithTheTagByValue() {
+        RouteDefinition route = ifMatchRoute();
+        assertThat(Objects
+                .requireNonNull(bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":5}", "\"5\""))
+                .version()).isEqualTo(VersionCondition.of(5L));
+        Violation conflict = new Violation("version", "conflicts with the value from the header");
+        assertViolations(() -> bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":6}", "\"5\""), conflict);
+        assertViolations(() -> bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":\"x\"}", "\"5\""), conflict);
+        // As for a plain type, * and an absent header carry no value, so a body version conflicts with them...
+        assertViolations(() -> bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":5}", "*"), conflict);
+        assertViolations(() -> bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":5}", null), conflict);
+        // ...and a null one doesn't.
+        assertThat(Objects
+                .requireNonNull(bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":null}", "*"))
+                .version()).isSameAs(VersionCondition.any());
+        assertThat(Objects
+                .requireNonNull(bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":null}", null))
+                .version()).isNull();
+    }
+
+    private @Nullable ReviseBookRequest bindIfMatchWithBody(RouteDefinition route, String body,
+            @Nullable String ifMatch) {
+        MockHttpServletRequestBuilder request = json(MockMvcRequestBuilders.put("/books/{id}", ONE), body);
+        if (ifMatch != null) {
+            request.header("If-Match", ifMatch);
+        }
+        return (ReviseBookRequest) bind(route, request, Map.of("id", ONE.toString()));
     }
 
     @Test
@@ -1099,11 +1323,20 @@ class RequestBinderTest {
         assertThat(Objects.requireNonNull(input).other()).isEqualTo("\"5\"");
     }
 
-    private TaggedBookRequest tagged(RouteDefinition route, String value) {
+    private PutBookRequest putBook(RouteDefinition route, @Nullable String ifNoneMatch) {
+        MockHttpServletRequestBuilder request = json(MockMvcRequestBuilders.put("/books/{id}", ONE),
+                "{\"title\":\"T\"}");
+        if (ifNoneMatch != null) {
+            request.header("If-None-Match", ifNoneMatch);
+        }
+        return Objects.requireNonNull((PutBookRequest) bind(route, request, Map.of("id", ONE.toString())));
+    }
+
+    private TaggedReadRequest taggedRead(RouteDefinition route, String value) {
         MockHttpServletRequestBuilder request = MockMvcRequestBuilders
-                .put("/books/{id}", ONE)
+                .get("/books/{id}", ONE)
                 .header("If-None-Match", value);
-        return Objects.requireNonNull((TaggedBookRequest) bind(route, request, Map.of("id", ONE.toString())));
+        return Objects.requireNonNull((TaggedReadRequest) bind(route, request, Map.of("id", ONE.toString())));
     }
 
     private static MockHttpServletRequestBuilder json(MockHttpServletRequestBuilder builder, String body) {

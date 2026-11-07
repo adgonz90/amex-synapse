@@ -63,6 +63,7 @@
         <module>core/synapse-test</module>
         <module>core/synapse-logging-log4j2</module>
         <module>api/synapse-api-rest</module>
+        <module>api/synapse-api-rest-openapi</module>
         <module>api/synapse-test-rest</module>
         <!-- Runnable samples; never published. -->
         <module>samples/rest-books</module>
@@ -135,6 +136,11 @@
 
         <!-- Architecture rules for consumers (synapse-test, archunit support); not managed by Spring Boot. -->
         <archunit.version>1.5.1</archunit.version>
+        <!-- OpenAPI for REST bindings (synapse-api-rest-openapi): not managed by Spring Boot; 3.2.x is built on Boot
+             4.1.2, see https://github.com/springdoc/springdoc-openapi/releases/tag/v3.2.0. The Swagger UI recipe in
+             samples/rest-books/README.md and docs/modules/ROOT/pages/openapi.adoc repeats this version as a literal
+             (the BOM doesn't manage the UI starter): bump them together. -->
+        <springdoc.version>3.2.0</springdoc.version>
     </properties>
 
     <dependencyManagement>
@@ -162,6 +168,11 @@
             </dependency>
             <dependency>
                 <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-rest-openapi</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
                 <artifactId>synapse-test-rest</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -169,6 +180,11 @@
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
                 <version>${archunit.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>${springdoc.version}</version>
             </dependency>
 
             <dependency>

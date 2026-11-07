@@ -32,6 +32,7 @@ import java.util.UUID;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import org.jspecify.annotations.Nullable;
 import org.springframework.util.ReflectionUtils;
+import org.springframework.web.accept.SemanticApiVersionParser;
 import tools.jackson.databind.MapperFeature;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.cfg.DateTimeFeature;
@@ -57,13 +58,21 @@ import io.americanexpress.synapse.core.paging.PageQuery;
  * <li>Components bound from {@code If-Match} or {@code If-None-Match} are left out.</li>
  * <li>Components bound with {@code .context(...)} or {@code .from(...)} are included, so a cursor can't be replayed by
  * another principal or tenant; a component that changes on every request therefore makes every cursor fail.</li>
- * <li>A {@code PageQuery} input, or no input, has the digest of {@code {}}.</li>
+ * <li>A versioned route's version is included, as {@code "@version"} with its parsed value
+ * ({@code major.minor.patch}), so a cursor issued in one version is rejected in another: versions may differ in
+ * their sort keys and item shape. Routes of one operation in versions that parse equal share their cursors.</li>
+ * <li>A {@code PageQuery} input, or no input, on an unversioned route has the digest of {@code {}}.</li>
  * </ul>
  * The binding validator admits, on a route with a {@code PageResult} output or that binds {@code PageQuery}, only
  * components this digest can write (records, simple types, and collections of them). A value it still can't write
  * fails the request with a 500: it is never left out.
  */
 public final class InputDigest {
+
+    /** The key of a versioned route's version, which no record component name can take. */
+    private static final String VERSION_KEY = "@version";
+
+    private static final SemanticApiVersionParser VERSION_PARSER = new SemanticApiVersionParser();
 
     private final JsonMapper canonical;
 
@@ -96,6 +105,11 @@ public final class InputDigest {
      */
     public String of(RouteDefinition route, @Nullable Object input) {
         Map<String, @Nullable Object> filters = new TreeMap<>();
+        String version = route.version();
+        if (version != null) {
+            // No component name can be @version; versions that parse equal (2 and 2.0) are written alike.
+            filters.put(VERSION_KEY, VERSION_PARSER.parseVersion(version).toString());
+        }
         if (input instanceof Record record && !(input instanceof PageQuery)) {
             Set<String> excluded = excluded(route);
             for (RecordComponent component : record.getClass().getRecordComponents()) {

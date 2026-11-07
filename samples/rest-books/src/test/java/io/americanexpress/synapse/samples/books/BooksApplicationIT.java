@@ -13,21 +13,41 @@
  */
 package io.americanexpress.synapse.samples.books;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.logging.LogLevel;
+import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.core.Ordered;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.client.RestTestClient;
+import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -46,7 +66,8 @@ import static org.mockito.BDDMockito.willAnswer;
  *
  * <p>
  * The tests share the catalog (one Spring context). The searches expect the three seeded books, so every test that
- * adds a book deletes it, and no test changes a seeded book.
+ * adds a book deletes it, and no test changes a seeded book. The nested classes, which turn the OpenAPI document on,
+ * turn CORS on and set a context path, run their own contexts.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "synapse.errors.include-detail=false")
 @AutoConfigureRestTestClient
@@ -55,6 +76,9 @@ import static org.mockito.BDDMockito.willAnswer;
 class BooksApplicationIT {
 
     private static final String DUNE = "/books/00000000-0000-0000-0000-000000000001";
+
+    /** The front end that application-local.yaml allows; the nested classes allow it too. */
+    static final String LOCAL_FRONT_END = "http://localhost:3000";
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
@@ -280,6 +304,40 @@ class BooksApplicationIT {
     }
 
     @Test
+    void getThenPutOfTheSameJsonWithIfMatchUpdates() {
+        Result created = create("isbn-it-round-trip", "The Word for World Is Forest");
+        String location = Objects.requireNonNull(created.headers().getLocation()).toString();
+        Result read = call(client.get().uri(location));
+        String etag = Objects.requireNonNull(read.headers().getETag());
+
+        // The body read back carries "version":1, the same value as If-Match: that is no conflict.
+        Result updated = call(client
+                .put()
+                .uri(location)
+                .header("If-Match", etag)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(read.body()));
+
+        assertThat(updated.status()).isEqualTo(200);
+        assertThat(updated.json().get("version").asLong()).isEqualTo(2);
+
+        // A body version that differs from If-Match is a conflict, before the operation runs.
+        Result conflict = call(client
+                .put()
+                .uri(location)
+                .header("If-Match", "\"2\"")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(read.body()));
+
+        assertThat(conflict.status()).isEqualTo(400);
+        assertThat(conflict.json().get("violations").get(0).get("field").asString()).isEqualTo("version");
+        assertThat(conflict.json().get("violations").get(0).get("message").asString())
+                .isEqualTo("conflicts with the value from the header");
+
+        deleteAt(created, "\"2\"");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void concurrentUpdateWithoutIfMatchIs409() {
         // Another request writes between this request's read and its compare-and-set: the read sees version 0, so the
@@ -419,6 +477,134 @@ class BooksApplicationIT {
     }
 
     @Test
+    void versionTwoServesTheNewShape() {
+        Result created = create("isbn-it-v2", "Good Omens", "Terry Pratchett, Neil Gaiman");
+        String location = Objects.requireNonNull(created.headers().getLocation()).toString();
+
+        Result v2 = call(client.get().uri("/v2" + location));
+
+        assertThat(v2.status()).isEqualTo(200);
+        assertThat(v2.headers().getETag()).isEqualTo("\"1\"");
+        assertThat(v2.headers().getVary()).containsExactly("Accept");
+        assertThat(v2.json().get("authors").valueStream().map(JsonNode::asString))
+                .containsExactly("Terry Pratchett", "Neil Gaiman");
+        assertThat(v2.json().propertyNames()).containsExactly("id", "isbn", "title", "authors", "year", "version");
+
+        Result v1 = call(client.get().uri(location));
+
+        assertThat(v1.status()).isEqualTo(200);
+        assertThat(v1.json().get("author").asString()).isEqualTo("Terry Pratchett, Neil Gaiman");
+        assertThat(v1.json().propertyNames())
+                .containsExactly("id", "isbn", "title", "author", "year", "addedVia", "version");
+
+        Result notModified = call(client.get().uri("/v2" + location).header("If-None-Match", "\"1\""));
+
+        assertThat(notModified.status()).isEqualTo(304);
+
+        Result v3 = call(client.get().uri("/v3" + location));
+
+        assertThat(v3.status()).isEqualTo(404);
+        assertThat(v3.json().get("code").asString()).isEqualTo("ROUTE_NOT_FOUND");
+
+        deleteAt(created, "\"1\"");
+
+        Result gone = call(client.get().uri("/v2" + location));
+
+        assertThat(gone.status()).isEqualTo(404);
+        assertThat(gone.json().get("code").asString()).isEqualTo("BOOK_NOT_FOUND");
+    }
+
+    @Test
+    void apiDocsAreOffInTest() {
+        // Off by default in every environment, and application-test.yaml doesn't turn it on.
+        Result docs = call(client.get().uri("/v3/api-docs"));
+
+        assertThat(docs.status()).isEqualTo(404);
+        assertThat(docs.json().get("code").asString()).isEqualTo("ROUTE_NOT_FOUND");
+    }
+
+    /** The OpenAPI document on, as application-local.yaml turns it on (BooksLocalEnvironmentIT loads that file). */
+    @Nested
+    @TestPropertySource(properties = "springdoc.api-docs.enabled=true")
+    class WithApiDocs {
+
+        @Autowired
+        RestTestClient docsClient;
+
+        @Test
+        void apiDocsListEveryRoute() {
+            Result docs = call(docsClient.get().uri("/v3/api-docs"));
+
+            assertThat(docs.status()).isEqualTo(200);
+            JsonNode json = docs.json();
+            assertThat(json.get("openapi").asString()).isEqualTo("3.1.0");
+            assertThat(json.get("paths").propertyNames())
+                    .contains("/books", "/books/{id}", "/books/stats", "/v2/books/{id}");
+            JsonNode v2 = json.get("paths").get("/v2/books/{id}").get("get");
+            assertThat(v2.get("operationId").asString()).isEqualTo("get-book-v2");
+            assertThat(v2
+                    .get("responses")
+                    .get("200")
+                    .get("content")
+                    .get("application/json")
+                    .get("schema")
+                    .get("$ref")
+                    .asString()).isEqualTo("#/components/schemas/BookV2");
+            assertThat(v2.get("responses").propertyNames()).contains("200", "304", "404");
+            assertThat(json
+                    .get("paths")
+                    .get("/books/{id}")
+                    .get("get")
+                    .get("responses")
+                    .get("200")
+                    .get("content")
+                    .get("application/json")
+                    .get("schema")
+                    .get("$ref")
+                    .asString())
+                    .isEqualTo("#/components/schemas/Book");
+            JsonNode schemas = json.get("components").get("schemas");
+            assertThat(schemas.propertyNames()).contains("Book", "BookV2");
+            assertThat(schemas.get("BookV2").get("properties").get("authors").get("type").asString())
+                    .isEqualTo("array");
+            assertThat(schemas.get("Book").get("properties").get("author").get("type").asString())
+                    .isEqualTo("string");
+            // Actuator is not a REST binding and is not documented.
+            assertThat(json.get("paths").propertyNames()).noneMatch(path -> path.startsWith("/actuator"));
+            // DeleteBookRequest.version isn't @Nullable, so DELETE requires If-Match (428 without it); the PUT's is
+            // @Nullable, so optional.
+            JsonNode book = json.get("paths").get("/books/{id}");
+            assertThat(ifMatch(book.get("delete")).get("required").asBoolean()).isTrue();
+            assertThat(book.get("delete").get("responses").propertyNames()).contains("204", "412", "428");
+            assertThat(ifMatch(book.get("put")).get("required").asBoolean()).isFalse();
+            assertThat(book.get("put").get("responses").propertyNames()).doesNotContain("428");
+        }
+
+        private static JsonNode ifMatch(JsonNode operation) {
+            for (JsonNode parameter : operation.get("parameters")) {
+                if (parameter.get("name").asString().equals("If-Match")) {
+                    return parameter;
+                }
+            }
+            throw new AssertionError("no If-Match parameter in " + operation);
+        }
+    }
+
+    @Test
+    void corsIsOffInTest() {
+        // application-test.yaml lists no origins, so no request gets CORS headers or a CORS rejection.
+        Result read = call(client.get().uri(DUNE).header(HttpHeaders.ORIGIN, LOCAL_FRONT_END));
+
+        assertThat(read.status()).isEqualTo(200);
+        assertThat(read.headers().getAccessControlAllowOrigin()).isNull();
+
+        Result other = call(client.get().uri(DUNE).header(HttpHeaders.ORIGIN, "https://evil.example"));
+
+        assertThat(other.status()).isEqualTo(200);
+        assertThat(other.headers().getAccessControlAllowOrigin()).isNull();
+    }
+
+    @Test
     void healthIsUp() {
         client
                 .get()
@@ -431,12 +617,162 @@ class BooksApplicationIT {
                 .isEqualTo("UP");
     }
 
+    /** CORS on for the local front end, as application-local.yaml turns it on. */
+    @Nested
+    @TestPropertySource(properties = "synapse.api.rest.cors.allowed-origins=" + LOCAL_FRONT_END)
+    class WithCors {
+
+        @Autowired
+        RestTestClient corsClient;
+
+        @Test
+        void theApiAnswersTheLocalFrontEnd() {
+            Result read = call(corsClient.get().uri(DUNE).header(HttpHeaders.ORIGIN, LOCAL_FRONT_END));
+
+            assertThat(read.status()).isEqualTo(200);
+            assertThat(read.headers().getAccessControlAllowOrigin()).isEqualTo(LOCAL_FRONT_END);
+            assertThat(read.headers().getAccessControlExposeHeaders()).contains("X-Correlation-Id", "ETag");
+
+            Result other = call(corsClient.get().uri(DUNE).header(HttpHeaders.ORIGIN, "https://evil.example"));
+
+            assertThat(other.status()).isEqualTo(403);
+            assertThat(other.json().get("code").asString()).isEqualTo("CORS_REJECTED");
+            assertThat(other.headers().getAccessControlAllowOrigin()).isNull();
+        }
+
+        @Test
+        void managementPathsAreNotTouched() {
+            // Actuator has its own CORS settings (management.endpoints.web.cors.*), none here: Synapse's policy
+            // neither answers for it nor rejects for it, even for the origin it allows.
+            Result allowed = call(corsClient.get().uri("/actuator/health").header(HttpHeaders.ORIGIN, LOCAL_FRONT_END));
+
+            assertThat(allowed.status()).isEqualTo(200);
+            assertThat(allowed.json().get("status").asString()).isEqualTo("UP");
+            assertThat(allowed.headers().getAccessControlAllowOrigin()).isNull();
+            assertThat(allowed.headers().getAccessControlExposeHeaders()).isEmpty();
+
+            Result other = call(
+                    corsClient.get().uri("/actuator/health").header(HttpHeaders.ORIGIN, "https://evil.example"));
+
+            assertThat(other.status()).isEqualTo(200);
+            assertThat(other.headers().getAccessControlAllowOrigin()).isNull();
+        }
+    }
+
+    /**
+     * The service under a context path, with CORS on for the local front end. An error dispatch, whose path is the
+     * error page's, decides CORS on the request's original URI: the error response of an Actuator request gets no CORS
+     * headers however the context path was spelled, and the API's error responses keep them.
+     */
+    @Nested
+    @TestPropertySource(properties = {"server.servlet.context-path=/ctx",
+            "synapse.api.rest.cors.allowed-origins=" + LOCAL_FRONT_END})
+    @Import(FailingFilter.class)
+    class UnderAContextPath {
+
+        /** Tomcat's container loggers, which log every exception that escapes the filter chain. */
+        private static final String TOMCAT_CONTAINER = "org.apache.catalina.core.ContainerBase";
+
+        @LocalServerPort
+        int port;
+
+        @Autowired
+        LoggingSystem logging;
+
+        @Test
+        void errorDispatchOfAnActuatorPathGetsNoCorsHeaders() throws IOException, InterruptedException {
+            // The JDK client sends the path as written (RestTestClient would encode the % of /%63tx), and Tomcat
+            // decodes /%63tx to the context path /ctx. FailingFilter fails these requests before Synapse's CORS filter
+            // runs, so only the original URI on the error dispatch can tell an Actuator path from the API's.
+            try (HttpClient http = HttpClient.newHttpClient()) {
+                // Each deliberate failure is logged at ERROR with its stack trace twice: by Tomcat, and by Synapse's
+                // error controller ("Unhandled error for GET ..."). Tomcat's copy is silenced while these requests run
+                // (log levels are JVM-wide, so only here, and restored after). Synapse's four lines are expected and
+                // kept: a 500 INTERNAL looks the same whatever failed, and they show it was FailingFilter.
+                logging.setLogLevel(TOMCAT_CONTAINER, LogLevel.OFF);
+                try {
+                    for (String actuator : List.of("/%63tx/actuator/fail", "/ctx/actuator/fail")) {
+                        HttpResponse<String> response = get(http, actuator);
+
+                        assertThat(response.statusCode()).as(actuator).isEqualTo(500);
+                        assertThat(response.headers().firstValue(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN))
+                                .as(actuator)
+                                .isEmpty();
+                    }
+
+                    // The API's error response, under the same spellings, gets the policy on the error dispatch.
+                    for (String api : List.of("/%63tx/books/fail", "/ctx/books/fail")) {
+                        HttpResponse<String> response = get(http, api);
+
+                        assertThat(response.statusCode()).as(api).isEqualTo(500);
+                        assertThat(MAPPER.readTree(response.body()).get("code").asString())
+                                .as(api)
+                                .isEqualTo("INTERNAL");
+                        assertThat(response.headers().firstValue(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN))
+                                .as(api)
+                                .contains(LOCAL_FRONT_END);
+                    }
+                } finally {
+                    logging.setLogLevel(TOMCAT_CONTAINER, null);
+                }
+
+                // And a normal request keeps it.
+                HttpResponse<String> book = get(http, "/ctx" + DUNE);
+
+                assertThat(book.statusCode()).isEqualTo(200);
+                assertThat(book.headers().firstValue(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN))
+                        .contains(LOCAL_FRONT_END);
+            }
+        }
+
+        private HttpResponse<String> get(HttpClient http, String rawPath) throws IOException, InterruptedException {
+            HttpRequest request = HttpRequest
+                    .newBuilder(URI.create("http://localhost:" + port + rawPath))
+                    .header(HttpHeaders.ORIGIN, LOCAL_FRONT_END)
+                    .GET()
+                    .build();
+            return http.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
+    /**
+     * A filter that fails {@code /actuator/fail} and {@code /books/fail} on the request dispatch, before Synapse's CORS
+     * filter, so the error controller answers on the error dispatch. Imported by {@link UnderAContextPath} only (it is
+     * not a {@code @Configuration}, which every test's context would pick up).
+     */
+    static class FailingFilter {
+
+        @Bean
+        FilterRegistrationBean<OncePerRequestFilter> failingFilter() {
+            FilterRegistrationBean<OncePerRequestFilter> registration = new FilterRegistrationBean<>(
+                    new OncePerRequestFilter() {
+                        @Override
+                        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                                FilterChain chain) throws ServletException, IOException {
+                            String path = request.getServletPath();
+                            if (path.equals("/actuator/fail") || path.equals("/books/fail")) {
+                                throw new IllegalStateException("failed on purpose");
+                            }
+                            chain.doFilter(request, response);
+                        }
+                    });
+            registration.setDispatcherTypes(DispatcherType.REQUEST);
+            // Synapse's CORS filter runs at HIGHEST_PRECEDENCE + 3.
+            registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 2);
+            return registration;
+        }
+    }
+
     private Result create(String isbn, String title) {
+        return create(isbn, title, "Ursula K. Le Guin");
+    }
+
+    private Result create(String isbn, String title, String author) {
         Result created = call(client
                 .post()
                 .uri("/books")
                 .contentType(MediaType.APPLICATION_JSON)
-                .body("{\"isbn\":\"" + isbn + "\",\"title\":\"" + title + "\",\"author\":\"Ursula K. Le Guin\"}"));
+                .body("{\"isbn\":\"" + isbn + "\",\"title\":\"" + title + "\",\"author\":\"" + author + "\"}"));
         assertThat(created.status()).isEqualTo(201);
         return created;
     }

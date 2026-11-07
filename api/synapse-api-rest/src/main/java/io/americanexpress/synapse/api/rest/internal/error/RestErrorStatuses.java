@@ -21,11 +21,12 @@ import org.jspecify.annotations.Nullable;
 import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.error.ErrorDetails;
+import io.americanexpress.synapse.core.error.SynapseErrors;
 
 /**
  * Decides the HTTP status of an error. In order, the first that applies wins: the status configured for the
- * operation, the status configured for every operation, the fixed status of a {@link RestErrors} code, and the
- * status of the error's category.
+ * operation, the status configured for every operation, the fixed status of a {@link RestErrors} code, 428 for
+ * {@link SynapseErrors#PRECONDITION_REQUIRED}, and the status of the error's category.
  */
 public final class RestErrorStatuses {
 
@@ -77,6 +78,10 @@ public final class RestErrorStatuses {
         }
         if (details instanceof RestErrors restError) {
             return restError.status();
+        }
+        if (details == SynapseErrors.PRECONDITION_REQUIRED) {
+            // Its category is PRECONDITION_FAILED (412), but HTTP has a status of its own for it (RFC 6585 §3).
+            return 428;
         }
         return switch (details.category()) {
             case INVALID_INPUT -> 400;

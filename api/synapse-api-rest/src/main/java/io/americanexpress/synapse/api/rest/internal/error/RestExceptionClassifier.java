@@ -39,6 +39,8 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.accept.InvalidApiVersionException;
+import org.springframework.web.accept.MissingApiVersionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingPathVariableException;
 import org.springframework.web.bind.MissingRequestCookieException;
@@ -72,7 +74,8 @@ import io.americanexpress.synapse.core.error.Violation;
  * <li>a {@link SynapseException} is the error itself, and is not logged here;</li>
  * <li>a body over the size limit anywhere in the cause chain is {@code PAYLOAD_TOO_LARGE};</li>
  * <li>Spring MVC's protocol and client-error exceptions map to their error (validation failures with their
- * violations), logged at DEBUG, or at WARN when they map to {@code UNAVAILABLE} or {@code TIMEOUT};</li>
+ * violations), logged at DEBUG, or at WARN when they map to {@code UNAVAILABLE} or {@code TIMEOUT}; Spring's API
+ * version errors are {@code MISSING_API_VERSION} and {@code UNSUPPORTED_API_VERSION};</li>
  * <li>anything else is {@code INTERNAL}, logged at ERROR with its stack trace.</li>
  * </ul>
  * Each line carries the edge's correlation id, also outside the request context (on ERROR and ASYNC dispatches).
@@ -171,6 +174,13 @@ final class RestExceptionClassifier {
         }
         if (ex instanceof HttpRequestMethodNotSupportedException notSupported) {
             return methodNotAllowed(notSupported);
+        }
+        // Before the generic ErrorResponse branch, which would make both MALFORMED_REQUEST.
+        if (ex instanceof MissingApiVersionException) {
+            return new SynapseException(RestErrors.MISSING_API_VERSION, ex);
+        }
+        if (ex instanceof InvalidApiVersionException) {
+            return new SynapseException(RestErrors.UNSUPPORTED_API_VERSION, ex);
         }
         return clientError(ex);
     }

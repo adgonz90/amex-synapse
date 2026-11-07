@@ -20,6 +20,7 @@ import org.springframework.util.unit.DataSize;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.samples.books.contract.BookErrors;
 import io.americanexpress.synapse.samples.books.model.Book;
+import io.americanexpress.synapse.samples.books.model.BookV2;
 import io.americanexpress.synapse.samples.books.model.CatalogStats;
 import io.americanexpress.synapse.samples.books.model.CreateBookRequest;
 import io.americanexpress.synapse.samples.books.model.DeleteBookRequest;
@@ -28,6 +29,7 @@ import io.americanexpress.synapse.samples.books.model.UpdateBookRequest;
 import io.americanexpress.synapse.samples.books.operation.CreateBookOperation;
 import io.americanexpress.synapse.samples.books.operation.DeleteBookOperation;
 import io.americanexpress.synapse.samples.books.operation.GetBookOperation;
+import io.americanexpress.synapse.samples.books.operation.GetBookV2Operation;
 import io.americanexpress.synapse.samples.books.operation.GetCatalogStatsOperation;
 import io.americanexpress.synapse.samples.books.operation.SearchBooksOperation;
 import io.americanexpress.synapse.samples.books.operation.UpdateBookOperation;
@@ -36,6 +38,11 @@ import io.americanexpress.synapse.samples.books.operation.UpdateBookOperation;
  * The REST API of the catalog. This bean is all the REST configuration the service has: Synapse turns it into Spring
  * MVC routes, binds each request to the operation's input record, runs the operation through the pipeline and maps
  * the output (or the error) to the response.
+ *
+ * <p>
+ * The same bean is the API's documentation: with {@code synapse-api-rest-openapi} on the classpath, every route below,
+ * with its parameters, schemas, statuses and problem responses, is in the OpenAPI 3.1 document at
+ * {@code /v3/api-docs}, which {@code application-local.yaml} turns on (it is off by default).
  */
 @Configuration(proxyBeanMethods = false)
 public class BooksRestConfiguration {
@@ -44,7 +51,7 @@ public class BooksRestConfiguration {
     private static final DataSize MAX_BOOK_SIZE = DataSize.ofKilobytes(16);
 
     @Bean
-    RestBindings books(GetBookOperation getBook, SearchBooksOperation searchBooks,
+    RestBindings books(GetBookOperation getBook, GetBookV2Operation getBookV2, SearchBooksOperation searchBooks,
             GetCatalogStatsOperation getCatalogStats, CreateBookOperation createBook, UpdateBookOperation updateBook,
             DeleteBookOperation deleteBook) {
         return RestBindings
@@ -56,6 +63,13 @@ public class BooksRestConfiguration {
                 // The book's version is its strong ETag ("1"), sent with Cache-Control: no-cache and Vary: Accept.
                 // A GET or HEAD whose If-None-Match matches it is answered 304 without a body.
                 .etag(Book::version)
+                // Version 2 of the same read, served at /v2/books/{id}: authors as a list (BookV2), with its own
+                // operation. /books/{id} above keeps serving version 1 unchanged, and a version no route declares
+                // (/v3/books/{id}) is 404. The not-found code and the ETag are declared per version.
+                .get("/books/{id}", getBookV2)
+                .version("2")
+                .notFound(BookErrors.BOOK_NOT_FOUND)
+                .etag(BookV2::version)
                 // On GET, simple components come from the query string: ?author=guin fills SearchBooksRequest.author.
                 // The PageQuery component comes from cursor, offset, size and sort. The output is a PageResult, so the
                 // answer is a page object {items, nextCursor, hasNext, total} plus a Link: rel="next" header, and the
@@ -79,21 +93,22 @@ public class BooksRestConfiguration {
                 .maxRequestSize(MAX_BOOK_SIZE)
                 // id from the path, everything else from the body. A body "id" that differs from the path is a 400.
                 .put("/books/{id}", updateBook)
-                // If-Match: "1" fills UpdateBookRequest.version with 1, and the update succeeds only on that version:
-                // otherwise the business operation throws STALE_VERSION, which is answered 412 PRECONDITION_FAILED
-                // because the request carried If-Match. If-Match is optional here: without it (or with *) the version
-                // is null, and a concurrent change that wins between the operation's read and its write is a 409
-                // STALE_VERSION. A weak tag (W/"1") is 412 before the operation runs. No ETag on the 200 (RFC 9110
-                // 9.3.4): the new version is in the body.
+                // If-Match: "1" fills UpdateBookRequest.version with Version(1), and the update succeeds only on that
+                // version: otherwise the business operation throws STALE_VERSION, which is answered 412
+                // PRECONDITION_FAILED because the request carried If-Match. If-Match is optional here: * binds
+                // AnyVersion and no header binds null, and the operation passes neither on as a version, so a
+                // concurrent change that wins between the business operation's read and its write is 412 with * and a
+                // 409 STALE_VERSION without If-Match. A weak tag (W/"1") is 412 before the operation runs. No ETag on
+                // the 200 (RFC 9110 9.3.4): the new version is in the body.
                 .header("If-Match", UpdateBookRequest::version)
                 .maxRequestSize(MAX_BOOK_SIZE)
                 // DELETE answers 204 with no body. If-Match fills DeleteBookRequest.version as on PUT, and here it is
-                // required: a DELETE without it is 428 PRECONDITION_REQUIRED. If-Match: * leaves the version null, so
-                // RemoveBook deletes the version it has just read; if a concurrent update changes the book between
-                // that read and the delete, the delete is still 412.
+                // required, because the operation's input says so: DeleteBookRequest.version isn't @Nullable, so a
+                // DELETE without If-Match is 428 PRECONDITION_REQUIRED, over this and every other protocol. If-Match: *
+                // binds AnyVersion, so RemoveBook deletes the version it has just read; if a concurrent update changes
+                // the book between that read and the delete, the delete is still 412.
                 .delete("/books/{id}", deleteBook)
                 .header("If-Match", DeleteBookRequest::version)
-                .requireIfMatch()
                 .build();
     }
 }

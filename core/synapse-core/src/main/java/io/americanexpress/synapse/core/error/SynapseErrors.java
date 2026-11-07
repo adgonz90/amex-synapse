@@ -42,6 +42,13 @@ public enum SynapseErrors implements ErrorDetails {
     /** A precondition failed. */
     PRECONDITION_FAILED("A precondition failed", ErrorCategory.PRECONDITION_FAILED),
 
+    /**
+     * The operation's input requires a precondition, and the request has none: its {@code VersionCondition} component
+     * isn't {@code @Nullable}, and the request carries no version for it. API plugins raise it before the operation
+     * runs, with a violation that says how to resubmit (RFC 6585 §3); REST answers it 428.
+     */
+    PRECONDITION_REQUIRED("The request must be conditional", ErrorCategory.PRECONDITION_FAILED),
+
     /** The caller is rate limited. */
     RATE_LIMITED("Too many requests", ErrorCategory.RATE_LIMITED),
 

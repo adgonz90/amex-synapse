@@ -269,9 +269,17 @@ synapse:
   xref:core.adoc#errors[Errors]).
 * A cursor key generated at startup is reported at WARN in every environment (see
   xref:rest.adoc#paging[REST paging]).
+* CORS is off until an environment's file lists its front ends, for example
+  `+synapse.api.rest.cors.allowed-origins: https://app.example.com+` in `application-e2.yaml`; a `+*+` origin logs a
+  WARN in every environment (see xref:rest.adoc#cors[REST CORS]).
+* With `synapse-api-rest-openapi`, the OpenAPI document at `/v3/api-docs` is off until an environment's file turns it
+  on with `springdoc.api-docs.enabled: true`, for example in `application-local.yaml`; where it is on, protect it as
+  needed (see xref:openapi.adoc#exposure[Who can read it]). Under AOT and in a native image the setting decides which
+  beans exist, so it is fixed when the application is built and an environment's file can't change it (see
+  <<aot>> and xref:openapi.adoc#aot-toggle[OpenAPI under AOT]).
 
-Later modules follow the same model: gRPC server reflection is off by default, a store allows `ddl-auto` only through
-its own switch, and a CORS `+*+` origin logs a WARN.
+Later modules follow the same model: gRPC server reflection is off by default, and a store allows `ddl-auto` only
+through its own switch.
 
 [#keys-without-defaults]
 == Keys without defaults
@@ -370,6 +378,9 @@ Configuration, highest priority first:
 
 * The environment is never used in a `@Conditional`, and environment files change values only: AOT processing
   evaluates conditions at build time.
+* A property that a library's conditions read is fixed at build time too, whatever an environment's file says:
+  `springdoc.api-docs.enabled` is one (springdoc's beans depend on it). Set such a property for the AOT build (see
+  xref:openapi.adoc#aot-toggle[OpenAPI under AOT]).
 * The set of clients and stores (the `<name>` under `synapse.client.<name>`, except `defaults`, and under
   `synapse.data.stores.<name>`) belongs in files that don't depend on the environment: a module's `config.yaml` or the
   service's `application.yaml`. When the application runs with AOT-generated artifacts, startup fails when an

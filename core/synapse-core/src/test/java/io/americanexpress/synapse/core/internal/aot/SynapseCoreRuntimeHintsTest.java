@@ -24,6 +24,7 @@ import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.aot.hint.predicate.RuntimeHintsPredicates;
 import org.springframework.core.io.support.SpringFactoriesLoader;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.internal.context.ContextValueAccessor;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,6 +59,21 @@ class SynapseCoreRuntimeHintsTest {
                 .filter(hint -> hint.getType().getName().equals(SerializedLambda.class.getName()))
                 .flatMap(hint -> hint.getMemberCategories().stream()))
                 .contains(MemberCategory.INVOKE_DECLARED_METHODS);
+    }
+
+    @Test
+    void registersTheVersionConditionCasesForBinding() throws NoSuchMethodException {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseCoreRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        // A model declares VersionCondition; Spring's binding registrar doesn't follow the sealed permits, so the
+        // records a request holds at run time are registered here.
+        assertThat(RuntimeHintsPredicates.reflection().onType(VersionCondition.AnyVersion.class)).accepts(hints);
+        assertThat(RuntimeHintsPredicates.reflection().onType(VersionCondition.Version.class)).accepts(hints);
+        assertThat(RuntimeHintsPredicates
+                .reflection()
+                .onMethodInvocation(VersionCondition.Version.class.getMethod("value"))).accepts(hints);
     }
 
     @ParameterizedTest

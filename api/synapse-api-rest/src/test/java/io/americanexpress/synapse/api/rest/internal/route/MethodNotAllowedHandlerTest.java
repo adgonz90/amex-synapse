@@ -86,6 +86,20 @@ class MethodNotAllowedHandlerTest {
     }
 
     @Test
+    void versionedRoutesUseTheirServedPaths() {
+        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindings
+                .builder()
+                .get("/books/{id}", new GetBookOperation())
+                .version("2")
+                .build()
+                .routes());
+
+        assertThat(allow(handler, "DELETE", "/v2/books/1")).isEqualTo("GET, HEAD, OPTIONS");
+        assertThat(handler.test(request("DELETE", "/books/1"))).isFalse();
+        assertThat(handler.test(request("DELETE", "/v1/books/1"))).isFalse();
+    }
+
+    @Test
     void neverMatchesTheErrorDispatch() {
         MethodNotAllowedHandler handler = new MethodNotAllowedHandler(
                 RestBindings.builder().get("/{id}", new GetBookOperation()).build().routes());

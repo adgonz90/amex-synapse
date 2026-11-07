@@ -62,11 +62,13 @@ import tools.jackson.databind.node.ObjectNode;
 
 import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.conditional.EntityTags;
+import io.americanexpress.synapse.api.rest.internal.conditional.Preconditions;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.api.rest.internal.paging.PageQueryReader;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.paging.SortKeys;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
@@ -81,6 +83,10 @@ import io.americanexpress.synapse.core.paging.PageQuery;
  * <li>Path variables, query parameters, headers and cookies are converted with the {@link ConversionService}. Query
  * parameters come from the query string only, never from a form body; a repeated one gives a {@code List} component
  * all its values.</li>
+ * <li>{@code If-Match} and {@code If-None-Match} are parsed as entity tags. A {@code VersionCondition} component binds
+ * {@code AnyVersion} for {@code *}, {@code Version(v)} for one tag (its opaque value converted to the version type) and
+ * {@code null} without the header; a plain component (on a read) binds the converted value, and {@code null} for
+ * {@code *}.</li>
  * <li>The body is read only on POST and PUT when the route has a body source, and only as JSON
  * ({@code application/json} or {@code *+json}); a missing or empty body counts as {@code {}}.</li>
  * <li>A component filled from a body property is read with the creator property Jackson itself would use for it, so
@@ -157,11 +163,14 @@ public final class RequestBinder {
     public void checkBindable(RouteDefinition route) {
         for (InputSource source : route.sources()) {
             switch (source) {
-                case InputSource.Path path -> checkConvertible(route, path.component());
-                case InputSource.Query query -> checkConvertible(route, query.component());
-                case InputSource.QueryRecord query -> query.components().forEach(c -> checkConvertible(route, c));
-                case InputSource.Header header -> checkConvertible(route, header.component());
-                case InputSource.Cookie cookie -> checkConvertible(route, cookie.component());
+                case InputSource.Path path -> checkConvertible(route, path.component(), target(path.component()));
+                case InputSource.Query query -> checkConvertible(route, query.component(), target(query.component()));
+                case InputSource.QueryRecord query ->
+                    query.components().forEach(c -> checkConvertible(route, c, target(c)));
+                case InputSource.Header header ->
+                    checkConvertible(route, header.component(), headerTarget(header.component()));
+                case InputSource.Cookie cookie ->
+                    checkConvertible(route, cookie.component(), target(cookie.component()));
                 case InputSource.Body body -> {
                     // Read by Jackson; checked below.
                 }
@@ -185,20 +194,35 @@ public final class RequestBinder {
     /**
      * Fails when the conversion service can't convert request text to the component. Headers bound from
      * {@code If-Match} or {@code If-None-Match} are checked the same way: the entity tag's value is converted to the
-     * component type.
+     * component type, or to the version type of a {@code VersionCondition} component.
      */
-    private void checkConvertible(RouteDefinition route, ResolvedComponent component) {
-        TypeDescriptor target = new TypeDescriptor(ResolvableType.forType(component.genericType()), null, null);
+    private void checkConvertible(RouteDefinition route, ResolvedComponent component, TypeDescriptor target) {
         TypeDescriptor source = target.isCollection() || target.isArray() ? STRINGS : STRING;
         if (!conversionService.canConvert(source, target)) {
             throw failure(route,
                     "the component " + component.recordType().getSimpleName() + "." + component.name() + " (type "
                             + component.genericType().getTypeName() + ") can't be converted from a string",
-                    "Give " + component.type().getSimpleName() + " a constructor or a static valueOf, of or from "
+                    "Give " + target.getType().getSimpleName() + " a constructor or a static valueOf, of or from "
                             + "method taking a String, register a Converter from String to it, or bind the component "
                             + "from the body, .context or .from.",
                     null);
         }
+    }
+
+    /** Returns the type request text is converted to for a component: its own type. */
+    private static TypeDescriptor target(ResolvedComponent component) {
+        return new TypeDescriptor(ResolvableType.forType(component.genericType()), null, null);
+    }
+
+    /**
+     * Returns the type a header's text is converted to: for a {@code VersionCondition} component (which binds only
+     * from {@code If-Match} or {@code If-None-Match}), its version type, which the startup checks ensure it declares;
+     * otherwise the component's own type.
+     */
+    private static TypeDescriptor headerTarget(ResolvedComponent component) {
+        return BindingValidator.isVersionCondition(component)
+                ? new TypeDescriptor(Objects.requireNonNull(BindingValidator.versionType(component)), null, null)
+                : target(component);
     }
 
     private void checkBodyBindable(RouteDefinition route) {
@@ -253,8 +277,11 @@ public final class RequestBinder {
      * @return the input record, or {@code null} when the input type is {@code Void}
      * @throws SynapseException {@link RestErrors#UNSUPPORTED_MEDIA_TYPE} for a body that isn't JSON,
      *         {@link RestErrors#PAYLOAD_TOO_LARGE} for a body over the request size limit,
-     *         {@link SynapseErrors#MALFORMED_REQUEST} for a body or query string that can't be read, and
-     *         {@link SynapseErrors#VALIDATION_FAILED} with the violations of the components that can't be bound
+     *         {@link SynapseErrors#MALFORMED_REQUEST} for a body or query string that can't be read,
+     *         {@link SynapseErrors#VALIDATION_FAILED} with the violations of the components that can't be bound, and,
+     *         after those, what {@link Preconditions#missingPrecondition} answers when a header bound to a non-null
+     *         {@code VersionCondition} is absent: {@link SynapseErrors#PRECONDITION_FAILED} for an unbound or weak
+     *         precondition, otherwise {@link SynapseErrors#PRECONDITION_REQUIRED}
      */
     public @Nullable Object bind(RouteDefinition route, ServerRequest request) {
         Class<?> inputType = route.inputType();
@@ -285,7 +312,7 @@ public final class RequestBinder {
             properties = object;
             model = model(inputType);
         }
-        return new Binding(request, body, properties, model, sortKeys).bind(inputType, route.sources());
+        return new Binding(route, request, body, properties, model, sortKeys).bind(inputType, route.sources());
     }
 
     private BodyModel model(Class<?> inputType) {
@@ -294,7 +321,9 @@ public final class RequestBinder {
 
     private BodyModel createModel(Class<?> inputType) {
         Map<String, SettableBeanProperty> properties = JsonNames.creatorProperties(bodyMapper, inputType);
-        if (properties == null) {
+        if (properties == null || !JsonNames.readsByProperty(bodyMapper, inputType)) {
+            // Jackson reads the record as a whole: its own deserializer, or a delegating creator, which has creator
+            // properties of the canonical constructor too but wins over them. The whole-record path honours it.
             return new BodyModel(null, Map.of());
         }
         Map<String, List<String>> names = new HashMap<>();
@@ -513,8 +542,8 @@ public final class RequestBinder {
     /**
      * How a record is read from body properties.
      *
-     * @param properties the creator property for each component Jackson reads, or {@code null} when the record has
-     *        its own deserializer
+     * @param properties the creator property for each component Jackson reads, or {@code null} when Jackson reads
+     *        the record as a whole: its own deserializer, a delegating creator or a builder
      * @param names the JSON names (primary name, then aliases) accepted for each of those components
      */
     private record BodyModel(@Nullable Map<String, SettableBeanProperty> properties, Map<String, List<String>> names) {
@@ -524,6 +553,8 @@ public final class RequestBinder {
 
     /** The state of binding one request. */
     private final class Binding {
+
+        private final RouteDefinition route;
 
         private final ServerRequest request;
 
@@ -539,10 +570,14 @@ public final class RequestBinder {
 
         private final List<Violation> violations = new ArrayList<>();
 
+        /** Whether a precondition header the input requires is absent, so the record can't be built. */
+        private boolean preconditionMissing;
+
         private @Nullable MultiValueMap<String, String> query;
 
-        Binding(ServerRequest request, @Nullable JsonNode body, @Nullable ObjectNode properties, BodyModel model,
-                @Nullable SortKeys sortKeys) {
+        Binding(RouteDefinition route, ServerRequest request, @Nullable JsonNode body, @Nullable ObjectNode properties,
+                BodyModel model, @Nullable SortKeys sortKeys) {
+            this.route = route;
             this.request = request;
             this.body = body;
             this.properties = properties;
@@ -578,6 +613,11 @@ public final class RequestBinder {
             }
             if (!violations.isEmpty()) {
                 throw SynapseException.ofViolations(SynapseErrors.VALIDATION_FAILED, violations);
+            }
+            if (preconditionMissing) {
+                // The input requires a precondition the request doesn't send, so its record can't be built. The
+                // preconditions answer now, in their own order: an unbound or weak one is 412, then this one is 428.
+                throw Preconditions.missingPrecondition(route, request);
             }
             return construct(inputType, args);
         }
@@ -641,6 +681,13 @@ public final class RequestBinder {
             if (value == FAILED) {
                 return null;
             }
+            if (value == null && !component.nullable() && source instanceof InputSource.Header
+                    && BindingValidator.isVersionCondition(component)) {
+                // A required precondition (a VersionCondition header is If-Match or If-None-Match, and a non-null one
+                // is on a write), absent: not a 400, but PRECONDITION_REQUIRED once the 400s are decided.
+                preconditionMissing = true;
+                return null;
+            }
             if (value == null && !component.nullable()) {
                 violations.add(new Violation(component.name(), MISSING));
                 return null;
@@ -670,31 +717,46 @@ public final class RequestBinder {
         }
 
         /**
-         * Reads a header. {@code If-Match} and {@code If-None-Match} are entity tag lists: {@code *} binds
-         * {@code null} and one tag binds its opaque value, strong or weak (the preconditions judge weakness).
+         * Reads a header. {@code If-Match} and {@code If-None-Match} are entity tag lists, and one tag binds its
+         * opaque value, strong or weak (the preconditions judge weakness). A {@code VersionCondition} component gets
+         * {@code VersionCondition.any()} for {@code *} and {@code VersionCondition.of(value)} for one tag; any other
+         * component gets {@code null} for {@code *} and the value itself for one tag. An absent header binds
+         * {@code null}, which a non-null {@code VersionCondition} turns into {@code PRECONDITION_REQUIRED}.
          */
         private @Nullable Object header(InputSource.Header source) {
             List<String> values = request.headers().header(source.name());
             String name = source.name();
+            ResolvedComponent component = source.component();
             if (values.isEmpty() || !(HttpHeaders.IF_MATCH.equalsIgnoreCase(name)
                     || HttpHeaders.IF_NONE_MATCH.equalsIgnoreCase(name))) {
-                return convert(source.component(), values);
+                return convert(component, values);
             }
             EntityTags.Parsed parsed;
             try {
                 parsed = EntityTags.parse(values);
             } catch (IllegalArgumentException e) {
-                violations.add(new Violation(source.component().name(), NOT_A_TAG));
+                violations.add(new Violation(component.name(), NOT_A_TAG));
                 return FAILED;
             }
+            boolean condition = BindingValidator.isVersionCondition(component);
             if (parsed.wildcard()) {
-                return null;
+                return condition ? VersionCondition.any() : null;
             }
             if (parsed.tags().size() > 1) {
-                violations.add(new Violation(source.component().name(), NOT_A_SINGLE_TAG));
+                violations.add(new Violation(component.name(), NOT_A_SINGLE_TAG));
                 return FAILED;
             }
-            return convert(source.component(), List.of(parsed.tags().getFirst().tag()));
+            List<String> tag = List.of(parsed.tags().getFirst().tag());
+            if (!condition) {
+                return convert(component, tag);
+            }
+            Object version = convert(component, headerTarget(component), tag);
+            if (version == null) {
+                // A tag that converts to no value, such as "" for a number, names no version.
+                violations.add(new Violation(component.name(), INVALID));
+                return FAILED;
+            }
+            return version == FAILED ? FAILED : VersionCondition.of(version);
         }
 
         private MultiValueMap<String, String> query() {
@@ -716,10 +778,13 @@ public final class RequestBinder {
         }
 
         private @Nullable Object convert(ResolvedComponent component, List<String> values) {
+            return convert(component, target(component), values);
+        }
+
+        private @Nullable Object convert(ResolvedComponent component, TypeDescriptor target, List<String> values) {
             if (values.isEmpty()) {
                 return null;
             }
-            TypeDescriptor target = new TypeDescriptor(ResolvableType.forType(component.genericType()), null, null);
             try {
                 return values.size() == 1
                         ? conversionService.convert(values.getFirst(), STRING, target)
@@ -780,22 +845,44 @@ public final class RequestBinder {
 
         /**
          * Tells whether the body carries this component, bound elsewhere, with a different value. Only components
-         * Jackson reads from JSON can conflict; the body value is read the way Jackson reads that component.
+         * Jackson reads from JSON can conflict; the body value is read the way Jackson reads that component. A
+         * {@code VersionCondition} component is compared by its version: the body property (such as the
+         * {@code "version"} of a resource read back with {@code GET}) is read as the version type and compared with
+         * the value of {@code Version(v)}; {@code AnyVersion} and {@code null} carry no value, so only a {@code null}
+         * body property matches them, as for a plain type bound from {@code *} or no header.
          */
         private boolean conflicts(ResolvedComponent component, @Nullable Object value) {
             JsonNode node = node(component);
             if (node == null) {
                 return false;
             }
+            boolean condition = BindingValidator.isVersionCondition(component);
+            Object bound = condition ? versionValue(value) : value;
             Object bodyValue;
             try {
-                bodyValue = node.isNull() ? null : deserialize(property(component), node);
+                if (node.isNull()) {
+                    bodyValue = null;
+                } else if (condition) {
+                    bodyValue = bodyMapper
+                            .readerFor(bodyMapper
+                                    .constructType(Objects
+                                            .requireNonNull(BindingValidator.versionType(component))
+                                            .getType()))
+                            .readValue(node);
+                } else {
+                    bodyValue = deserialize(property(component), node);
+                }
             } catch (RuntimeException e) {
                 // A body value that can't be read can't match the bound one.
                 LOG.debug("Body property for {} could not be read", component.name(), e);
                 return true;
             }
-            return !Objects.equals(value, bodyValue);
+            return !Objects.equals(bound, bodyValue);
+        }
+
+        /** The version a bound {@code VersionCondition} names: the value of {@code Version(v)}, otherwise null. */
+        private static @Nullable Object versionValue(@Nullable Object condition) {
+            return condition instanceof VersionCondition.Version<?> version ? version.value() : null;
         }
     }
 }

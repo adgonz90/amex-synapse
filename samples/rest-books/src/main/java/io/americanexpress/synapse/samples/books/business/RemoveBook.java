@@ -15,6 +15,8 @@ package io.americanexpress.synapse.samples.books.business;
 
 import org.springframework.stereotype.Component;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition.AnyVersion;
+import io.americanexpress.synapse.core.conditional.VersionCondition.Version;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.BusinessOperation;
@@ -47,20 +49,22 @@ public class RemoveBook implements BusinessOperation<BookRemoval, CatalogBook> {
     /**
      * Removes the book.
      *
-     * @param removal the id of the book, and the version the caller expects (or {@code null})
+     * @param removal the id of the book, and the version the caller expects
      * @return the removed book
      * @throws SynapseException {@link BookErrors#BOOK_NOT_FOUND} when no book has the id,
      *         {@link SynapseErrors#STALE_VERSION} when the book isn't at the expected version (the removal's, or the
-     *         one read here when the removal has none)
+     *         one read here for {@code AnyVersion})
      */
     @Override
     public CatalogBook execute(BookRemoval removal) {
         StoredBook current = store
                 .find(removal.id())
                 .orElseThrow(() -> new SynapseException(BookErrors.BOOK_NOT_FOUND, removal.id()));
-        // As in ReviseBook: the caller's version when it sent one, otherwise the version just read.
-        Long requested = removal.version();
-        long expected = requested == null ? current.version() : requested;
+        // A removal always names its version; AnyVersion (If-Match: *) is the version just read.
+        long expected = switch (removal.version()) {
+            case AnyVersion<Long> any -> current.version();
+            case Version<Long>(Long version) -> version;
+        };
         if (expected != current.version()) {
             throw new SynapseException(SynapseErrors.STALE_VERSION);
         }

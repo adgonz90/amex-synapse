@@ -3,6 +3,7 @@
 ** xref:core.adoc[Core]
 ** xref:environments.adoc[Environments]
 ** xref:rest.adoc[REST]
+** xref:openapi.adoc[OpenAPI]
 ** xref:testing.adoc[Testing]
 ** xref:logging-log4j2.adoc[Log4j2 logging]
 * Reference

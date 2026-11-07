@@ -295,9 +295,9 @@ class ConcurrencyLimitFilterTest {
     }
 
     @Test
-    void filterOrderFollowsTheContextFilter() {
+    void filterOrderFollowsTheCorsFilter() {
         assertThat(new ConcurrencyLimitFilter(1, List.of(), writer).getOrder())
-                .isEqualTo(Ordered.HIGHEST_PRECEDENCE + 3);
+                .isEqualTo(Ordered.HIGHEST_PRECEDENCE + 4);
     }
 
     /** Runs a request whose handler starts async processing and returns, so the request keeps its permit. */

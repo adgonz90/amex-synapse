@@ -175,6 +175,155 @@ class SynapseRestPropertiesTest {
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 
+    @Test
+    void corsDefaultsMatchTheSpec() {
+        runner.run(context -> {
+            SynapseRestProperties.Cors cors = context.getBean(SynapseRestProperties.class).cors();
+            assertThat(cors.allowedOrigins()).isEmpty();
+            assertThat(cors.allowedMethods()).containsExactly("GET", "HEAD", "POST", "PUT", "DELETE");
+            assertThat(cors.allowedHeaders()).containsExactly("*");
+            assertThat(cors.exposedHeaders()).isEmpty();
+            assertThat(cors.allowCredentials()).isFalse();
+            assertThat(cors.maxAge()).isEqualTo(Duration.ofMinutes(30));
+        });
+    }
+
+    @Test
+    void rejectsInvalidOrigins() {
+        for (String origin : List
+                .of("https://a.example.com/", "https://a.example.com/x", "https://*.example.com",
+                        "a.example.com", "https://a.example.com?x=1", "*.example.com", "ftp://a.example.com",
+                        "https://")) {
+            runner.withPropertyValues("synapse.api.rest.cors.allowed-origins=" + origin).run(context -> {
+                assertThat(context).as(origin).hasFailed();
+                assertThat(rootMessage(context.getStartupFailure()))
+                        .as(origin)
+                        .contains("synapse.api.rest.cors.allowed-origins")
+                        .contains(origin);
+            });
+        }
+        runner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=http://localhost:3000,https://a.example.com,"
+                        + "http://[::1]:8080,*")
+                .run(context -> assertThat(context.getBean(SynapseRestProperties.class).cors().allowedOrigins())
+                        .containsExactly("http://localhost:3000", "https://a.example.com", "http://[::1]:8080", "*"));
+    }
+
+    @Test
+    void rejectsWildcardWithCredentials() {
+        assertThatThrownBy(() -> cors(List.of("https://a.example.com", "*"), List.of("GET"), true, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("synapse.api.rest.cors.allow-credentials can't be true while"
+                        + " synapse.api.rest.cors.allowed-origins contains *: browsers refuse credentials for any"
+                        + " origin. List the exact origins.");
+        assertThat(cors(List.of("https://a.example.com"), List.of("GET"), true, Duration.ZERO).allowCredentials())
+                .isTrue();
+    }
+
+    @Test
+    void rejectsOriginPortsOutOfRange() {
+        for (String origin : List.of("http://a.example.com:0", "https://a.example.com:65536", "http://[::1]:99999")) {
+            runner.withPropertyValues("synapse.api.rest.cors.allowed-origins=" + origin).run(context -> {
+                assertThat(context).as(origin).hasFailed();
+                assertThat(rootMessage(context.getStartupFailure()))
+                        .as(origin)
+                        .isEqualTo("synapse.api.rest.cors.allowed-origins must each have a port from 1 to 65535,"
+                                + " but one was '" + origin + "'");
+            });
+        }
+        runner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=http://a.example.com:1,"
+                        + "https://a.example.com:65535")
+                .run(context -> assertThat(context.getBean(SynapseRestProperties.class).cors().allowedOrigins())
+                        .containsExactly("http://a.example.com:1", "https://a.example.com:65535"));
+    }
+
+    @Test
+    void rejectsWildcardExposedHeadersWithCredentials() {
+        String message = "synapse.api.rest.cors.allow-credentials can't be true while"
+                + " synapse.api.rest.cors.exposed-headers contains *: browsers read it as a header named * on a"
+                + " request with credentials, not as any header. List the exact headers.";
+        runner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=https://a.example.com",
+                        "synapse.api.rest.cors.allow-credentials=true", "synapse.api.rest.cors.exposed-headers=X-A,*")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(rootMessage(context.getStartupFailure())).isEqualTo(message);
+                });
+        // Without credentials, * exposes every header.
+        runner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=https://a.example.com",
+                        "synapse.api.rest.cors.exposed-headers=*")
+                .run(context -> assertThat(context.getBean(SynapseRestProperties.class).cors().exposedHeaders())
+                        .containsExactly("*"));
+    }
+
+    @Test
+    void rejectsUnknownMethodsAndNegativeMaxAge() {
+        for (String method : List.of("FETCH", "get", "GET,*x")) {
+            runner.withPropertyValues("synapse.api.rest.cors.allowed-methods=" + method).run(context -> {
+                assertThat(context).as(method).hasFailed();
+                assertThat(rootMessage(context.getStartupFailure()))
+                        .as(method)
+                        .contains("synapse.api.rest.cors.allowed-methods");
+            });
+        }
+        runner
+                .withPropertyValues("synapse.api.rest.cors.allowed-methods=*")
+                .run(context -> assertThat(context.getBean(SynapseRestProperties.class).cors().allowedMethods())
+                        .containsExactly("*"));
+        runner
+                .withPropertyValues("synapse.api.rest.cors.allowed-methods=PATCH,OPTIONS,TRACE")
+                .run(context -> assertThat(context.getBean(SynapseRestProperties.class).cors().allowedMethods())
+                        .containsExactly("PATCH", "OPTIONS", "TRACE"));
+        runner.withPropertyValues("synapse.api.rest.cors.max-age=-1s").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(rootMessage(context.getStartupFailure())).contains("synapse.api.rest.cors.max-age");
+        });
+        runner
+                .withPropertyValues("synapse.api.rest.cors.max-age=0s")
+                .run(context -> assertThat(context.getBean(SynapseRestProperties.class).cors().maxAge())
+                        .isEqualTo(Duration.ZERO));
+    }
+
+    @Test
+    void rejectsEmptyMethods() {
+        String message = "synapse.api.rest.cors.allowed-methods must list at least one method (or *) but was empty";
+        for (String value : List.of("", " ")) {
+            runner.withPropertyValues("synapse.api.rest.cors.allowed-methods=" + value).run(context -> {
+                assertThat(context).as("'" + value + "'").hasFailed();
+                assertThat(rootMessage(context.getStartupFailure())).as("'" + value + "'").isEqualTo(message);
+            });
+        }
+        // Without any origin too: CORS is off, but the setting is still wrong.
+        assertThatThrownBy(() -> cors(List.of(), List.of(), false, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(message);
+    }
+
+    @Test
+    void originSchemeAndHostAreLowerCased() {
+        runner
+                .withPropertyValues("synapse.api.rest.cors.allowed-origins=HTTPS://App.Example.com:8443,"
+                        + "Http://LOCALHOST:3000,http://[::FFFF:7F00:1],*")
+                .run(context -> assertThat(context.getBean(SynapseRestProperties.class).cors().allowedOrigins())
+                        .containsExactly("https://app.example.com:8443", "http://localhost:3000",
+                                "http://[::ffff:7f00:1]", "*"));
+    }
+
+    @Test
+    void corsListsAreUnmodifiable() {
+        List<String> origins = cors(List.of("https://a.example.com"), List.of("GET"), false, Duration.ZERO)
+                .allowedOrigins();
+        assertThatThrownBy(() -> origins.add("https://b.example.com"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    private static SynapseRestProperties.Cors cors(List<String> origins, List<String> methods,
+            boolean allowCredentials, Duration maxAge) {
+        return new SynapseRestProperties.Cors(origins, methods, List.of("*"), List.of(), allowCredentials, maxAge);
+    }
+
     private static String rootMessage(@Nullable Throwable failure) {
         Objects.requireNonNull(failure);
         Throwable cause = failure;

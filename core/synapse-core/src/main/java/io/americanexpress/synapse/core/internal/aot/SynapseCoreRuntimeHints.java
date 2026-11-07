@@ -16,10 +16,12 @@ package io.americanexpress.synapse.core.internal.aot;
 import java.lang.invoke.SerializedLambda;
 
 import org.jspecify.annotations.Nullable;
+import org.springframework.aot.hint.BindingReflectionHintsRegistrar;
 import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.internal.context.ContextValueAccessor;
 
 /**
@@ -27,7 +29,9 @@ import io.americanexpress.synapse.core.internal.context.ContextValueAccessor;
  * finds the {@link ContextValueAccessor}, and the accessor's constructor, which the service loader calls
  * reflectively; the serialized form of a component reference, which Synapse reads to find the component it names;
  * and the modules' configuration files ({@code META-INF/synapse/config.yaml}, {@code config-<env>.yaml} and their
- * {@code .properties} forms), which the environment post-processor reads at startup. Listed in
+ * {@code .properties} forms), which the environment post-processor reads at startup; and the binding hints of the
+ * {@link VersionCondition} cases, which the operation types' hints don't reach (Spring's binding registrar doesn't
+ * follow a sealed interface's permits). Listed in
  * {@code META-INF/spring/aot.factories}.
  */
 public final class SynapseCoreRuntimeHints implements RuntimeHintsRegistrar {
@@ -48,5 +52,9 @@ public final class SynapseCoreRuntimeHints implements RuntimeHintsRegistrar {
         hints.resources().registerPattern(MODULE_CONFIG_PROPERTIES);
         hints.reflection().registerType(ContextValueAccessor.class, MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS);
         hints.reflection().registerType(SerializedLambda.class, MemberCategory.INVOKE_DECLARED_METHODS);
+        // Models declare the sealed VersionCondition, and the binding registrar doesn't follow its permits.
+        new BindingReflectionHintsRegistrar()
+                .registerReflectionHints(hints.reflection(), VersionCondition.AnyVersion.class,
+                        VersionCondition.Version.class);
     }
 }

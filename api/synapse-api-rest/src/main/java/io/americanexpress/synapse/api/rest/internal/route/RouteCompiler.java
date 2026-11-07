@@ -43,7 +43,8 @@ import io.americanexpress.synapse.core.SynapseConfigurationException;
  * definition, ordered by {@link PathPattern#SPECIFICITY_COMPARATOR} so the most specific template wins whatever the
  * declaration order (equally specific templates keep their declaration order); then, after every declared route and in
  * the same order, a {@code HEAD} route for each {@code GET} route, served by the same handler, so a declared
- * {@code HEAD} route wins. No route matches the servlet container's error dispatch, which belongs to the error
+ * {@code HEAD} route wins. A versioned route, and its implicit {@code HEAD} route, also carry Spring's
+ * {@link RequestPredicates#version} predicate, from which Spring MVC detects the supported versions. No route matches the servlet container's error dispatch, which belongs to the error
  * controller. Any binding mistake fails startup. The 405 and {@code OPTIONS} fallback is not part of the routes: it
  * is the {@link MethodNotAllowedMapping}, after the other handler mappings. Once the routes are checked, it reports a
  * cursor key generated at startup when a route returns {@code PageResult} ({@link PageCursors#reportGeneratedKey}).
@@ -119,7 +120,12 @@ public final class RouteCompiler {
     }
 
     private static RequestPredicate predicate(HttpMethod method, RouteDefinition route) {
-        return NOT_ERROR_DISPATCH.and(RequestPredicates.method(method)).and(RequestPredicates.path(route.path()));
+        RequestPredicate predicate = NOT_ERROR_DISPATCH
+                .and(RequestPredicates.method(method))
+                .and(RequestPredicates.path(route.path()));
+        String version = route.version();
+        // After the path: only a versioned route's path carries a version, which Spring's strategy has resolved.
+        return version == null ? predicate : predicate.and(RequestPredicates.version(version));
     }
 
     /** A route and its parsed template. */

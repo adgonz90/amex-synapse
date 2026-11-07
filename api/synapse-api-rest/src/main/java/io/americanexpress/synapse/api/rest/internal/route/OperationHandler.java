@@ -44,7 +44,9 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * <li>replaces the client's cursor token with the operation's raw cursor (a token the codec rejects is the cursor
  * violation, and the operation is not called);</li>
  * <li>checks a write's preconditions: an {@code If-Match} or {@code If-None-Match} the route doesn't bind, or a weak
- * {@code If-Match}, is 412; a missing {@code If-Match} on a route that requires it is 428;</li>
+ * {@code If-Match}, is 412; a missing {@code If-Match} or {@code If-None-Match} that the input requires (a
+ * {@code VersionCondition} component that isn't {@code @Nullable}) is 428. Binding already answers that one, since
+ * the input can't be built without it, so its cursor is never read;</li>
  * <li>calls the operation bean, a proxy that runs the operation pipeline, and answers its {@code STALE_VERSION} as 412
  * when the request sent a bound {@code If-Match};</li>
  * <li>writes the response, wrapping a page's next cursor in a token bound to the same input.</li>

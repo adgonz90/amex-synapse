@@ -21,6 +21,7 @@ import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
+import io.americanexpress.synapse.core.error.SynapseErrors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,6 +63,23 @@ class RestErrorStatusesTest {
     void restErrorsUseTheirFixedStatus() {
         assertThat(new RestErrorStatuses(Map.of(), Map.of()).statusFor(RestErrors.METHOD_NOT_ALLOWED, null))
                 .isEqualTo(405);
+    }
+
+    @Test
+    void preconditionRequiredIs428() {
+        ErrorDetails required = SynapseErrors.PRECONDITION_REQUIRED;
+
+        // Its category is PRECONDITION_FAILED (412), but RFC 6585 §3 gives a missing precondition its own status.
+        assertThat(new RestErrorStatuses(Map.of(), Map.of()).statusFor(required, null)).isEqualTo(428);
+        assertThat(new RestErrorStatuses(Map.of(), Map.of()).statusFor(required, "delete-book")).isEqualTo(428);
+        // A configured status still wins, as for every code.
+        assertThat(new RestErrorStatuses(Map.of("PRECONDITION_REQUIRED", 400), Map.of()).statusFor(required, null))
+                .isEqualTo(400);
+        // So does one operation's.
+        RestErrorStatuses perOperation = new RestErrorStatuses(Map.of(),
+                Map.of("delete-book", Map.of("PRECONDITION_REQUIRED", 409)));
+        assertThat(perOperation.statusFor(required, "delete-book")).isEqualTo(409);
+        assertThat(perOperation.statusFor(required, "update-book")).isEqualTo(428);
     }
 
     @Test
