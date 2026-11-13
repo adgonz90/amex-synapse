@@ -16,6 +16,7 @@ package io.americanexpress.synapse.api.grpc.internal.service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,19 +33,31 @@ import org.junit.jupiter.api.Test;
 import io.americanexpress.synapse.api.grpc.fixture.proto.CatalogServiceGrpc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.GetItemRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Item;
+import io.americanexpress.synapse.api.grpc.fixture.proto.ListPagedBooksRequest;
+import io.americanexpress.synapse.api.grpc.fixture.proto.ListPagedBooksResponse;
+import io.americanexpress.synapse.api.grpc.fixture.proto.ListTagsResponse;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Node;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBook;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBookServiceGrpc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PlainNumbers;
 import io.americanexpress.synapse.api.grpc.internal.binding.FieldOverride;
 import io.americanexpress.synapse.api.grpc.internal.binding.MethodDeclaration;
 import io.americanexpress.synapse.api.grpc.internal.binding.fixture.BindingFixtures;
 import io.americanexpress.synapse.api.grpc.internal.edge.GrpcCallState;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.binding.ComponentRef;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.internal.binding.ComponentRefs;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.operation.OperationNames;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
+import io.americanexpress.synapse.core.paging.PageQuery;
+import io.americanexpress.synapse.core.paging.PageResult;
+import io.americanexpress.synapse.core.paging.SortOrder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -63,7 +76,8 @@ class UnaryOperationHandlerTest {
             @Nullable ErrorDetails notFound, List<FieldOverride> overrides) {
         MethodDescriptor<?, ?> method = CatalogServiceGrpc.getGetItemMethod();
         return UnaryOperationHandler
-                .create(MethodDeclaration.declared(method, operation, overrides, List.of(), notFound), input, output);
+                .create(MethodDeclaration.declared(method, operation, overrides, List.of(), List.of(), notFound),
+                        input, output, Compilers.cursors(), Compilers.PAGING);
     }
 
     private static UnaryOperationHandler handler(ServiceOperation<?, ?> operation, Descriptor input,
@@ -145,6 +159,26 @@ class UnaryOperationHandlerTest {
         assertThat(observer.completed).isOne();
         assertThat(state.operationName()).isEqualTo("load-item");
         assertThat(state.fieldPaths()).isEqualTo(Map.of("id", "id"));
+    }
+
+    @Test
+    void writeFailuresNameTheMethodAndTheOperation() {
+        UnaryOperationHandler outOfRange = handler(new WideYearOperation(), GET_ITEM_REQUEST,
+                PlainNumbers.getDescriptor());
+        UnaryOperationHandler nullElement = handler(new NullTagOperation(), GET_ITEM_REQUEST,
+                ListTagsResponse.getDescriptor());
+        Recorder observer = new Recorder();
+
+        // Every output the response can't hold is an operation bug, logged with the method (the call is INTERNAL).
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> outOfRange.invoke(GET_I1, observer))
+                .withMessage("gRPC method synapse.fixture.v1.CatalogService/GetItem (wide-year): WideYear.year is out "
+                        + "of range for synapse.fixture.v1.PlainNumbers.year (int32)");
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> nullElement.invoke(GET_I1, observer))
+                .withMessage("gRPC method synapse.fixture.v1.CatalogService/GetItem (null-tag): the output "
+                        + "List<String> holds a null element for synapse.fixture.v1.ListTagsResponse.tags");
+        assertThat(observer.values).isEmpty();
     }
 
     @Test
@@ -234,6 +268,218 @@ class UnaryOperationHandlerTest {
                 });
     }
 
+    @Test
+    void nextCursorIsWrappedAndTheTokenUnwrappedForTheOperation() throws Exception {
+        ShelfPages operation = new ShelfPages();
+        UnaryOperationHandler handler = pagedHandler(operation, Compilers.cursors());
+
+        Recorder first = new Recorder();
+        handler.invoke(shelfRequest("s", "", "title desc"), first);
+        ListPagedBooksResponse page = ListPagedBooksResponse.parseFrom(first.values.getFirst().toByteString());
+        String token = page.getNextPageToken();
+
+        // The raw cursor never reaches the caller.
+        assertThat(token).isNotEmpty().isNotEqualTo("after-1").matches("[A-Za-z0-9_-]+");
+        assertThat(page.getBooksList()).extracting(PagedBook::getId).containsExactly("1");
+        assertThat(page.getTotalSize()).isEqualTo(3);
+        assertThat(operation.received.getFirst())
+                .isEqualTo(new ShelfPage("s", new PageQuery(null, null, 20,
+                        List.of(new SortOrder("TITLE", SortOrder.Direction.DESC)))));
+
+        handler.invoke(shelfRequest("s", token, "title desc"), new Recorder());
+
+        // The operation receives its own cursor again.
+        assertThat(operation.received.getLast().page().cursor()).isEqualTo("after-1");
+    }
+
+    @Test
+    void tokenViolationNamesPageToken() {
+        PageCursors cursors = Compilers.cursors();
+        UnaryOperationHandler handler = pagedHandler(new ShelfPages(), cursors);
+        String token = cursors
+                .encode(OperationNames.nameOf(ShelfPages.class), List.of(),
+                        new ShelfPage("s", new PageQuery(null, null, 20, List.of())), Map.of(), "after-1");
+
+        // Tampered, for another shelf, or for another sort: one violation, whatever the reason.
+        for (byte[] request : List
+                .of(shelfRequest("s", "garbage", ""), shelfRequest("t", token, ""),
+                        shelfRequest("s", token, "title"))) {
+            assertThatExceptionOfType(SynapseException.class)
+                    .isThrownBy(() -> handler.invoke(request, new Recorder()))
+                    .satisfies(e -> {
+                        assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+                        assertThat(e.violations())
+                                .containsExactly(new Violation("page_token", "is not valid for this request"));
+                    });
+        }
+        // The same request as the token's pages.
+        Recorder observer = new Recorder();
+        handler.invoke(shelfRequest("s", token, ""), observer);
+        assertThat(observer.completed).isOne();
+    }
+
+    @Test
+    void offsetPageGetsATokenToTheNextOffsetAndHasNext() throws Exception {
+        OffsetPages operation = new OffsetPages(true);
+        UnaryOperationHandler handler = pagedHandler(operation, Compilers.cursors());
+
+        ListPagedBooksResponse first = invokePage(handler, shelfRequest("s", "", "title"));
+
+        // PageResult.of(items, true) has no cursor; the token carries the next offset, as REST's Link: next.
+        assertThat(first.getHasNext()).isTrue();
+        assertThat(first.getNextPageToken()).isNotEmpty().matches("[A-Za-z0-9_-]+");
+        invokePage(handler, shelfRequest("s", first.getNextPageToken(), "title"));
+        assertThat(operation.received.getLast().page())
+                .isEqualTo(new PageQuery(null, 20L, 20, List.of(new SortOrder("TITLE", SortOrder.Direction.ASC))));
+    }
+
+    @Test
+    void offsetPastTheCapHasNextWithoutAToken() throws Exception {
+        SynapsePagingProperties capped = new SynapsePagingProperties(20, 100, 30, Compilers.PAGING.cursor());
+        UnaryOperationHandler handler = pagedHandler(new OffsetPages(true), Compilers.cursors(), capped);
+
+        // skip 20 + size 20 is past max-offset 30: REST says hasNext and sends no Link.
+        ListPagedBooksResponse page = invokePage(handler,
+                ListPagedBooksRequest.newBuilder().setShelf("s").setSkip(20).build().toByteArray());
+
+        assertThat(page.getHasNext()).isTrue();
+        assertThat(page.getNextPageToken()).isEmpty();
+    }
+
+    @Test
+    void lastOffsetPageGetsNoToken() throws Exception {
+        ListPagedBooksResponse page = invokePage(pagedHandler(new OffsetPages(false), Compilers.cursors()),
+                shelfRequest("s", "", ""));
+
+        assertThat(page.getHasNext()).isFalse();
+        assertThat(page.getNextPageToken()).isEmpty();
+    }
+
+    @Test
+    void offsetTokenOverALoweredCapIsInvalid() throws Exception {
+        PageCursors cursors = Compilers.cursors();
+        String token = invokePage(pagedHandler(new OffsetPages(true), cursors), shelfRequest("s", "", ""))
+                .getNextPageToken();
+        SynapsePagingProperties lowered = new SynapsePagingProperties(20, 100, 10, Compilers.PAGING.cursor());
+        OffsetPages operation = new OffsetPages(true);
+
+        // The token carries offset 20; the cap is now 10: REST's offset over the cap, on page_token.
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> pagedHandler(operation, cursors, lowered)
+                        .invoke(shelfRequest("s", token, ""), new Recorder()))
+                .satisfies(e -> {
+                    assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+                    assertThat(e.violations())
+                            .containsExactly(new Violation("page_token", "must be less than or equal to 10"));
+                });
+        assertThat(operation.received).isEmpty();
+    }
+
+    @Test
+    void lastPageWithACursorGetsNoToken() throws Exception {
+        UnaryOperationHandler handler = pagedHandler(new LastPageWithCursor(), Compilers.cursors());
+
+        ListPagedBooksResponse page = invokePage(handler, shelfRequest("s", "", ""));
+
+        // hasNext false: no next page, whatever the cursor, as REST sends no Link.
+        assertThat(page.getHasNext()).isFalse();
+        assertThat(page.getNextPageToken()).isEmpty();
+    }
+
+    @Test
+    void cursorOfAnUnversionedRestRoutePagesHere() {
+        PageCursors cursors = Compilers.cursors();
+        ShelfPages operation = new ShelfPages();
+        UnaryOperationHandler handler = pagedHandler(operation, cursors);
+        // REST's ResponseWriter wraps with CursorExtras.of(route), which is Map.of() on an unversioned route.
+        String restToken = Objects
+                .requireNonNull(cursors
+                        .wrap(OperationNames.nameOf(ShelfPages.class),
+                                new ShelfPage("s", new PageQuery(null, null, 2, List.of())), Map.of(), "after-7"));
+
+        handler.invoke(shelfRequest("s", restToken, ""), new Recorder());
+
+        assertThat(operation.received.getLast().page().cursor()).isEqualTo("after-7");
+    }
+
+    private static ListPagedBooksResponse invokePage(UnaryOperationHandler handler, byte[] request)
+            throws Exception {
+        Recorder observer = new Recorder();
+        handler.invoke(request, observer);
+        return ListPagedBooksResponse.parseFrom(observer.values.getFirst().toByteString());
+    }
+
+    private static UnaryOperationHandler pagedHandler(ServiceOperation<?, ?> operation, PageCursors cursors) {
+        return pagedHandler(operation, cursors, Compilers.PAGING);
+    }
+
+    private static UnaryOperationHandler pagedHandler(ServiceOperation<?, ?> operation, PageCursors cursors,
+            SynapsePagingProperties paging) {
+        MethodDeclaration method = MethodDeclaration
+                .declared(PagedBookServiceGrpc.getListBooksMethod(), operation, List.of(), List.of(), List.of(),
+                        List.of(BindingFixtures.BookSort.class), null);
+        return UnaryOperationHandler
+                .create(method, ListPagedBooksRequest.getDescriptor(), ListPagedBooksResponse.getDescriptor(), cursors,
+                        paging);
+    }
+
+    /** Pages by offset only, as {@code SpringDataPages.from(Slice)} does, recording each input. */
+    static final class OffsetPages implements QueryOperation<ShelfPage, PageResult<BindingFixtures.BookRecord>> {
+
+        final List<ShelfPage> received = new ArrayList<>();
+
+        private final boolean hasNext;
+
+        OffsetPages(boolean hasNext) {
+            this.hasNext = hasNext;
+        }
+
+        @Override
+        public PageResult<BindingFixtures.BookRecord> execute(ShelfPage input) {
+            received.add(input);
+            return PageResult.of(List.of(new BindingFixtures.BookRecord("1", "Dune", 1965)), hasNext);
+        }
+    }
+
+    /** The last page, which still carries a cursor. */
+    static final class LastPageWithCursor
+            implements QueryOperation<ShelfPage, PageResult<BindingFixtures.BookRecord>> {
+
+        @Override
+        public PageResult<BindingFixtures.BookRecord> execute(ShelfPage input) {
+            return new PageResult<>(List.of(new BindingFixtures.BookRecord("1", "Dune", 1965)), "after-1", false,
+                    null);
+        }
+    }
+
+    private static byte[] shelfRequest(String shelf, String token, String orderBy) {
+        return ListPagedBooksRequest
+                .newBuilder()
+                .setShelf(shelf)
+                .setPageToken(token)
+                .setOrderBy(orderBy)
+                .build()
+                .toByteArray();
+    }
+
+    /** A filter and a page of {@code ListPagedBooksRequest}. */
+    record ShelfPage(String shelf, PageQuery page) {
+    }
+
+    /** Returns one book and the cursor {@code after-1}, recording each input. */
+    static final class ShelfPages implements QueryOperation<ShelfPage, PageResult<BindingFixtures.BookRecord>> {
+
+        final List<ShelfPage> received = new ArrayList<>();
+
+        @Override
+        public PageResult<BindingFixtures.BookRecord> execute(ShelfPage input) {
+            received.add(input);
+            return PageResult
+                    .ofCursor(List.of(new BindingFixtures.BookRecord("1", "Dune", 1965)), "after-1")
+                    .withTotal(3);
+        }
+    }
+
     private static Object field(DynamicMessage message, String name) {
         return message.getField(message.getDescriptorForType().findFieldByName(name));
     }
@@ -289,6 +535,30 @@ class UnaryOperationHandlerTest {
             return Optional
                     .of(new BindingFixtures.ItemRecord(input.id(), "found", new BindingFixtures.AuthorRecord("a",
                             "US")));
+        }
+    }
+
+    /** A year the response's int32 field can't hold. */
+    record WideYear(long year) {
+    }
+
+    /** Returns a year beyond int32. */
+    static class WideYearOperation implements QueryOperation<BindingFixtures.GetItem, WideYear> {
+
+        @Override
+        public WideYear execute(BindingFixtures.GetItem input) {
+            return new WideYear(Long.MAX_VALUE);
+        }
+    }
+
+    /** Returns a list with a null element. */
+    static class NullTagOperation implements QueryOperation<BindingFixtures.GetItem, List<@Nullable String>> {
+
+        @Override
+        public List<@Nullable String> execute(BindingFixtures.GetItem input) {
+            List<@Nullable String> tags = new ArrayList<>();
+            tags.add(null);
+            return tags;
         }
     }
 

@@ -158,3 +158,16 @@ message Choice {
     Author second = 2;
   }
 }
+
+// A oneof whose members have fields with presence, for components that write inside one member.
+message NoteChoice {
+  oneof pick {
+    Note first = 1;
+    Note second = 2;
+  }
+}
+
+message Note {
+  optional string title = 1;
+  optional string text = 2;
+}

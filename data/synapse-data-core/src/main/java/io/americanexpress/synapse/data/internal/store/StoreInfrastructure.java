@@ -57,6 +57,17 @@ public interface StoreInfrastructure {
     }
 
     /**
+     * Returns the type of the transaction manager the module builds for its stores. When a store's
+     * {@code <prefix>TransactionManager} is not one (or a subclass of it), the data stores' startup report warns that
+     * the store loses what that manager adds.
+     *
+     * @return the type, or {@code null} (the default) when the module builds none
+     */
+    default @Nullable Class<?> transactionManagerType() {
+        return null;
+    }
+
+    /**
      * Registers the access module's bean definitions for a store, after the data-core ones. Use
      * {@link StoreRegistrar#registerStoreBean} so each one skips a name the store's class defines, and gets the store's
      * qualifier and primary flag.

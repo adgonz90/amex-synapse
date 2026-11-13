@@ -31,6 +31,7 @@ import org.springframework.web.util.ServletRequestPathUtils;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.operation.QueryOperation;
@@ -165,7 +166,7 @@ class SynapseApiVersioningTest {
 
     private static SynapseConfigurationException validationFailure(RestBindings bindings) {
         try {
-            new BindingValidator(PagingSettings.defaults()).validate(bindings.routes(), List.of());
+            new BindingValidator(PagingSettings.defaults()).validate(RestBindingsAccess.routes(bindings), List.of());
         } catch (SynapseConfigurationException ex) {
             return ex;
         }

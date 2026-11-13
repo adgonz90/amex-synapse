@@ -42,7 +42,12 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * <p>
  * By default each record component reads from, or writes to, the message field whose JSON name equals the component
  * name ({@code countryCode} and {@code country_code}). {@link #map} binds a component to another field, and
- * {@link #context} sets an input component from the request context instead of a field.
+ * {@link #context} sets an input component from the request context instead of a field. A {@code VersionCondition}
+ * input component always reads the request's {@code string etag} field, which carries REST's entity tag token
+ * ({@code "5"} with its double quotes, or {@code *}), and {@link #etag} writes that token to the response's. A
+ * {@code PageQuery} input component reads the request's AIP-158 fields ({@code page_size}, {@code page_token},
+ * {@code skip} and {@code order_by}), and a {@code PageResult} output writes the response's items,
+ * {@code next_page_token} and {@code total_size}; {@link #sortable} lists the sort keys.
  *
  * @param <I> the operation's input type
  * @param <O> the operation's output type
@@ -58,6 +63,10 @@ public final class GrpcMethodSpec<I, O> {
     private final List<Mapped> maps = new ArrayList<>();
 
     private final List<Contextual> contexts = new ArrayList<>();
+
+    private final List<ComponentRef<?, ?>> etags = new ArrayList<>();
+
+    private final List<Class<? extends Enum<?>>> sortables = new ArrayList<>();
 
     private @Nullable ErrorDetails notFound;
 
@@ -131,6 +140,53 @@ public final class GrpcMethodSpec<I, O> {
     }
 
     /**
+     * Sends an output component as the response's strong entity tag, the same token REST sends as the {@code ETag}
+     * header: the value formatted as a string ({@code 7} becomes {@code "7"}, with the double quotes) in the response
+     * message's {@code string etag} field. A client sends it back in the {@code etag} field of a write, over gRPC or as
+     * {@code If-Match} over REST. The component keeps its own field too. A {@code null} value leaves {@code etag}
+     * empty.
+     *
+     * <p>
+     * As over REST, {@code .etag} is declared once, on a method bound to a {@code QueryOperation} (a read) or to a
+     * {@code CommandOperation} whose input has no {@code VersionCondition} (a create): an update or delete response
+     * carries no entity tag. The output must be a record or an {@code Optional} of one, the component a string, an
+     * integral number or a {@code java.time} value of that record (formatted by core's version token codec, as REST
+     * formats its {@code ETag}: plain decimal or ISO-8601, whatever the locale), and the response message must have a
+     * singular {@code string etag} field, outside a {@code oneof}, that no other component writes. Anything else fails
+     * startup.
+     *
+     * @param component a component of the output record
+     * @param <T> the record type
+     * @return this method
+     */
+    public <T> GrpcMethodSpec<I, O> etag(ComponentRef<T, ?> component) {
+        etags.add(component);
+        return this;
+    }
+
+    /**
+     * Lets callers sort this method's pages by the constants of an enum, as REST's {@code .sortable(keys)} does. A
+     * constant's name in the request's {@code order_by} field (AIP-132) is its {@link Enum#name() name} in lower case
+     * ({@code PUBLISHED_YEAR} is {@code published_year}); {@code @JsonProperty} is not read. Keys are separated by
+     * commas, and a key followed by {@code desc} sorts descending: {@code "title, published_year desc"}. The operation
+     * receives the constant's name as {@code SortOrder.property()}, as over REST, so a cursor issued over one protocol
+     * pages over the other. Without {@code .sortable}, a non-empty {@code order_by} is rejected.
+     *
+     * <p>
+     * The method's input must bind {@code PageQuery}, its request message must have a singular {@code string order_by}
+     * field, and {@code .sortable} is declared once, with constants whose lower-case names are made of letters, digits
+     * and {@code _} and are distinct. Anything else fails startup.
+     *
+     * @param keys the enum of sort keys
+     * @param <E> the enum type
+     * @return this method
+     */
+    public <E extends Enum<E>> GrpcMethodSpec<I, O> sortable(Class<E> keys) {
+        sortables.add(keys);
+        return this;
+    }
+
+    /**
      * Sets the error for an empty {@code Optional} output (by default {@code NOT_FOUND}). The operation's output must
      * be an {@code Optional}; otherwise startup fails.
      *
@@ -158,7 +214,12 @@ public final class GrpcMethodSpec<I, O> {
                 .stream()
                 .map(context -> new ContextSource(resolve(operationName, context.component()), context.value()))
                 .toList();
-        return MethodDeclaration.declared(method, operation, overrides, sources, notFound);
+        List<ResolvedComponent> etagComponents = etags
+                .stream()
+                .map(component -> resolve(operationName, component))
+                .toList();
+        return MethodDeclaration
+                .declared(method, operation, overrides, sources, etagComponents, sortables, notFound);
     }
 
     private ResolvedComponent resolve(String operationName, ComponentRef<?, ?> component) {

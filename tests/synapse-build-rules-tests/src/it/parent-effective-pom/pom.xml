@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    A consumer-like project that inherits synapse-parent and imports its own BOM that manages an older guava
+    (guava-bom 33.6.0-jre), as a consumer importing guava-bom or a cloud libraries BOM does. Maven processes the
+    project's own imports before the inherited synapse-bom import, so without the parent's explicit pin this guava
+    would win. It also declares a dependency that brings guava transitively (grpc-api 1.84.1 brings
+    33.6.0-android). verify.groovy checks that the parent's guava pin wins, and that grpc-api's guava is older.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse</groupId>
+        <artifactId>synapse-parent</artifactId>
+        <version>@project.version@</version>
+        <relativePath/>
+    </parent>
+
+    <artifactId>parent-effective-pom</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava-bom</artifactId>
+                <version>33.6.0-jre</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+            <version>1.84.1</version>
+        </dependency>
+    </dependencies>
+</project>

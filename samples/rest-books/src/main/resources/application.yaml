@@ -1,6 +1,8 @@
 # Configuration of the book catalog sample. The synapse.* values below are the defaults unless a comment says
-# otherwise; they are listed to show what you can change while trying the service. Every property is in
-# docs/modules/ROOT/pages/reference/configuration-properties.adoc.
+# otherwise; they are listed to show what you can change while trying the service.
+# The table of every property is generated from the jars' configuration metadata when the documentation site is built
+# (docs/modules/ROOT/pages/reference/configuration-properties.adoc includes it); IDEs with Spring Boot support complete
+# the keys from the same metadata.
 
 spring:
   application:
@@ -13,20 +15,11 @@ spring:
     virtual:
       # Requests run on virtual threads; Synapse's concurrency limit (below) is then what caps the work in flight.
       enabled: true
-  grpc:
-    server:
-      # The gRPC server (Netty), next to Tomcat on 8080. 9090 is Spring Boot's default.
-      port: 9090
-      # Server reflection (what grpcurl list and describe use) is off unless spring.grpc.server.reflection.enabled
-      # is true; Synapse sets that default in every environment. application-local.yaml turns it on for local runs.
-      # reflection:
-      #   enabled: true
 
 synapse:
   correlation:
     # Read from this request header (a new id is generated when it is absent or invalid), echoed on every response,
-    # errors included, and written to the logs as correlationId. gRPC uses the same name as metadata key
-    # (x-correlation-id).
+    # errors included, and written to the logs as correlationId.
     header: X-Correlation-Id
   # Whether problem responses carry "detail" (the formatted message): off unless include-detail is true.
   # application-local.yaml turns it on for local runs.
@@ -36,6 +29,15 @@ synapse:
   # context:
   #   inbound:
   #     trusted: false
+  # Paging (GET /books): core's settings, which every API plugin shares. Page sizes: default-size 20, max-size 100.
+  # paging:
+  #   # The largest offset a caller may request (?offset=); a larger one is a 400. Callers page further by cursor.
+  #   max-offset: 1000
+  #   # cursor.key: the base64 256-bit key that encrypts the paging cursors; create one with: openssl rand -base64 32
+  #   # Unset (or blank), a key is generated at every start: cursors are then rejected after a restart or on another
+  #   # instance, and every start logs a WARN that says so. Give every instance the same key, from the environment or
+  #   # a secret store, never from a file in the repository. No line is needed here: Boot binds the environment
+  #   # variable SYNAPSE_PAGING_CURSOR_KEY to synapse.paging.cursor.key (dots become underscores, letters upper case).
   api:
     rest:
       context:
@@ -52,31 +54,6 @@ synapse:
       max-request-size: 1MB
       # Requests in flight before the service answers 503 with Retry-After. Actuator paths are never limited.
       max-concurrent-requests: 200
-      # Paging (GET /books). The page size is under synapse.paging: default-size 20, max-size 100.
-      # paging:
-      #   # The largest offset a caller may request (?offset=); a larger one is a 400. Callers page further by cursor.
-      #   max-offset: 1000
-      #   cursor:
-      #     # The base64 256-bit key that encrypts the paging cursors; create one with: openssl rand -base64 32
-      #     # Unset (or blank), a key is generated at every start: cursors then fail with 400 after a restart or on
-      #     # another instance, and every start logs a WARN that says so. Give every instance the same key, from
-      #     # the environment or a secret store, never from a file in the repository. As written, the service doesn't
-      #     # start when BOOKS_CURSOR_KEY isn't set (the unresolved placeholder isn't a valid key); ${BOOKS_CURSOR_KEY:}
-      #     # would fall back to a generated key instead.
-      #     key: ${BOOKS_CURSOR_KEY}
-    grpc:
-      context:
-        metadata:
-          # Not a default: maps the x-channel metadata key to the request-context attribute "channel", as X-Channel
-          # does over REST. CreateBook binds it into CreateBookRequest.channel (see BooksGrpcConfiguration).
-          channel: x-channel
-      deadline:
-        # The caller's gRPC deadline, capped by max; default when the call has none.
-        default: 10s
-        max: 30s
-      # Calls in flight before the service answers UNAVAILABLE with RetryInfo. Health and reflection are never
-      # counted. Message and metadata sizes are spring.grpc.server.* settings (Synapse sets 16KB for metadata).
-      max-concurrent-calls: 200
 
 management:
   otlp:

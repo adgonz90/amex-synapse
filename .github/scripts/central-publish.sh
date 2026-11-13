@@ -155,6 +155,24 @@ validate() {
     done < "$list"
     ((bad == 0)) || die "The staging directory holds files that must not be published (expected only ${GROUP_PATH}/<artifactId>/${version}/)."
     ((artifacts > 0)) || die "Nothing to publish for $version in $dir."
+    # A release: Central requires a -sources.jar and a -javadoc.jar next to every <artifactId>-<version>.jar
+    # (https://central.sonatype.org/publish/requirements/), and would only say so at publish time.
+    if [[ "$version" =~ $RELEASE_VERSION_RE ]]; then
+        local jar missing=0
+        cp "$WORK_DIR/valid.txt" "$WORK_DIR/release-files.txt"
+        while IFS= read -r rel; do
+            [[ "$rel" =~ $version_re ]] || continue
+            aid="${BASH_REMATCH[1]}" name="${BASH_REMATCH[3]}"
+            [[ "$name" == "$aid-$version.jar" ]] || continue
+            for jar in "${rel%.jar}-sources.jar" "${rel%.jar}-javadoc.jar"; do
+                if ! grep -qxF -- "$jar" "$WORK_DIR/release-files.txt"; then
+                    echo "::error::Missing for $rel: $jar" >&2
+                    missing=1
+                fi
+            done
+        done < "$WORK_DIR/valid.txt"
+        ((missing == 0)) || die "Central requires a -sources.jar and a -javadoc.jar for every jar of a release."
+    fi
     LC_ALL=C sort "$WORK_DIR/valid.txt"
 }
 

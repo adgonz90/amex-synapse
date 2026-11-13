@@ -1,0 +1,24 @@
+# The local environment: ENV=local java -jar ... (README.md). In a service whose contract module is installed,
+# ./mvnw ... spring-boot:run runs it too (the pom sets spring-boot.run.profiles=local). Only local conveniences belong
+# here.
+synapse:
+  errors:
+    # Statuses carry their description (the formatted message), which helps while trying the service. Every other
+    # environment keeps the default (off).
+    include-detail: true
+  # Paging tokens: no key is set, so every start generates one and logs a WARN, and a page_token from an earlier start
+  # is rejected. To keep tokens across restarts, create one key per shell and pass it to each start:
+  #   KEY=$(openssl rand -base64 32)
+  #   SYNAPSE_PAGING_CURSOR_KEY=$KEY ENV=local java -jar ...
+  # Boot binds SYNAPSE_PAGING_CURSOR_KEY to synapse.paging.cursor.key (dots become underscores, letters upper case).
+  # Never write a key in this file: keys don't belong in the repository.
+
+spring:
+  grpc:
+    server:
+      reflection:
+        # Server reflection lets grpcurl list and describe the services without the .proto. It publishes the whole
+        # API to any caller, so it is off by default in every environment; an environment that wants it (here, local
+        # runs) turns it on. This sample builds without Spring AOT (-Paot is opt-in): with AOT-generated artifacts the
+        # build's value decides instead, and a run in local fails at startup (see the reference bookstore).
+        enabled: true

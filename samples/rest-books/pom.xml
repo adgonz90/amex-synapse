@@ -13,29 +13,29 @@
     the License.
 -->
 <!--
-    A runnable service built with Synapse: a small book catalog over REST and gRPC. See README.md for how to run it.
+    The REST tour: a small book catalog over REST, in memory. See README.md for how to run it.
 
-    It inherits the root build parent so that it goes through the same gates as the library modules. A real service
-    inherits io.americanexpress.synapse:synapse-parent instead; the dependencies below are declared exactly as such a
-    service would declare them. Never published.
+    This is the pom of a real Synapse service: it inherits synapse-parent, which brings Spring Boot, the Synapse BOM
+    (so no dependency below has a version) and the build conventions. The only parts that are not what a service would
+    have are the skip properties, which keep the sample from being published.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
         <groupId>io.americanexpress.synapse</groupId>
-        <artifactId>synapse</artifactId>
+        <artifactId>synapse-parent</artifactId>
         <version>2.0.0-SNAPSHOT</version>
-        <relativePath>../../pom.xml</relativePath>
+        <relativePath>../../parent/synapse-parent</relativePath>
     </parent>
 
-    <artifactId>synapse-sample-rest-books</artifactId>
+    <groupId>io.americanexpress.synapse.samples</groupId>
+    <artifactId>rest-books</artifactId>
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>Sample: a book catalog served over REST and gRPC with Synapse. Not published.</description>
+    <description>Sample: the REST tour, a book catalog served over REST with Synapse. Not published.</description>
 
     <properties>
-        <!-- A sample: never installed or deployed (which also keeps it out of the release SBOM), and no source or
-             Javadoc jars. -->
+        <!-- A sample: never installed or deployed, and no source or Javadoc jars. A real service drops these four. -->
         <maven.install.skip>true</maven.install.skip>
         <maven.deploy.skip>true</maven.deploy.skip>
         <maven.source.skip>true</maven.source.skip>
@@ -43,10 +43,6 @@
         <!-- ./mvnw spring-boot:run runs the local environment (application-local.yaml);
              -Dspring-boot.run.profiles=<env> picks another. -->
         <spring-boot.run.profiles>local</spring-boot.run.profiles>
-        <!-- The code protoc and grpc-java generate from src/main/proto is marked @com.google.protobuf.Generated and
-             @GrpcGenerated, which -XepDisableWarningsInGeneratedCode doesn't recognize; skip it in Error Prone
-             (NullAway's OnlyNullMarked skips it already). -->
-        <synapse.errorprone.excludedPaths>.*/target/generated-.*</synapse.errorprone.excludedPaths>
     </properties>
 
     <dependencies>
@@ -60,12 +56,6 @@
         <dependency>
             <groupId>io.americanexpress.synapse</groupId>
             <artifactId>synapse-api-rest-openapi</artifactId>
-        </dependency>
-        <!-- The gRPC plugin: Spring Boot's gRPC server on Netty (port 9090), the Synapse edge, and the protobuf and
-             grpc-java runtime the generated code needs. -->
-        <dependency>
-            <groupId>io.americanexpress.synapse</groupId>
-            <artifactId>synapse-api-grpc</artifactId>
         </dependency>
         <!-- Prescriptive logging: synchronous Log4j2 with ECS JSON on the console. Logback must be absent, hence the
              spring-boot-starter-logging exclusions below. -->
@@ -102,11 +92,6 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>io.americanexpress.synapse</groupId>
-            <artifactId>synapse-test-grpc</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
@@ -121,68 +106,16 @@
 
     <build>
         <plugins>
-            <!-- An executable jar: java -jar target/synapse-sample-rest-books-<version>.jar -->
+            <!-- An executable jar: java -jar target/rest-books-<version>.jar. synapse-parent configures the executions
+                 (repackage). -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>repackage</id>
-                        <goals>
-                            <goal>repackage</goal>
-                        </goals>
-                    </execution>
-                </executions>
-                <configuration>
-                    <mainClass>io.americanexpress.synapse.samples.books.BooksApplication</mainClass>
-                </configuration>
             </plugin>
-            <!-- The integration tests run against the classes, not the repackaged jar (whose classes are under
-                 BOOT-INF/classes, where Spring can't find them). spring-boot-starter-parent, and so synapse-parent, sets
-                 this for a real service. -->
+            <!-- Runs the *IT classes in the verify phase (the unit tests, *Test, run in surefire). -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
-                <configuration>
-                    <classesDirectory>${project.build.outputDirectory}</classesDirectory>
-                </configuration>
-            </plugin>
-            <!-- Generates the messages and the BookServiceGrpc stubs from src/main/proto (one of the plugin's default
-                 source directories) into target/generated-sources/protobuf. -->
-            <plugin>
-                <groupId>io.github.ascopes</groupId>
-                <artifactId>protobuf-maven-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>generate</id>
-                        <goals>
-                            <goal>generate</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <!-- The generated code is not the sample's own: leave it out of the coverage report and check. -->
-            <plugin>
-                <groupId>org.jacoco</groupId>
-                <artifactId>jacoco-maven-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>report</id>
-                        <configuration>
-                            <excludes>
-                                <exclude>**/api/grpc/proto/**</exclude>
-                            </excludes>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <id>check</id>
-                        <configuration>
-                            <excludes>
-                                <exclude>**/api/grpc/proto/**</exclude>
-                            </excludes>
-                        </configuration>
-                    </execution>
-                </executions>
             </plugin>
         </plugins>
     </build>

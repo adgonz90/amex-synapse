@@ -5,6 +5,12 @@ synapse:
     # Problem responses carry "detail" (the formatted message), which helps while trying the service. Every other
     # environment keeps the default (off).
     include-detail: true
+  # Paging cursors: no key is set, so every start generates one and logs a WARN, and a cursor from an earlier start is
+  # rejected. To keep cursors across restarts, create one key per shell and pass it to each start:
+  #   KEY=$(openssl rand -base64 32)
+  #   SYNAPSE_PAGING_CURSOR_KEY=$KEY ENV=local java -jar ...
+  # Boot binds SYNAPSE_PAGING_CURSOR_KEY to synapse.paging.cursor.key (dots become underscores, letters upper case).
+  # Never write a key in this file: keys don't belong in the repository.
   api:
     rest:
       cors:
@@ -17,14 +23,7 @@ synapse:
 springdoc:
   api-docs:
     # Serves the OpenAPI document at /v3/api-docs. It describes every route to anyone who can reach the service, so
-    # it is off by default in every environment; an environment that wants it (here, local runs) turns it on. With
-    # AOT-generated artifacts (a native image) this file can't change it: the value at build time decides.
+    # it is off by default in every environment; an environment that wants it (here, local runs) turns it on. This
+    # sample builds without Spring AOT (-Paot is opt-in): with AOT-generated artifacts the build's value decides
+    # instead, and a run in local fails at startup (see the reference bookstore).
     enabled: true
-
-spring:
-  grpc:
-    server:
-      # gRPC server reflection, so that grpcurl can list and call the service without the .proto file. Every other
-      # environment keeps Synapse's default (off): reflection publishes the whole API to any caller.
-      reflection:
-        enabled: true

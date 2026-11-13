@@ -135,6 +135,7 @@ import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.conditional.VersionTokens;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.SortOrder;
 import io.americanexpress.synapse.core.paging.SortOrder.Direction;
@@ -978,7 +979,7 @@ class RequestBinderTest {
                 Map.of()), new Violation("size", "must be less than or equal to 100"),
                 new Violation("sort", "has a key that is not allowed (allowed: title, year, authorName)"));
         assertViolations(() -> bind(post, MockMvcRequestBuilders.post(URI.create("/books/search?sort=title")),
-                Map.of()), new Violation("sort", "is not supported by this route"));
+                Map.of()), new Violation("sort", "is not supported"));
     }
 
     @Test
@@ -1269,14 +1270,36 @@ class RequestBinderTest {
     }
 
     @Test
-    void versionTypeMustConvertFromAString() {
-        assertNotConvertible(
-                RestBindings
+    void versionTypeMustBeAVersionType() {
+        // Core's version token codec reads the version, so its types are the only ones, on every protocol: a type
+        // MVC's conversion service could read from a string is not enough.
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> route(RestBindings
                         .builder()
                         .delete("/books/{id}", new LooseConditionOperation())
                         .header("If-Match", LooseConditionRequest::pair)
-                        .build(),
-                "LooseConditionRequest.pair (type io.americanexpress.synapse.core.conditional.VersionCondition<");
+                        .build()))
+                .satisfies(e -> {
+                    assertThat(e.description())
+                            .isEqualTo("REST route DELETE /books/{id} (loose-condition): the component "
+                                    + "LooseConditionRequest.pair is bound as VersionCondition<PairFilter>, which is "
+                                    + "not a version type");
+                    assertThat(e.action()).isEqualTo("Declare a version type: " + VersionTokens.TYPES + ".");
+                });
+    }
+
+    @Test
+    void versionReadsThePlainDecimalTokenOnly() {
+        // Not MVC's lenient number parsing (Long.decode reads 0x10 and #10).
+        RouteDefinition route = ifMatchRoute();
+        for (String token : List.of("\"0x10\"", "\"+5\"", "\"007\"")) {
+            assertThatExceptionOfType(SynapseException.class)
+                    .as(token)
+                    .isThrownBy(() -> bindIfMatch(route, token))
+                    .satisfies(e -> assertThat(e.violations())
+                            .containsExactly(new Violation("version", "is not a valid value")));
+        }
+        assertThat(Objects.requireNonNull(bindIfMatch(route, "\"16\"")).version()).isEqualTo(VersionCondition.of(16L));
     }
 
     @Test
@@ -1352,7 +1375,7 @@ class RequestBinderTest {
 
     private static RouteDefinition route(RestBindings bindings, RestConventions... conventions) {
         return new BindingValidator(PagingSettings.defaults())
-                .validate(bindings.routes(), List.of(conventions))
+                .validate(RestBindingsAccess.routes(bindings), List.of(conventions))
                 .getFirst();
     }
 

@@ -47,7 +47,7 @@ jobs:
           path: |
             **/target/*.jar
             !**/target/*-tests.jar
-            !**/target/synapse-sample-*.jar
+            !samples/**
           retention-days: 14
           if-no-files-found: error
 
@@ -70,7 +70,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           mapfile -t reports < <(find . -path '*/target/site/jacoco/jacoco.xml' -not -path './.git/*')
-          mapfile -t roots < <(find . -type d -path '*/src/main/java' -not -path '*/target/*')
+          mapfile -t roots < <(find . -type d -path '*/src/main/java' -not -path '*/target/*' -not -path './samples/*' -not -path './archetypes/*')
           if [ "${#roots[@]}" -eq 0 ]; then
             echo "No modules with main sources; nothing to check."
             exit 0
@@ -105,9 +105,12 @@ jobs:
           cache: maven
 
       - name: Build and run unit and smoke tests on JDK 21
+        # The samples that inherit synapse-parent don't read synapse.it.groups, so their ITs are excluded here
+        # (.config/jdk21-pr-excluded-its.txt says why); they run on the JDK 25 leg and nightly on JDK 21.
         run: >-
           ./mvnw --batch-mode --no-transfer-progress verify
           -Djvm="$JAVA_HOME_21_X64/bin/java" -Dsynapse.it.groups=smoke -Djacoco.skip=true
+          -Dfailsafe.excludesFile="$GITHUB_WORKSPACE/.config/jdk21-pr-excluded-its.txt"
 
   dependency-graph:
     # Feeds GitHub's dependency graph (and so Dependabot alerts and dependency review) with the full Maven tree.

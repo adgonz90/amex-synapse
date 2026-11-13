@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
+import org.springframework.aot.AotDetector;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.source.ConfigurationProperty;
@@ -27,18 +28,20 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyN
 import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
 import org.springframework.boot.context.properties.source.ConfigurationPropertyState;
+import org.springframework.context.aot.AbstractAotProcessor;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.PropertySource;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 
 /**
- * The environment of a run: the one active profile.
+ * The environment of a run: the one active profile (during AOT processing, the one default profile).
  *
  * @param name the environment
  * @param setBy where it was set: {@code spring.profiles.active=<raw value>, <label of the highest source holding it>}
  *        (the raw value is the source's own, so {@code ${ENV}} stays as written), or
- *        {@code SpringApplication additional profiles}
+ *        {@code SpringApplication additional profiles}, or during AOT processing
+ *        {@code spring.profiles.default=<raw value>, <label>}
  */
 public record EnvironmentName(String name, String setBy) {
 
@@ -47,6 +50,8 @@ public record EnvironmentName(String name, String setBy) {
     private static final String DEFAULT = "spring.profiles.default";
 
     private static final ConfigurationPropertyName ACTIVE_NAME = ConfigurationPropertyName.of(ACTIVE);
+
+    private static final ConfigurationPropertyName DEFAULT_NAME = ConfigurationPropertyName.of(DEFAULT);
 
     private static final String ADDITIONAL_PROFILES = "SpringApplication additional profiles";
 
@@ -60,12 +65,15 @@ public record EnvironmentName(String name, String setBy) {
             + "tests declare @ActiveProfiles(\"test\").";
 
     private static final String SEVERAL_ACTION = "Keep one environment in spring.profiles.active and move feature "
-            + "profiles to spring.profiles.include or a profile group.";
+            + "profiles to the environment's profile group, spring.profiles.group.<env>.";
 
     /**
      * Resolves the environment: {@code spring.profiles.active} (placeholders resolved, values trimmed, blank values
      * dropped) followed by the application's additional profiles, without duplicates. {@code spring.profiles.default},
-     * {@code spring.profiles.include} and profile groups never count. There is no default environment: the raw value
+     * {@code spring.profiles.include} and profile groups never count, except during AOT processing (see
+     * {@link #resolve(ConfigurableEnvironment, Set, boolean)}), which this method detects with Spring's
+     * {@value AbstractAotProcessor#AOT_PROCESSING} system property, outside a run of AOT-generated artifacts. There is
+     * no default environment: the raw value
      * of {@code spring.profiles.active} in the highest source that holds it may not contain a placeholder with a
      * default, such as {@code ${ENV:local}}, even when the variable is set.
      *
@@ -76,7 +84,27 @@ public record EnvironmentName(String name, String setBy) {
      *         no environment, or more than one
      */
     public static EnvironmentName resolve(ConfigurableEnvironment environment, Set<String> additionalProfiles) {
-        Holder holder = holder(environment);
+        return resolve(environment, additionalProfiles, aotProcessing());
+    }
+
+    /**
+     * Resolves the environment as {@link #resolve(ConfigurableEnvironment, Set)} does. During AOT processing, and only
+     * then, a single {@code spring.profiles.default} is the environment when {@code spring.profiles.active} and the
+     * additional profiles are empty: synapse-parent passes the build environment to {@code process-aot} that way,
+     * because Spring's AOT code generation makes every profile that is active during processing active at run time
+     * too, and a default profile is not baked in. No profile may then be active, not even an included one: Boot would
+     * ignore the default profile.
+     *
+     * @param environment the environment, after Boot has loaded the config data
+     * @param additionalProfiles {@code SpringApplication.getAdditionalProfiles()}
+     * @param aotProcessing whether the application runs for AOT processing ({@code spring-boot:process-aot})
+     * @return the environment
+     * @throws SynapseConfigurationException when {@code spring.profiles.active} falls back to a default, or there is
+     *         no environment, or more than one
+     */
+    public static EnvironmentName resolve(ConfigurableEnvironment environment, Set<String> additionalProfiles,
+            boolean aotProcessing) {
+        Holder holder = holder(environment, ACTIVE_NAME);
         if (holder != null && holder.raw() instanceof String raw) {
             String variable = variableWithDefault(raw);
             if (variable != null) {
@@ -92,18 +120,53 @@ public record EnvironmentName(String name, String setBy) {
         names.addAll(names(additionalProfiles));
         if (names.isEmpty()) {
             List<String> defaults = names(binder.bind(DEFAULT, Bindable.listOf(String.class)).orElse(List.of()));
+            if (aotProcessing && !defaults.isEmpty()) {
+                EnvironmentName build = single(new LinkedHashSet<>(defaults),
+                        setBy(DEFAULT, holder(environment, DEFAULT_NAME), defaults));
+                requireNoActiveProfile(environment, build.name());
+                return build;
+            }
             String description = "No environment is set: spring.profiles.active has no value.";
             if (!defaults.isEmpty()) {
                 description += " spring.profiles.default (" + String.join(", ", defaults) + ") does not count.";
             }
             throw new SynapseConfigurationException(description, NO_ENVIRONMENT_ACTION);
         }
+        return single(names, active.isEmpty() ? ADDITIONAL_PROFILES : setBy(ACTIVE, holder, active));
+    }
+
+    /**
+     * During AOT processing Boot reads the default profile's files only while no profile is active, and an included
+     * profile is an active one, so the build environment would silently not apply.
+     */
+    private static void requireNoActiveProfile(ConfigurableEnvironment environment, String name) {
+        String[] activeProfiles = environment.getActiveProfiles();
+        if (activeProfiles.length > 0) {
+            throw new SynapseConfigurationException("During AOT processing the environment is the default profile '"
+                    + name + "', but these profiles are active: " + String.join(", ", activeProfiles) + ". Boot "
+                    + "ignores the default profile while any profile is active, whether spring.profiles.include set it "
+                    + "or a library added it (as spring-cloud-kubernetes adds kubernetes inside a Kubernetes pod), so "
+                    + "AOT processing would not read the build environment's files.",
+                    "Move feature profiles from spring.profiles.include to each environment's profile group, "
+                            + "spring.profiles.group.<env>, including the build environment's (spring.profiles.group."
+                            + name + "). Turn off for AOT processing a library that adds a profile.");
+        }
+    }
+
+    /**
+     * Whether the application runs for AOT processing: Spring's AOT processors set
+     * {@value AbstractAotProcessor#AOT_PROCESSING} for the run, and a run of AOT-generated artifacts never is one.
+     */
+    private static boolean aotProcessing() {
+        return Boolean.getBoolean(AbstractAotProcessor.AOT_PROCESSING) && !AotDetector.useGeneratedArtifacts();
+    }
+
+    private static EnvironmentName single(Set<String> names, String setBy) {
         if (names.size() > 1) {
             throw new SynapseConfigurationException("Exactly one environment must be active, but there are "
                     + names.size() + ": " + String.join(", ", names) + ".", SEVERAL_ACTION);
         }
-        String name = names.iterator().next();
-        return new EnvironmentName(name, active.isEmpty() ? ADDITIONAL_PROFILES : setBy(holder, active));
+        return new EnvironmentName(names.iterator().next(), setBy);
     }
 
     /**
@@ -159,10 +222,10 @@ public record EnvironmentName(String name, String setBy) {
     }
 
     /**
-     * Finds the highest source that holds {@code spring.profiles.active}, as the binder does, with its raw value. An
-     * indexed list ({@code spring.profiles.active[0]}) has no single raw value.
+     * Finds the highest source that holds a profiles property, as the binder does, with its raw value. An
+     * indexed list (such as {@code spring.profiles.active[0]}) has no single raw value.
      */
-    private static @Nullable Holder holder(ConfigurableEnvironment environment) {
+    private static @Nullable Holder holder(ConfigurableEnvironment environment, ConfigurationPropertyName name) {
         for (PropertySource<?> source : environment.getPropertySources()) {
             if (ConfigurationPropertySources.isAttachedConfigurationPropertySource(source)) {
                 continue;
@@ -171,11 +234,11 @@ public record EnvironmentName(String name, String setBy) {
                 if (configurationSource == null) {
                     continue;
                 }
-                ConfigurationProperty property = configurationSource.getConfigurationProperty(ACTIVE_NAME);
+                ConfigurationProperty property = configurationSource.getConfigurationProperty(name);
                 if (property != null) {
                     return new Holder(property.getValue(), ConfigSources.label(source));
                 }
-                if (configurationSource.containsDescendantOf(ACTIVE_NAME) == ConfigurationPropertyState.PRESENT) {
+                if (configurationSource.containsDescendantOf(name) == ConfigurationPropertyState.PRESENT) {
                     return new Holder(null, ConfigSources.label(source));
                 }
             }
@@ -183,17 +246,17 @@ public record EnvironmentName(String name, String setBy) {
         return null;
     }
 
-    /** Where {@code spring.profiles.active} was set: its raw value, or the bound names for an indexed list. */
-    private static String setBy(@Nullable Holder holder, List<String> active) {
+    /** Where a profiles property was set: its raw value, or the bound names for an indexed list. */
+    private static String setBy(String property, @Nullable Holder holder, List<String> names) {
         if (holder == null) {
-            return ACTIVE + "=" + String.join(",", active);
+            return property + "=" + String.join(",", names);
         }
         Object raw = holder.raw();
-        return ACTIVE + "=" + (raw != null ? raw : String.join(",", active)) + ", " + holder.label();
+        return property + "=" + (raw != null ? raw : String.join(",", names)) + ", " + holder.label();
     }
 
     /**
-     * The highest source that holds {@code spring.profiles.active}.
+     * The highest source that holds a profiles property.
      *
      * @param raw its raw value, or {@code null} for an indexed list
      * @param label the source's label

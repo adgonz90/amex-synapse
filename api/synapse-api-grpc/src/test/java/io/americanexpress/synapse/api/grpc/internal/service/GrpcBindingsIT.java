@@ -99,6 +99,9 @@ class GrpcBindingsIT {
 
     private static final UUID KNOWN = UUID.fromString("0d4f1c9e-8a43-4a52-9a43-6f1e2b3c4d5e");
 
+    /** An item whose operation sets both members of the lookup oneof, an operation bug. */
+    private static final UUID BOTH_LOOKUPS = UUID.fromString("7a1e2b3c-4d5e-4f60-8a71-b2c3d4e5f607");
+
     private static final Instant CREATED = Instant.parse("2026-11-05T10:15:30.123456789Z");
 
     private static final Metadata.Key<String> CORRELATION = Metadata.Key
@@ -296,6 +299,25 @@ class GrpcBindingsIT {
     }
 
     @Test
+    void oneofWithTwoValuesIsInternalAndNamesTheMethod(CapturedOutput output) throws InterruptedException {
+        int start = output.getAll().length();
+
+        Result<Item> result = call(stub -> stub.getItem(get(BOTH_LOOKUPS)));
+
+        // sku and barcode both write the lookup oneof: writing both would keep only the last, so the call fails.
+        StatusRuntimeException e = result.error();
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+        assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("INTERNAL");
+        String everything = e.getStatus() + " " + details(e) + " " + result.trailers();
+        assertThat(everything).doesNotContain("oneof").doesNotContain("barcode").doesNotContain("Exception");
+        assertThat(output.getAll().substring(start))
+                .contains("Unhandled error in gRPC call to get-item")
+                .contains("gRPC method " + SERVICE + "/GetItem (get-item): ItemView.sku and ItemView.barcode both "
+                        + "have a value, but they write members of oneof synapse.fixture.v1.Item.lookup, which "
+                        + "holds one");
+    }
+
+    @Test
     void operationRunsInsideThePipeline(CapturedOutput output) throws InterruptedException {
         int start = output.getAll().length();
 
@@ -427,7 +449,7 @@ class GrpcBindingsIT {
     /** An item, with every built-in type the mapping supports. */
     record ItemView(UUID id, String name, Instant createdAt, Duration ttl, @Nullable Integer rating,
             @Nullable String note, Genre genre, List<String> tags, Map<String, Long> counts, AuthorView author,
-            @Nullable String sku, long version) {
+            @Nullable String sku, @Nullable String barcode, long version) {
     }
 
     /** The author of a new item. */
@@ -463,13 +485,14 @@ class GrpcBindingsIT {
 
         @Override
         public Optional<ItemView> execute(ItemKey input) {
-            if (!KNOWN.equals(input.id())) {
+            if (!KNOWN.equals(input.id()) && !BOTH_LOOKUPS.equals(input.id())) {
                 return Optional.empty();
             }
+            String barcode = BOTH_LOOKUPS.equals(input.id()) ? "4006381333931" : null;
             return Optional
-                    .of(new ItemView(KNOWN, "Dune", CREATED, Duration.ofSeconds(90, 5), 4, "signed", Genre.FICTION,
-                            List.of("classic", "space"), Map.of("views", 12L, "likes", 3L),
-                            new AuthorView("Frank Herbert", "US"), "SKU-1", 7L));
+                    .of(new ItemView(input.id(), "Dune", CREATED, Duration.ofSeconds(90, 5), 4, "signed",
+                            Genre.FICTION, List.of("classic", "space"), Map.of("views", 12L, "likes", 3L),
+                            new AuthorView("Frank Herbert", "US"), "SKU-1", barcode, 7L));
         }
     }
 
@@ -573,6 +596,7 @@ class GrpcBindingsIT {
                     .service(CatalogServiceGrpc.getServiceDescriptor())
                     .unary(CatalogServiceGrpc.getGetItemMethod(), getItem)
                     .map("sku", ItemView::sku)
+                    .map("barcode", ItemView::barcode)
                     .notFound(ItemErrors.ITEM_NOT_FOUND)
                     .bindAllByName()
                     .build();

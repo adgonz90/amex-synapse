@@ -17,7 +17,9 @@
  * {@link io.americanexpress.synapse.data.jpa.AuditedEntity}, with UUIDv7 ids, and
  * {@link io.americanexpress.synapse.data.jpa.LongIdEntity}, {@link io.americanexpress.synapse.data.jpa.LongVersionedEntity}
  * and {@link io.americanexpress.synapse.data.jpa.LongAuditedEntity}, with ids from a database sequence. Every store's
- * persistence unit has a default entity listener that assigns the UUID ids and stamps audited entities.
+ * persistence unit has a default entity listener that assigns the UUID ids and stamps audited entities. And
+ * {@link io.americanexpress.synapse.data.jpa.SynapseJpaTransactionManager}, the transaction manager Synapse builds for
+ * every JPA store, which a replacement extends to keep what it adds.
  */
 @NullMarked
 package io.americanexpress.synapse.data.jpa;

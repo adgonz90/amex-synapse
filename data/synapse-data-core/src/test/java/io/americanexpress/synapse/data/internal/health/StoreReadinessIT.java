@@ -29,6 +29,7 @@ import org.springframework.boot.health.actuate.endpoint.AdditionalHealthEndpoint
 import org.springframework.boot.health.actuate.endpoint.CompositeHealthDescriptor;
 import org.springframework.boot.health.actuate.endpoint.HealthDescriptor;
 import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpointGroup;
 import org.springframework.boot.health.actuate.endpoint.HealthEndpointGroups;
 import org.springframework.boot.health.contributor.Status;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -120,6 +121,42 @@ class StoreReadinessIT {
             assertThat(Objects
                     .requireNonNull(groups.get(AdditionalHealthEndpointPath.of(WebServerNamespace.SERVER, "/livez")))
                     .isMember("db/legacy")).isFalse();
+        }
+    }
+
+    /**
+     * The setup the docs prescribe for a load balancer's path: the readiness group's own {@code additional-path}
+     * ({@code server:/health}) and {@code include: readinessState}. Setting a key of the group defines it, and Boot
+     * then keeps the application's group instead of its probe group, so the {@code include} is what keeps every other
+     * indicator out. The path then serves Boot's readiness state and the stores that opt in, nothing else.
+     */
+    @Nested
+    @TestPropertySource(properties = {"synapse.data.stores.books.health.readiness=true",
+            "management.endpoint.health.group.readiness.include=readinessState",
+            "management.endpoint.health.group.readiness.additional-path=server:/health"})
+    class AtTheGroupsAdditionalPath {
+
+        @Autowired
+        private HealthEndpoint health;
+
+        @Autowired
+        private HealthEndpointGroups groups;
+
+        @Test
+        void healthServesReadinessAndTheOptedInStoresOnly() {
+            HealthEndpointGroup readiness = Objects
+                    .requireNonNull(groups.get(AdditionalHealthEndpointPath.of(WebServerNamespace.SERVER, "/health")),
+                            "the group at /health");
+
+            assertThat(Objects.requireNonNull(groups.get("readiness")).getAdditionalPath())
+                    .isEqualTo(AdditionalHealthEndpointPath.of(WebServerNamespace.SERVER, "/health"));
+            assertThat(readiness.isMember("readinessState")).isTrue();
+            assertThat(readiness.isMember("db/books")).isTrue();
+            assertThat(readiness.isMember("db/legacy")).isFalse();
+            assertThat(readiness.isMember("ping")).isFalse();
+            assertThat(components(health, "readiness")).containsOnlyKeys("db", "readinessState");
+            assertThat(components(health, "readiness", "db")).containsOnlyKeys("books");
+            assertThat(status(health, "readiness")).isEqualTo(Status.UP);
         }
     }
 

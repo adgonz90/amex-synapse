@@ -522,6 +522,27 @@ EOF
     done
 }
 
+case_13_release_requires_sources_and_javadoc_jars() {
+    local mode missing
+    for missing in sources javadoc; do
+        new_case "case13-$missing"
+        release_tree "$CASE_DIR/staging" 2.0.0-M1
+        rm -f "$CASE_DIR/staging/$GROUP/synapse-core/2.0.0-M1/synapse-core-2.0.0-M1-$missing.jar"*
+        for mode in validate release; do
+            run_publish "$mode" "$CASE_DIR/staging" 2.0.0-M1
+            assert_rc_nonzero || return 1
+            assert_output_contains "Missing for $GROUP/synapse-core/2.0.0-M1/synapse-core-2.0.0-M1.jar: $GROUP/synapse-core/2.0.0-M1/synapse-core-2.0.0-M1-$missing.jar" || return 1
+        done
+        assert_no_http || return 1
+        [ ! -s "$CASE_DIR/log/gpg.log" ] || fail "gpg ran before validation finished" || return 1
+    done
+    # A snapshot isn't validated by Central, and the snapshot build doesn't attach javadoc.
+    new_case case13-snapshot
+    snapshot_tree "$CASE_DIR/staging" 2.0.0-SNAPSHOT
+    run_publish validate "$CASE_DIR/staging" 2.0.0-SNAPSHOT
+    assert_rc 0
+}
+
 # ---------------------------------------------------------------------------------------------------------------------
 
 if [ "${1:-}" = stage-check ]; then

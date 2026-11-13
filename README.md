@@ -12,6 +12,21 @@ messaging follow the same conventions, with secure defaults and built-in observa
 The build specification and delivery plan for Synapse 2 are in [specs/v2/BUILD.md](specs/v2/BUILD.md), and the
 design decisions and roadmap are in [specs/v2/DESIGN.md](specs/v2/DESIGN.md).
 
+## Getting started
+
+- **Samples.** [samples/README.md](samples/README.md) lists the runnable samples in reading order: `hello-rest` (one
+  route), `rest-books` (the REST tour), `grpc-inventory` (gRPC with a contract module), `multi-store` (data modules
+  and two stores) and `reference-bookstore` (the reference service, over REST and gRPC). Each README has the commands
+  to run it and the output to expect.
+- **Archetypes.** Two Maven archetypes generate a new project shaped like a sample: `synapse-archetype-quickstart`
+  (like `hello-rest`) and `synapse-archetype-service` (like the reference bookstore). The `mvn archetype:generate`
+  commands are in [docs/modules/ROOT/pages/archetypes.adoc](docs/modules/ROOT/pages/archetypes.adoc). Synapse 2 is
+  not published yet: until it is, `./mvnw install` from this repository puts the archetypes and `synapse-parent` in
+  your local Maven repository, where `archetype:generate` finds them.
+- **Documentation.** The guides are in [docs/modules/ROOT/pages](docs/modules/ROOT/pages), starting with
+  [core.adoc](docs/modules/ROOT/pages/core.adoc); the site's navigation is
+  [docs/modules/ROOT/nav.adoc](docs/modules/ROOT/nav.adoc).
+
 ## Requirements
 
 | | Version |
@@ -40,11 +55,20 @@ coverage below the per-module threshold. Pull requests must additionally cover a
 
 | Path | Contents |
 |---|---|
-| `bom/synapse-bom` | Bill of materials for Synapse artifacts |
-| `parent/synapse-parent` | Parent POM for applications built with Synapse |
-| `core/synapse-core` | Protocol-agnostic core: operations, errors, correlation, conventions |
-| `docs/` | Documentation site (Antora) |
+| `pom.xml` | Root aggregator and internal build parent (versions, gates, profiles) |
+| `bom/synapse-bom` | Bill of materials for consumers (does not import Spring Boot's BOM) |
+| `parent/synapse-parent` | Parent POM for consumer applications (extends `spring-boot-starter-parent`) |
+| `core/synapse-core` | Protocol-agnostic core |
+| `core/synapse-test` | Test support: `SynapseOperations`, `@SynapseOperationTest`, architecture rules, AOT assertions |
+| `core/synapse-logging-log4j2` | Prescriptive Log4j2 logging: ECS JSON default, optional failure-log burst limit |
+| `api/` | API plugins, their test slices and add-ons (synapse-api-rest, synapse-test-rest, synapse-api-rest-openapi, synapse-api-grpc, synapse-test-grpc) |
+| `data/` | Data modules and their test slice (synapse-data-core, -jpa, -jdbc, -postgres, synapse-test-data) |
+| `samples/` | Runnable samples (hello-rest, rest-books, grpc-inventory, multi-store, reference-bookstore), each on `synapse-parent` with a README run against the app; never published |
+| `archetypes/` | Maven archetypes (synapse-archetype-quickstart, shaped like hello-rest; synapse-archetype-service, shaped like the reference bookstore), each with an IT that generates a project and builds it; javadoc-placeholder (the javadoc jar they attach on release) |
+| `docs/` | Documentation site (Antora, AsciiDoc); property tables are generated from configuration metadata |
+| `tests/` | Tests of the build itself (maven-invoker projects for the Enforcer rules) and of modules that only meet in an application (synapse-data-mixed-tests: JPA and JDBC stores together; synapse-logging-logback-tests: Synapse's log lines on Logback in Boot's structured formats); never published |
 | `specs/` | Design specifications |
+| `.config/` | Formatter profile and license header |
 
 ## Contributing
 

@@ -33,12 +33,13 @@ class PagingSettingsTest {
     }
 
     @Test
-    void ofTakesTheRestNamesAndOffsetCapAndTheCoreSizes() {
+    void ofTakesTheRestNamesAndTheCoreOffsetCapAndSizes() {
         SynapseRestProperties.Paging paging = new SynapseRestProperties.Paging(
-                new SynapseRestProperties.Paging.Parameters("after", "skip", "page_size", "order"), 500,
-                new SynapseRestProperties.Paging.Cursor(null, List.of(), null));
+                new SynapseRestProperties.Paging.Parameters("after", "skip", "page_size", "order"));
 
-        PagingSettings settings = PagingSettings.of(paging, new SynapsePagingProperties(10, 50));
+        PagingSettings settings = PagingSettings
+                .of(paging, new SynapsePagingProperties(10, 50, 500,
+                        new SynapsePagingProperties.Cursor(null, List.of(), null)));
 
         assertThat(settings).isEqualTo(new PagingSettings("after", "skip", "page_size", "order", 500, 10, 50));
         assertThat(settings.names()).containsExactly("after", "skip", "page_size", "order");

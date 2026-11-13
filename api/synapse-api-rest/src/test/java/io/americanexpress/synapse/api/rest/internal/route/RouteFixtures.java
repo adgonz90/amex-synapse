@@ -23,20 +23,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.jspecify.annotations.Nullable;
-import org.springframework.format.support.DefaultFormattingConversionService;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
-import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestProperties;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
-import io.americanexpress.synapse.api.rest.internal.paging.AesGcmCursorCodec;
-import io.americanexpress.synapse.api.rest.internal.paging.CursorKeys;
-import io.americanexpress.synapse.api.rest.internal.paging.InputDigest;
-import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.conditional.VersionCondition;
+import io.americanexpress.synapse.core.internal.paging.AesGcmCursorCodec;
+import io.americanexpress.synapse.core.internal.paging.CursorKeys;
+import io.americanexpress.synapse.core.internal.paging.InputDigest;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
@@ -56,9 +56,9 @@ final class RouteFixtures {
     /** The cursors of an AES-GCM codec with the key, or with a key generated at startup when it is null. */
     static PageCursors cursors(@Nullable String key) {
         SecureRandom random = new SecureRandom();
-        SynapseRestProperties.Paging.Cursor cursor = new SynapseRestProperties.Paging.Cursor(key, List.of(), null);
+        SynapsePagingProperties.Cursor cursor = new SynapsePagingProperties.Cursor(key, List.of(), null);
         return new PageCursors(new AesGcmCursorCodec(CursorKeys.from(cursor, random), Clock.systemUTC(), null, random),
-                new InputDigest(), PagingSettings.defaults());
+                new InputDigest());
     }
 
     /** The cursors of an AES-GCM codec with {@link #CURSOR_KEY}. */
@@ -66,15 +66,15 @@ final class RouteFixtures {
         return cursors(CURSOR_KEY);
     }
 
-    /** The entity tag values, formatted with a default conversion service. */
+    /** The entity tag values, formatted by core's version token codec. */
     static ETagValues etags() {
-        return new ETagValues(new DefaultFormattingConversionService());
+        return new ETagValues();
     }
 
     /** Resolves the first route of the bindings, as the routes bean does. */
     static RouteDefinition route(RestBindings bindings, RestConventions... conventions) {
         return new BindingValidator(PagingSettings.defaults())
-                .validate(bindings.routes(), List.of(conventions))
+                .validate(RestBindingsAccess.routes(bindings), List.of(conventions))
                 .getFirst();
     }
 

@@ -154,8 +154,8 @@ class GrpcAotProcessingTest {
     void generatedContextFailsWhenReflectionDiffersFromTheBuild() {
         generate(generated -> assertThatThrownBy(() -> generated.start("spring.grpc.server.reflection.enabled=false"))
                 .isInstanceOf(SynapseConfigurationException.class)
-                .hasMessage("spring.grpc.server.reflection.enabled is false but the AOT build used true:"
-                        + " in a native image or AOT run it is fixed at build time."));
+                .hasMessage("These properties are fixed at build time in a native image or AOT run, and differ from the"
+                        + " build: spring.grpc.server.reflection.enabled is false but the build used true."));
     }
 
     /**

@@ -20,6 +20,7 @@ import java.util.function.Function;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.TransactionSystemException;
 
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
@@ -84,6 +85,47 @@ class CauseChainTest {
     void findsAMatchTenCausesDeepButNotEleven() {
         assertThat(translation(wrapped(new IllegalStateException("stale"), 10), ERRORS)).isPresent();
         assertThat(translation(wrapped(new IllegalStateException("stale"), 11), ERRORS)).isEmpty();
+    }
+
+    /** A failed rollback is decided by the failure it replaced, not by its own cause; the thrown exception is kept. */
+    @Test
+    void theFailureARollbackReplacedDecides() {
+        TransactionSystemException rollback = rollbackFailure(new IllegalStateException("stale rollback"),
+                new IllegalArgumentException("duplicate"));
+        RuntimeException thrown = new RuntimeException("wrapper", rollback);
+
+        SynapseException translated = translated(thrown, ERRORS);
+
+        assertThat(translated).hasCode(SynapseErrors.ALREADY_EXISTS);
+        assertThat(translated.getCause()).isSameAs(thrown);
+        assertThat(translation(rollbackFailure(new IllegalStateException("stale rollback"),
+                new RuntimeException("no error")), ERRORS)).isEmpty();
+    }
+
+    /** A rollback failure without a failure to replace is walked like any exception. */
+    @Test
+    void aRollbackFailureWithoutAReplacedFailureIsWalked() {
+        assertThat(translated(new TransactionSystemException("rollback", new IllegalStateException("stale")), ERRORS))
+                .hasCode(SynapseErrors.STALE_VERSION);
+    }
+
+    /** Replaced failures are followed three deep: an inner transaction's, inside an outer one's. */
+    @Test
+    void followsThreeReplacedFailures() {
+        Throwable failure = new IllegalArgumentException("duplicate");
+        for (int i = 0; i < 3; i++) {
+            failure = rollbackFailure(new RuntimeException("rollback " + i), failure);
+        }
+
+        assertThat(translated(failure, ERRORS)).hasCode(SynapseErrors.ALREADY_EXISTS);
+        assertThat(translation(rollbackFailure(new IllegalStateException("stale rollback"), failure), ERRORS))
+                .isEmpty();
+    }
+
+    private static TransactionSystemException rollbackFailure(Throwable rollback, Throwable application) {
+        TransactionSystemException failure = new TransactionSystemException("rollback failed", rollback);
+        failure.initApplicationException(application);
+        return failure;
     }
 
     @Test

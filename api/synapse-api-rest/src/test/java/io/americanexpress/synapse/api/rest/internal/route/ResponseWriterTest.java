@@ -36,6 +36,8 @@ import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.error.BookErrors;
+import io.americanexpress.synapse.api.rest.internal.paging.CursorExtras;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.Book;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.BookResult;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.CreateBookOperation;
@@ -81,7 +83,7 @@ class ResponseWriterTest {
     private static final VersionedBook VERSIONED = new VersionedBook(7, "Dune", 7L);
 
     private final ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(),
-            RouteFixtures.cursors(), RouteFixtures.etags());
+            RouteFixtures.cursors(), PagingSettings.defaults(), RouteFixtures.etags());
 
     /** A written response. */
     private record Written(int status, MockHttpServletResponse response, String body) {
@@ -369,6 +371,7 @@ class ResponseWriterTest {
         DefaultFormattingConversionService conversions = new DefaultFormattingConversionService();
         conversions.addConverter(Integer.class, String.class, number -> "#" + number);
         ResponseWriter converting = new ResponseWriter(MAPPER, conversions, RouteFixtures.cursors(),
+                PagingSettings.defaults(),
                 RouteFixtures.etags());
         RouteDefinition route = route(RestBindings
                 .builder()
@@ -472,6 +475,7 @@ class ResponseWriterTest {
 
         Written written = write(
                 new ResponseWriter(snake, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
+                        PagingSettings.defaults(),
                         RouteFixtures.etags()),
                 quota,
                 new Quota(BOOK, 5), "GET");
@@ -522,8 +526,75 @@ class ResponseWriterTest {
         // The token is bound to the operation, the sort and the filters of this request.
         Object next = RouteFixtures
                 .cursors()
-                .unwrap(paged, new PagedBooksRequest("herbert", PageQuery.ofCursor(token, 20, List.of())));
+                .unwrap(paged.operationName(),
+                        new PagedBooksRequest("herbert", PageQuery.ofCursor(token, 20, List.of())),
+                        Map.of(), "cursor", 1000);
         assertThat(next).isEqualTo(new PagedBooksRequest("herbert", PageQuery.ofCursor("raw", 20, List.of())));
+    }
+
+    @Test
+    void nextCursorIsTheTokenOfTheNextPageForEveryCombination() throws Exception {
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+        PagedBooksRequest first = new PagedBooksRequest("herbert", PageQuery.first(20));
+
+        // A cursor and a next page: the wrapped cursor, as before.
+        Written cursorNext = write(writer, paged, new PageResult<>(List.of(BOOK), "raw", true, null), "GET", Map.of(),
+                first);
+        assertThat(read(paged, cursorNext.json().get("nextCursor").asString()))
+                .isEqualTo(new PagedBooksRequest("herbert", PageQuery.ofCursor("raw", 20, List.of())));
+        // A cursor but no next page: no token, as gRPC's next_page_token (and no Link).
+        Written cursorLast = write(writer, paged, new PageResult<>(List.of(BOOK), "raw", false, null), "GET",
+                Map.of(), first);
+        assertThat(cursorLast.json().has("nextCursor")).isFalse();
+        assertThat(cursorLast.json().get("hasNext").asBoolean()).isFalse();
+        assertThat(cursorLast.header("Link")).isNull();
+        // No cursor but a next page (offset paging): the token of the next offset, and the Link keeps offset=N.
+        Written offsetNext = write(writer, paged, PageResult.of(List.of(BOOK), true), "GET", Map.of(), first);
+        assertThat(read(paged, offsetNext.json().get("nextCursor").asString()))
+                .isEqualTo(new PagedBooksRequest("herbert", PageQuery.ofOffset(20, 20, List.of())));
+        assertThat(offsetNext.header("Link")).contains("offset=20").doesNotContain("cursor=");
+        // Neither: no token.
+        Written last = write(writer, paged, PageResult.of(List.of(BOOK), false), "GET", Map.of(), first);
+        assertThat(last.json().has("nextCursor")).isFalse();
+    }
+
+    @Test
+    void postSearchPagesByOffsetWithNextCursor() throws Exception {
+        RouteDefinition search = route(RestBindings.builder().post("/books/search", new PagedBooksOperation()).build());
+        PagedBooksRequest first = new PagedBooksRequest("herbert", PageQuery.first(20));
+
+        Written written = write(writer, search, PageResult.of(List.of(BOOK), true), "POST", Map.of(), first);
+
+        // A POST gets no Link, so the body carries the next offset's token, as gRPC's next_page_token does.
+        assertThat(written.header("Link")).isNull();
+        assertThat(read(search, written.json().get("nextCursor").asString()))
+                .isEqualTo(new PagedBooksRequest("herbert", PageQuery.ofOffset(20, 20, List.of())));
+    }
+
+    @Test
+    void offsetPastTheCapHasNextWithoutANextCursor() throws Exception {
+        PagingSettings capped = new PagingSettings("cursor", "offset", "size", "sort", 30, 20, 100);
+        ResponseWriter cappedWriter = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(),
+                RouteFixtures.cursors(), capped, RouteFixtures.etags());
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+
+        Written written = write(cappedWriter, paged, PageResult.of(List.of(BOOK), true), "GET", Map.of(),
+                new PagedBooksRequest(null, PageQuery.ofOffset(20, 20, List.of())));
+
+        // 20 + 20 is past max-offset 30: hasNext, but neither a token nor a Link (as gRPC: has_next, empty token).
+        assertThat(written.json().get("hasNext").asBoolean()).isTrue();
+        assertThat(written.json().has("nextCursor")).isFalse();
+        assertThat(written.header("Link")).isNull();
+    }
+
+    /** Reads a token back as the edge does, for the route's operation and the same filters. */
+    private static @Nullable Object read(RouteDefinition route, String token) {
+        return RouteFixtures
+                .cursors()
+                .unwrap(route.operationName(), new PagedBooksRequest("herbert", PageQuery
+                        .ofCursor(token, 20,
+                                List.of())),
+                        Map.of(), "cursor", 1000);
     }
 
     @Test
@@ -548,6 +619,7 @@ class ResponseWriterTest {
 
             Written written = write(
                     new ResponseWriter(strict, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
+                            PagingSettings.defaults(),
                             RouteFixtures.etags()),
                     paged, PageResult.of(List.of(), false), "GET", Map.of(),
                     new PagedBooksRequest(null, PageQuery.first(20)));
@@ -563,6 +635,7 @@ class ResponseWriterTest {
 
         Written written = write(
                 new ResponseWriter(snake, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
+                        PagingSettings.defaults(),
                         RouteFixtures.etags()),
                 paged, new PageResult<>(List.of(BOOK), "raw", true, 3L), "GET", Map.of(),
                 new PagedBooksRequest(null, PageQuery.first(20)));
@@ -731,7 +804,9 @@ class ResponseWriterTest {
         MockHttpServletRequest request = new MockHttpServletRequest(method, "/");
         request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Map.of());
         request.addHeader("If-None-Match", ifNoneMatch);
-        return written(request, writer.write(route, result, ServerRequest.create(request, List.of()), null));
+        return written(request, writer
+                .write(route, result, ServerRequest.create(request, List.of()), null,
+                        CursorExtras.of(route)));
     }
 
     private Written write(RouteDefinition route, @Nullable Object result) throws Exception {
@@ -754,7 +829,9 @@ class ResponseWriterTest {
             String method, Map<String, String> pathVariables, @Nullable Object input) throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest(method, "/");
         request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, pathVariables);
-        return written(request, writer.write(route, result, ServerRequest.create(request, List.of()), input));
+        return written(request, writer
+                .write(route, result, ServerRequest.create(request, List.of()), input,
+                        CursorExtras.of(route)));
     }
 
     /** Writes the response to a mock servlet response. */

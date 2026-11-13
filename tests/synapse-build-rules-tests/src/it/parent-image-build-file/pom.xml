@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    A service reactor that inherits synapse-parent: a library module (no spring-boot-maven-plugin, no application.yaml)
+    and a service module with application.yaml and application-build.yaml. -Pimage package passes the enforcer check,
+    which skips the aggregator and the library, and binds build-image-no-fork in the service only.
+    invoker.properties skips the image itself (-Dspring-boot.build-image.skip=true), so no Docker is needed;
+    verify.groovy checks the log.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse</groupId>
+        <artifactId>synapse-parent</artifactId>
+        <version>@project.version@</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>example</groupId>
+    <artifactId>parent-image-build-file</artifactId>
+    <version>1.0</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>lib</module>
+        <module>service</module>
+    </modules>
+</project>

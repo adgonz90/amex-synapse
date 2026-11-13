@@ -1,0 +1,144 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// The gRPC API of the bookstore. Each method is bound to the same operation as the REST route of the same name, so the
+// two APIs take the same requests and give the same answers and error codes; the comments name each method's route
+// and each field's REST counterpart. Synapse maps each message field to the record component with the same name
+// (published_year to publishedYear). A nullable component needs a field with presence, hence the wrapper types; the
+// page fields are optional so that unset and 0 (or "") differ, and a value that is sent follows REST's rules. A version
+// travels as REST's entity tag token, "3" with its double quotes, in a string field named etag, so a client can copy
+// it between the two protocols.
+syntax = "proto3";
+
+package synapse.samples.bookstore.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+// Unused by any message: grpcurl needs it, so that reflection serves the ErrorInfo and BadRequest it decodes.
+import "google/rpc/error_details.proto";
+
+option java_package = "io.americanexpress.synapse.samples.bookstore.contract.proto";
+option java_multiple_files = true;
+
+// The catalog. Every failure carries a google.rpc.ErrorInfo whose reason is the error code, as REST's problem code
+// (BOOK_NOT_FOUND, ALREADY_EXISTS, PRECONDITION_FAILED, ...); an invalid request also carries a google.rpc.BadRequest
+// with a violation per field, as REST's problem violations.
+service BookService {
+  // POST /books (create-book). An ISBN another book has is ALREADY_EXISTS (REST 409). The response carries the new
+  // book's etag, as REST's 201 carries its ETag header.
+  rpc CreateBook(CreateBookRequest) returns (Book);
+  // GET /books/{id} (get-book). An unknown id is NOT_FOUND with the reason BOOK_NOT_FOUND. The response carries the
+  // book's etag, as REST's ETag header. gRPC has no 304: REST alone answers If-None-Match.
+  rpc GetBook(GetBookRequest) returns (Book);
+  // GET /books (search-books), one page at a time (AIP-158).
+  rpc SearchBooks(SearchBooksRequest) returns (SearchBooksResponse);
+  // PUT /books/{id} (update-book). The etag is required: without one it is FAILED_PRECONDITION with the reason
+  // PRECONDITION_REQUIRED (REST 428), and with a stale or weak one FAILED_PRECONDITION with PRECONDITION_FAILED
+  // (REST 412). An ISBN another book has is ALREADY_EXISTS (REST 409), as on CreateBook. The response has no etag, as
+  // REST sends no ETag on PUT: read the book again for the new one.
+  rpc UpdateBook(UpdateBookRequest) returns (Book);
+  // DELETE /books/{id} (delete-book). The etag is required, as for UpdateBook. The response is empty, as REST's 204.
+  rpc DeleteBook(DeleteBookRequest) returns (google.protobuf.Empty);
+}
+
+// The REST body of a book, plus its etag, which REST sends as a header.
+message Book {
+  // id: a UUID.
+  string id = 1;
+  // isbn.
+  string isbn = 2;
+  // title.
+  string title = 3;
+  // author.
+  string author = 4;
+  // publishedYear: unset when not known, as REST's null.
+  google.protobuf.Int32Value published_year = 5;
+  // version: 0 when the book is added, plus 1 on every change.
+  int64 version = 6;
+  // REST's ETag header: the version as a strong entity tag, "0" with its double quotes. Set by GetBook and CreateBook
+  // only, as REST sends ETag on GET and on the POST's 201 only; empty in SearchBooks and UpdateBook. Send it back in
+  // the etag of UpdateBook or DeleteBook.
+  string etag = 7;
+}
+
+message CreateBookRequest {
+  // isbn: not blank, at most 17 characters, such as 978-0-441-17271-9.
+  string isbn = 1;
+  // title: not blank, at most 255 characters.
+  string title = 2;
+  // author: not blank, at most 255 characters.
+  string author = 3;
+  // publishedYear: positive; unset when not known, as REST's null or a missing property.
+  google.protobuf.Int32Value published_year = 4;
+}
+
+message GetBookRequest {
+  // The path's {id}: a UUID.
+  string id = 1;
+}
+
+// A client that never sets a page field pages normally: it gets the first 20 books by title, then id.
+message SearchBooksRequest {
+  // The author query parameter: part of the author's name, ignoring case, at most 255 characters. Unset for every
+  // book.
+  google.protobuf.StringValue author = 1;
+  // The size query parameter: 1 to 100; unset is 20. It is optional, so a value that is sent follows REST's rules:
+  // 0 is a violation, as size=0 is.
+  optional int32 page_size = 2;
+  // The cursor query parameter: the next_page_token of the previous page, or a REST nextCursor. Unset for the first
+  // page. It is optional, so a sent "" is a violation, as an empty cursor= is: set it only to a token.
+  optional string page_token = 3;
+  // The offset query parameter: the books to skip, 0 to 1000; unset is none. It is optional, as page_size is, so
+  // skip: 0 is offset 0, and a skip sent together with a page_token is a violation, as REST's offset with a cursor.
+  optional int32 skip = 4;
+  // The sort query parameter (AIP-132): title and published_year, each optionally followed by desc, where REST takes
+  // title and -publishedYear. Unset is by title, then id. It is optional, so a sent "" is a violation, as an empty
+  // sort= is.
+  optional string order_by = 5;
+}
+
+message SearchBooksResponse {
+  // items: the books of this page, without etags.
+  repeated Book books = 1;
+  // nextCursor: the token of the next page, which REST's cursor parameter takes too. Empty when no token reaches the
+  // next page.
+  string next_page_token = 2;
+  // hasNext: whether another page follows.
+  bool has_next = 3;
+  // total: the number of books that match, over every page.
+  optional int64 total_size = 4;
+}
+
+message UpdateBookRequest {
+  // The path's {id}: a UUID.
+  string id = 1;
+  // isbn, as in CreateBookRequest.
+  string isbn = 2;
+  // title, as in CreateBookRequest.
+  string title = 3;
+  // author, as in CreateBookRequest.
+  string author = 4;
+  // publishedYear, as in CreateBookRequest.
+  google.protobuf.Int32Value published_year = 5;
+  // The If-Match header, required: the etag of a GetBook or CreateBook (or a REST ETag), such as "3" with its double
+  // quotes, for the version this change is based on, or * for whatever version the service reads.
+  string etag = 6;
+}
+
+message DeleteBookRequest {
+  // The path's {id}: a UUID.
+  string id = 1;
+  // The If-Match header, required, as in UpdateBookRequest.
+  string etag = 2;
+}

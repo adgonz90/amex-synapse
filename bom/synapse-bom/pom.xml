@@ -137,6 +137,16 @@
                 <artifactId>guava</artifactId>
                 <version>33.7.2-jre</version>
             </dependency>
+            <!--
+                Convergence for grpc-java 1.84.1's transitives; not managed by Spring Boot 4.1.2. Same version as the
+                root pom.xml (a build-rules test keeps them equal). Provisional (D20).
+                Remove when grpc-java's transitives agree on one error_prone_annotations version.
+            -->
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_annotations</artifactId>
+                <version>2.50.0</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 

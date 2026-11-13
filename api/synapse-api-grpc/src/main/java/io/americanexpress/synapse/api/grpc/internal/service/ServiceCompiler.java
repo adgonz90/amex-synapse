@@ -33,7 +33,9 @@ import io.americanexpress.synapse.api.grpc.internal.binding.MethodDeclaration;
 import io.americanexpress.synapse.api.grpc.internal.binding.ServiceDeclaration;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingException;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.internal.binding.OperationTypes;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.OperationNames;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
@@ -49,7 +51,9 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * <li>rebuilds the service descriptor with each method's copy that reads raw request bytes
  * ({@link RawBytesMarshaller}) and writes {@code DynamicMessage} responses ({@link DynamicMessageMarshaller}), keeping
  * the names and the generated schema descriptors that server reflection reads;</li>
- * <li>binds one {@link UnaryOperationHandler} per method.</li>
+ * <li>binds one {@link UnaryOperationHandler} per method;</li>
+ * <li>when a method returns {@code PageResult}, reports a cursor key generated at startup
+ * ({@link PageCursors#reportGeneratedKey}, at most once per application context, whichever plugins page).</li>
  * </ol>
  * Every problem is a {@link SynapseConfigurationException} whose description names the method and the operation.
  */
@@ -57,22 +61,33 @@ public final class ServiceCompiler {
 
     private static final String UNBOUND = "no operation is bound";
 
+    private final PageCursors cursors;
+
+    private final SynapsePagingProperties paging;
+
     private final String unboundHint;
 
     /**
      * Creates the compiler.
+     *
+     * @param cursors core's page cursors, which the paged methods' handlers wrap and unwrap page tokens with
+     * @param paging core's {@code synapse.paging} properties: the page sizes and the offset cap
      */
-    public ServiceCompiler() {
-        this("");
+    public ServiceCompiler(PageCursors cursors, SynapsePagingProperties paging) {
+        this(cursors, paging, "");
     }
 
     /**
      * Creates a compiler that appends a hint to the action of an unbound method's failure, such as how to bind it in a
      * test slice.
      *
+     * @param cursors core's page cursors
+     * @param paging core's {@code synapse.paging} properties
      * @param unboundHint the hint, or empty for none
      */
-    public ServiceCompiler(String unboundHint) {
+    public ServiceCompiler(PageCursors cursors, SynapsePagingProperties paging, String unboundHint) {
+        this.cursors = cursors;
+        this.paging = paging;
         this.unboundHint = unboundHint;
     }
 
@@ -120,7 +135,7 @@ public final class ServiceCompiler {
             Descriptor output = messageType(method, original.getResponseMarshaller(), "response");
             UnaryOperationHandler handler;
             try {
-                handler = UnaryOperationHandler.create(method, input, output);
+                handler = UnaryOperationHandler.create(method, input, output, cursors, paging);
             } catch (MappingException e) {
                 SynapseConfigurationException failure = BindingChecks.failure(method, e.problem(), e.action());
                 failure.initCause(e);
@@ -135,6 +150,10 @@ public final class ServiceCompiler {
         ServerServiceDefinition.Builder definition = ServerServiceDefinition.builder(service.build());
         for (Compiled method : compiled) {
             definition.addMethod(method.descriptor(), ServerCalls.asyncUnaryCall(method.handler()));
+        }
+        // Once every method compiled, as REST's RouteCompiler reports it: a failed startup reports nothing.
+        if (methods.stream().anyMatch(MethodDeclaration::pagedOutput)) {
+            cursors.reportGeneratedKey();
         }
         return definition.build();
     }
@@ -176,7 +195,7 @@ public final class ServiceCompiler {
                                         + " .unary(...).");
             }
             MethodDeclaration byNameDeclaration = MethodDeclaration
-                    .declared(method, candidates.get(0), List.of(), List.of(), null);
+                    .declared(method, candidates.get(0), List.of(), List.of(), List.of(), null);
             bound.add(byNameDeclaration);
             boundByName.add(byNameDeclaration);
         }

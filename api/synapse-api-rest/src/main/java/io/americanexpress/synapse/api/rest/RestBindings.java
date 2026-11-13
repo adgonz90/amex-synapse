@@ -18,6 +18,7 @@ import java.util.List;
 
 import org.springframework.http.HttpMethod;
 
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
@@ -39,6 +40,11 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  */
 public final class RestBindings {
 
+    static {
+        // Synapse reads the routes through an internal class, so that they are not public API.
+        RestBindingsAccess.registerRoutes(bindings -> bindings.routes);
+    }
+
     private final List<RouteDefinition> routes;
 
     private RestBindings(List<RouteDefinition> routes) {
@@ -52,16 +58,6 @@ public final class RestBindings {
      */
     public static Builder builder() {
         return new Builder();
-    }
-
-    /**
-     * Returns the routes as declared, in declaration order. This is Synapse's internal view of the bindings:
-     * application code never calls it.
-     *
-     * @return the routes
-     */
-    public List<RouteDefinition> routes() {
-        return routes;
     }
 
     /**

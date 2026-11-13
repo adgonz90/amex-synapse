@@ -28,7 +28,7 @@ import io.americanexpress.synapse.test.time.MutableClock;
  * auto-configuration, which would otherwise register the system clock.
  */
 @AutoConfiguration(before = SynapseCoreAutoConfiguration.class)
-public class SynapseTestClockAutoConfiguration {
+public final class SynapseTestClockAutoConfiguration {
 
     /** The instant the test clock starts at. */
     static final String START = "2026-01-01T00:00:00Z";

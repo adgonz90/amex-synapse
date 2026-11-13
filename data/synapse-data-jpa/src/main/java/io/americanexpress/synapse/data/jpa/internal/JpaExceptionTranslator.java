@@ -20,11 +20,13 @@ import org.hibernate.StaleStateException;
 import org.hibernate.exception.ConstraintViolationException;
 import org.hibernate.exception.ConstraintViolationException.ConstraintKind;
 import org.jspecify.annotations.Nullable;
+import org.springframework.core.Ordered;
 
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.data.internal.error.CauseChain;
+import io.americanexpress.synapse.data.internal.error.DataExceptionTranslator;
 
 /**
  * Translates JPA's and Hibernate's own exceptions, which reach the pipeline when Spring didn't translate them (or
@@ -42,7 +44,15 @@ import io.americanexpress.synapse.data.internal.error.CauseChain;
  * carries only its own message: the thrown exception is its cause, logged by the pipeline on the server side, and
  * never shown to the caller.
  */
-public final class JpaExceptionTranslator implements ExceptionTranslator {
+public final class JpaExceptionTranslator implements ExceptionTranslator, Ordered {
+
+    /** The translator's order: right after the data translator ({@link DataExceptionTranslator#ORDER}). */
+    public static final int ORDER = DataExceptionTranslator.ORDER + 10;
+
+    @Override
+    public int getOrder() {
+        return ORDER;
+    }
 
     @Override
     public @Nullable SynapseException translate(Throwable exception) {

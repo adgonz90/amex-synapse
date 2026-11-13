@@ -29,7 +29,7 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
 import io.americanexpress.synapse.core.paging.PageResult;
 
 /**
- * One REST route. {@code RestBindings.routes()} returns routes as declared: {@link #sources()} is empty and the
+ * One REST route. {@code RestBindingsAccess.routes} returns routes as declared: {@link #sources()} is empty and the
  * {@link #response()} has no output headers or body component yet. {@link BindingValidator#validate} returns the
  * resolved routes, with a source for every input component that has one and the convention header rules applied;
  * request binding and response writing read only resolved routes.

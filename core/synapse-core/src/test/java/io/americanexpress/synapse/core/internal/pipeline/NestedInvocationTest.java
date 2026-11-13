@@ -207,6 +207,7 @@ class NestedInvocationTest {
         }
 
         assertThat(linesContaining(output.getOut(), FAILURE_LOGGER)).isEqualTo(1);
+        // The worker's MDC has no correlation id (no-op tracer), so the line carries it as a key-value.
         assertThat(output.getOut())
                 .contains("[async-worker]", "Operation get-book failed with BOOK_NOT_FOUND", "correlationId=\"c-4\"");
     }

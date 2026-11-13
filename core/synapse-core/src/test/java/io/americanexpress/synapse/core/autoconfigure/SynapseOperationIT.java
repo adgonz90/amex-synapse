@@ -92,8 +92,13 @@ class SynapseOperationIT {
 
         assertThat(failures.list).singleElement().satisfies(event -> {
             assertThat(event.getFormattedMessage()).contains("record-context").contains("CONFLICT");
-            assertThat(keyValues(event)).containsEntry("correlationId", seen.correlationId());
             assertThat(event.getMDCPropertyMap()).containsEntry("correlationId", seen.correlationId());
+            // Boot's Logback structured formats write the MDC and the key-values into one object: a key-value that
+            // repeats an MDC name makes the encoder drop the line.
+            assertThat(keyValues(event)).containsKeys("operation", "errorCode", "errorCategory");
+            assertThat(keyValues(event).keySet()).doesNotContainAnyElementsOf(event.getMDCPropertyMap().keySet());
+            // Startup rejects context attributes with these names, so the list must cover every key-value.
+            assertThat(BaggageFieldsEnvironmentPostProcessor.logFieldNames()).containsAll(keyValues(event).keySet());
         });
     }
 

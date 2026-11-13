@@ -36,6 +36,7 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksRequest;
@@ -178,8 +179,8 @@ class PageQueryReaderTest {
 
     @Test
     void sortWithoutSortableIsAViolation() {
-        assertViolations(query("sort", "title"), null, new Violation("sort", "is not supported by this route"));
-        assertViolations(query("sort", ""), null, new Violation("sort", "is not supported by this route"));
+        assertViolations(query("sort", "title"), null, new Violation("sort", "is not supported"));
+        assertViolations(query("sort", ""), null, new Violation("sort", "is not supported"));
         List<Violation> violations = new ArrayList<>();
         assertThat(reader.read(query("size", "5"), null, violations))
                 .isEqualTo(new PageQuery(null, null, 5, List.of()));
@@ -304,7 +305,10 @@ class PageQueryReaderTest {
 
     private static PostBinder postBinder(PagingSettings settings) {
         RouteDefinition route = new BindingValidator(settings)
-                .validate(RestBindings.builder().post("/books", new PagedBooksOperation()).build().routes(), List.of())
+                .validate(
+                        RestBindingsAccess
+                                .routes(RestBindings.builder().post("/books", new PagedBooksOperation()).build()),
+                        List.of())
                 .getFirst();
         return new PostBinder(new RequestBinder(JsonMapper.builder().build(),
                 new DefaultFormattingConversionService(), settings), route);

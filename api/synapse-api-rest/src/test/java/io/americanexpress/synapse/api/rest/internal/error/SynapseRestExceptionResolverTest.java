@@ -71,6 +71,7 @@ import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
@@ -102,6 +103,13 @@ class SynapseRestExceptionResolverTest {
         ModelAndView mav = resolver.resolveException(request, response, null, ex);
         assertThat(mav).isNotNull().extracting(ModelAndView::isEmpty).isEqualTo(true);
         return MAPPER.readTree(response.getContentAsByteArray());
+    }
+
+    /** The body without its correlation id, which is any caller's or random text and may contain anything. */
+    private static String withoutCorrelationId(JsonNode body) {
+        ObjectNode copy = (ObjectNode) body.deepCopy();
+        assertThat(copy.remove("correlationId")).isNotNull();
+        return copy.toString();
     }
 
     @Test
@@ -145,6 +153,8 @@ class SynapseRestExceptionResolverTest {
 
     @Test
     void requestTooLargeAnywhereInTheCauseChainIs413() throws Exception {
+        // A correlation id that contains the limit: only the problem's other members must not carry it.
+        request.setAttribute(RestRequestAttributes.CORRELATION_ID, "c-1024");
         RequestTooLargeException tooLarge = new RequestTooLargeException(1024);
         ServletServerHttpRequest input = new ServletServerHttpRequest(new MockHttpServletRequest());
         List<Exception> cases = List
@@ -159,7 +169,11 @@ class SynapseRestExceptionResolverTest {
             assertThat(each.getStatus()).as(ex.toString()).isEqualTo(413);
             JsonNode body = MAPPER.readTree(each.getContentAsByteArray());
             assertThat(body.get("code").asString()).isEqualTo("PAYLOAD_TOO_LARGE");
-            assertThat(each.getContentAsString()).doesNotContain("RequestTooLargeException").doesNotContain("1024");
+            assertThat(body.get("correlationId").asString()).isEqualTo("c-1024");
+            assertThat(withoutCorrelationId(body))
+                    .contains("PAYLOAD_TOO_LARGE")
+                    .doesNotContain("RequestTooLargeException")
+                    .doesNotContain("1024");
         }
     }
 

@@ -13,17 +13,14 @@
  */
 package io.americanexpress.synapse.api.rest.internal.paging;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.util.MultiValueMap;
 
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.paging.PagingViolations;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.SortOrder;
 
@@ -46,7 +43,7 @@ import io.americanexpress.synapse.core.paging.SortOrder;
  */
 public final class PageQueryReader {
 
-    private static final String INVALID = "is not a valid value";
+    private static final String INVALID = PagingViolations.INVALID;
 
     private static final String SINGLE = "must have a single value";
 
@@ -77,7 +74,7 @@ public final class PageQueryReader {
             List<Violation> violations) {
         String cursor = single(query, settings.cursor(), violations);
         if (cursor != null && query.containsKey(settings.offset())) {
-            violations.add(new Violation(settings.cursor(), "must not be combined with offset"));
+            violations.add(new Violation(settings.cursor(), PagingViolations.notCombinedWith("offset")));
         }
         Long offset = number(query, settings.offset(), 0, settings.maxOffset(), violations);
         Long size = number(query, settings.size(), 1, settings.maxSize(), violations);
@@ -130,11 +127,11 @@ public final class PageQueryReader {
             return null;
         }
         if (value < min) {
-            violations.add(new Violation(name, "must be greater than or equal to " + min));
+            violations.add(new Violation(name, PagingViolations.atLeast(min)));
             return null;
         }
         if (value > max) {
-            violations.add(new Violation(name, "must be less than or equal to " + max));
+            violations.add(new Violation(name, PagingViolations.atMost(max)));
             return null;
         }
         return value;
@@ -150,29 +147,20 @@ public final class PageQueryReader {
             return List.of();
         }
         if (sortKeys == null) {
-            violations.add(new Violation(name, "is not supported by this route"));
+            violations.add(new Violation(name, PagingViolations.NOT_SUPPORTED));
             return List.of();
         }
-        Set<String> problems = new LinkedHashSet<>();
-        Set<String> seen = new HashSet<>();
-        List<SortOrder> sort = new ArrayList<>();
+        PagingViolations.SortReading reading = new PagingViolations.SortReading(sortKeys.wireToProperty());
         for (String element : String.join(",", values).split(",", -1)) {
             boolean descending = element.startsWith("-");
             String key = descending ? element.substring(1) : element;
             if (key.isEmpty()) {
-                problems.add(INVALID);
-                continue;
-            }
-            String property = sortKeys.property(key);
-            if (property == null) {
-                problems.add("has a key that is not allowed (allowed: " + sortKeys.allowed() + ")");
-            } else if (!seen.add(key)) {
-                problems.add("names a key more than once");
+                reading.invalid();
             } else {
-                sort.add(new SortOrder(property, descending ? SortOrder.Direction.DESC : SortOrder.Direction.ASC));
+                reading.key(key, descending);
             }
         }
-        problems.forEach(problem -> violations.add(new Violation(name, problem)));
-        return problems.isEmpty() ? sort : List.of();
+        reading.problems().forEach(problem -> violations.add(new Violation(name, problem)));
+        return reading.sort();
     }
 }

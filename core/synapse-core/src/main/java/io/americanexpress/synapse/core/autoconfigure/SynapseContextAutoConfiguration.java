@@ -52,7 +52,7 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
         MicrometerTracingAutoConfiguration.class}, before = TaskExecutionAutoConfiguration.class)
 @ConditionalOnClass({Tracer.class, ContextSnapshot.class})
 @EnableConfigurationProperties({SynapseContextProperties.class, SynapseCorrelationProperties.class})
-public class SynapseContextAutoConfiguration {
+public final class SynapseContextAutoConfiguration {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SynapseContextAutoConfiguration.class);
 

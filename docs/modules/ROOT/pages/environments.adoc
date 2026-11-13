@@ -23,10 +23,28 @@ spring:
   not a second profile.
 * The environment is the value of `spring.profiles.active` (placeholders resolved, values trimmed, blank values
   dropped) plus the profiles added with `SpringApplication.setAdditionalProfiles` (or
-  `SpringApplicationBuilder.profiles`), without duplicates. `spring.profiles.default`, `spring.profiles.include` and profile groups never count, so feature
-  profiles go in `include` or a group.
-* There must be exactly one. There is no default and no fallback: local runs use `local` and tests use `test` (see
-  <<local-runs>> and <<tests>>).
+  `SpringApplicationBuilder.profiles`), without duplicates. `spring.profiles.default`, `spring.profiles.include` and
+  profile groups never count. The one exception is AOT processing (`process-aot`, while Spring sets the system
+  property `spring.aot.processing`): there, when `spring.profiles.active` is empty, a single `spring.profiles.default`
+  is the environment, and no profile may be active. That is how `synapse-parent`'s opt-in `aot` profile passes the
+  build environment (see <<aot>>).
+* Feature profiles go in the environment's profile group, `spring.profiles.group.<env>` in `application.yaml`, for
+  each environment that uses them, the build environment included (`spring.profiles.group.build`). Not in
+  `spring.profiles.include`: an included profile is active, and during AOT processing Boot then ignores the default
+  profile, so Synapse fails the build.
++
+[source,yaml]
+----
+spring:
+  profiles:
+    active: ${ENV}
+    group:
+      e2: kafka
+      build: kafka
+----
+* There must be exactly one. Other profiles may be active beside it: its group's, and those that libraries add at run
+  time, such as `kubernetes` (Spring Cloud Kubernetes, inside a pod) or `cloud` (java-cfenv, on Cloud Foundry). There
+  is no default and no fallback: local runs use `local` and tests use `test` (see <<local-runs>> and <<tests>>).
 * Names are case-sensitive, and Synapse does no case handling. `ENV=E2` with only `application-e2.yaml` fails when the
   service runs from a jar, and on a case-sensitive file system such as Linux. In an IDE on a case-insensitive file
   system (Windows, and macOS by default) the service's resources are a directory, so `ENV=E2` can still load
@@ -51,7 +69,13 @@ adds `spring.profiles.default (<value>) does not count.`
 |`+Set exactly one environment, for example ENV=e2 when application.yaml maps spring.profiles.active: ${ENV}. Run locally with -Dspring-boot.run.profiles=local or an IDE run configuration; Synapse's test slices activate test; other Spring Boot tests declare @ActiveProfiles("test").+`
 |More than one
 |`Exactly one environment must be active, but there are 2: test, e2.`
-|`Keep one environment in spring.profiles.active and move feature profiles to spring.profiles.include or a profile group.`
+|`Keep one environment in spring.profiles.active and move feature profiles to the environment's profile group, spring.profiles.group.<env>.`
+|In AOT mode, the AOT-generated code activates a profile (the application was processed with an active profile)
+|`The AOT-generated code activates the profiles build at every run (com.example.BooksApplication__EnvironmentPostProcessor): they were active during AOT processing, so they are active in every environment the application runs in.`
+|`Process the application with no active profile and the build environment as the default profile (--spring.profiles.active= --spring.profiles.default=<build environment>), as synapse-parent's process-aot execution does, and build again.`
+|During AOT processing, a profile is active beside the build environment, such as one from `spring.profiles.include`. This fails the build.
+|`During AOT processing the environment is the default profile 'build', but these profiles are active: kafka. Boot ignores the default profile while any profile is active, whether spring.profiles.include set it or a library added it (as spring-cloud-kubernetes adds kubernetes inside a Kubernetes pod), so AOT processing would not read the build environment's files.`
+|`Move feature profiles from spring.profiles.include to each environment's profile group, spring.profiles.group.<env>, including the build environment's (spring.profiles.group.build). Turn off for AOT processing a library that adds a profile.`
 |No file for the environment
 |`The environment 'e9' has no file in the service: none of application-e9.yaml, application-e9.yml, application-e9.properties was loaded or found on the classpath. Environment names are case-sensitive.`
 |`Add application-e9.yaml to the service (it may be empty), or set the environment to the name of an existing file.`
@@ -278,9 +302,8 @@ synapse:
   xref:grpc.adoc#_server_reflection[Server reflection]).
 * With `synapse-api-rest-openapi`, the OpenAPI document at `/v3/api-docs` is off until an environment's file turns it
   on with `springdoc.api-docs.enabled: true`, for example in `application-local.yaml`; where it is on, protect it as
-  needed (see xref:openapi.adoc#exposure[Who can read it]). Under AOT and in a native image the setting decides which
-  beans exist, so it is fixed when the application is built and an environment's file can't change it (see
-  <<aot>> and xref:openapi.adoc#aot-toggle[OpenAPI under AOT]).
+  needed (see xref:openapi.adoc#exposure[Who can read it]). Under AOT and in a native image it is fixed when
+  the application is built (see <<aot-switches>>).
 * A data store's `ddl-auto` may change the schema only when the store sets
   `synapse.data.stores.<name>.allow-ddl-auto: true`, for example in `application-local.yaml` (see
   xref:data.adoc#ddl-auto[ddl-auto]).
@@ -338,6 +361,12 @@ To run a test class in another environment, give it its own `@ActiveProfiles`, a
   `Exactly one environment must be active, but there are 2: test, e2.` Use
   `@ActiveProfiles(value = "e2", inheritProfiles = false)`.
 
+Do it only for a test that proves what an environment's own file does. In Synapse's samples, rest-books'
+`BooksLocalEnvironmentIT` runs as `local`, with the sample's real `application-local.yaml` and no test property, to
+show that the file turns the OpenAPI document on; the reference bookstore's tests that start the packaged jar set
+`ENV` to `dev`, `build` or `local` for the same reason (see xref:samples.adoc[Samples]). Every other test runs as
+`test`.
+
 [#startup-report]
 == Startup report
 
@@ -380,11 +409,13 @@ Configuration, highest priority first:
 [#aot]
 == AOT and native images
 
+Spring AOT processing is opt-in: `synapse-parent` runs `process-aot` only with its `aot` profile (`-Paot`; see
+xref:parent.adoc#_build_environment[Build environment]), and the native image comes in a later phase. A jar built
+without it runs on the JVM as usual, and the rules below that apply "when the application runs with AOT-generated
+artifacts" never fire for it. Synapse's code is AOT-ready either way, and the rules keep it portable.
+
 * The environment is never used in a `@Conditional`, and environment files change values only: AOT processing
   evaluates conditions at build time.
-* A property that a library's conditions read is fixed at build time too, whatever an environment's file says:
-  `springdoc.api-docs.enabled` is one (springdoc's beans depend on it). Set such a property for the AOT build (see
-  xref:openapi.adoc#aot-toggle[OpenAPI under AOT]).
 * The set of clients and stores (the `<name>` under `synapse.client.<name>`, except `defaults`, and under
   `synapse.data.stores.<name>`) belongs in files that don't depend on the environment: a module's `config.yaml` or the
   service's `application.yaml`. When the application runs with AOT-generated artifacts, startup fails when an
@@ -398,13 +429,45 @@ Configuration, highest priority first:
 |`config-e2.yaml (client-accounts-1.4.0.jar) adds the client 'payments', which no environment-independent file declares. In AOT mode the set of clients and stores is fixed at build time.`
 |`Declare synapse.client.payments in config.yaml or application.yaml, and set only its values per environment.`
 |===
-* `spring.grpc.server.reflection.enabled` decides whether a bean exists, so it is fixed at build time too: with
-  AOT-generated artifacts, startup fails when an environment file changes it from the value the build used (see
-  xref:grpc.adoc#_server_reflection[Server reflection]).
+* [[aot-switches]]A property that decides which beans exist is fixed at build time, whatever an environment's file
+  says. Two are build-time switches: `springdoc.api-docs.enabled` (springdoc's beans depend on it; see
+  xref:openapi.adoc#aot-toggle[OpenAPI under AOT]) and `spring.grpc.server.reflection.enabled` (Boot's reflection
+  service; see xref:grpc.adoc#_server_reflection[Server reflection]). When the application runs with AOT-generated
+  artifacts, startup fails when either differs from the value the build used, and one failure lists every one that
+  differs, in property order:
++
+[cols="4,3",options="header"]
+|===
+|Description |Action
+|`These properties are fixed at build time in a native image or AOT run, and differ from the build: spring.grpc.server.reflection.enabled is true but the build used false; springdoc.api-docs.enabled is true but the build used false.`
+|`Set each to the build's value for this run. To change one, set it in the build environment's file (application-<build env>.yaml) and in each deployed environment's file, then build again.`
+|===
++
+Only the properties that differ are listed. The environment `local` turns on both, so an artifact built without them
+fails there naming both.
 * `synapse-core` registers resource hints for `+META-INF/synapse/config*.yaml+` and
   `+META-INF/synapse/config*.properties+`.
-* AOT processing (`process-aot`) and the AOT cache training run of `build-image` start the application to prepare it,
-  so they need an environment too.
+* AOT processing (`process-aot`, with `-Paot`) and the AOT cache training run of `build-image` start the application
+  to prepare it, so they need an environment too: the build environment (`synapse.build.environment`, `build` by
+  default; see xref:parent.adoc#_build_environment[Build environment]). A service that uses either ships its file,
+  `application-build.yaml`; one that uses neither doesn't need it.
+* [[aot-build-environment]]The build environment reaches AOT processing as the default profile
+  (`--spring.profiles.default=build` with an empty `--spring.profiles.active=`), never as an active profile, and is
+  never active when the application runs. Spring's AOT code generation activates, at every run of the generated code,
+  each profile that was active during processing
+  (https://docs.spring.io/spring-framework/reference/core/aot.html[Spring Framework, Ahead of Time Optimizations]). A
+  build environment passed as an active profile would then be a second profile in every deployed environment, and
+  Boot would read `application-build.yaml` below the environment's own file, so the build's values would fill every
+  key that the environment's file leaves unset. Synapse fails such a run at startup (see <<_startup_failures>>). It
+  checks only the profiles that the generated `<Main>__EnvironmentPostProcessor` activates, a class Spring Boot
+  generates only when a profile was active during processing; profiles that libraries add at run time, such as
+  `kubernetes`, are not affected. A `spring.profiles.include` during processing would be such an active profile, and
+  Boot would then not read the build environment's files, so Synapse fails the build instead. The
+  bean definitions that the build environment decided stay in the generated code, which is one more reason never to
+  use the environment in a `@Conditional`.
+* The image's training run is an ordinary run, in the build environment as its one active profile
+  (`TRAINING_RUN_JAVA_TOOL_OPTIONS=-XX:+UseG1GC -Dspring.profiles.active=build`), not AOT processing, with or without
+  `-Paot`.
 
 Not verified yet: in a native image, that `ClassLoader.getResources` returns one URL per jar for the module files,
 that Boot names its config sources as it does on the JVM, and that the service's `application-<env>.yaml` is found.

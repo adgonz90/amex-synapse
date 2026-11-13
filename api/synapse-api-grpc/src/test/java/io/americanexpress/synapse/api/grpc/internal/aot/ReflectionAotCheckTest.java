@@ -22,11 +22,9 @@ import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.mock.env.MockEnvironment;
 
-import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch.Mismatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ReflectionAotCheckTest {
 
@@ -57,81 +55,57 @@ class ReflectionAotCheckTest {
         return environment;
     }
 
-    private static ReflectionAotCheck check(@Nullable String reflection, boolean aotMode, String... services) {
+    private static ReflectionAotCheck check(@Nullable String reflection, String... services) {
         return new ReflectionAotCheck(environment(reflection), beans(services),
-                ReflectionAotCheckTest.class.getClassLoader(),
-                () -> aotMode);
+                ReflectionAotCheckTest.class.getClassLoader());
+    }
+
+    private static Mismatch mismatch(String now, String build) {
+        return new Mismatch(PROPERTY, now, build);
     }
 
     @Test
-    void failsWhenTheRuntimeValueDiffersInAotMode() {
-        assertThatThrownBy(() -> check("true", true, "catalog").afterSingletonsInstantiated())
-                .isInstanceOfSatisfying(SynapseConfigurationException.class, failure -> {
-                    assertThat(failure.description())
-                            .isEqualTo("spring.grpc.server.reflection.enabled is true but the AOT build used false:"
-                                    + " in a native image or AOT run it is fixed at build time.");
-                    assertThat(failure.action()).contains(PROPERTY);
-                });
-        assertThatThrownBy(() -> check("false", true, "catalog", REFLECTION_SERVICE).afterSingletonsInstantiated())
-                .isInstanceOf(SynapseConfigurationException.class)
-                .hasMessage("spring.grpc.server.reflection.enabled is false but the AOT build used true:"
-                        + " in a native image or AOT run it is fixed at build time.");
+    void reportsTheMismatchWhenTheRuntimeValueDiffers() {
+        assertThat(check("true", "catalog").mismatch()).isEqualTo(mismatch("true", "false"));
+        assertThat(check("false", "catalog", REFLECTION_SERVICE).mismatch()).isEqualTo(mismatch("false", "true"));
         // Unset is on, as for Boot's condition (Synapse's own default of false is a property source).
-        assertThatThrownBy(() -> check(null, true, "catalog").afterSingletonsInstantiated())
-                .isInstanceOf(SynapseConfigurationException.class)
-                .hasMessageStartingWith("spring.grpc.server.reflection.enabled is true but the AOT build used false");
+        assertThat(check(null, "catalog").mismatch()).isEqualTo(mismatch("true", "false"));
         // Boot's health service is registered after the reflection service, so it never made reflection exist:
         // with another service it still counts.
-        assertThatThrownBy(() -> check("true", true, "catalog", HEALTH_SERVICE).afterSingletonsInstantiated())
-                .isInstanceOf(SynapseConfigurationException.class);
+        assertThat(check("true", "catalog", HEALTH_SERVICE).mismatch()).isEqualTo(mismatch("true", "false"));
     }
 
     @Test
-    void passesWhenTheyAgreeOrOutsideAot() {
-        // They agree.
-        assertThatCode(() -> check("true", true, "catalog", REFLECTION_SERVICE).afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
-        assertThatCode(() -> check("false", true, "catalog").afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
-        assertThatCode(() -> check(null, true, "catalog", REFLECTION_SERVICE).afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
-        // Outside AOT the property decides at startup, so there is nothing to compare.
-        assertThatCode(() -> check("true", false, "catalog").afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
-        assertThatCode(() -> check("false", false, "catalog", REFLECTION_SERVICE).afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
+    void reportsNothingWhenTheyAgree() {
+        assertThat(check("true", "catalog", REFLECTION_SERVICE).mismatch()).isNull();
+        assertThat(check("false", "catalog").mismatch()).isNull();
+        assertThat(check(null, "catalog", REFLECTION_SERVICE).mismatch()).isNull();
         // No service of the application: Boot's reflection bean is @ConditionalOnBean(BindableService), so it is
         // legitimately absent with the property on.
-        assertThatCode(() -> check("true", true).afterSingletonsInstantiated()).doesNotThrowAnyException();
+        assertThat(check("true").mismatch()).isNull();
         // Only Boot's health service (spring.grpc.server.health.enabled=true): it is defined after the reflection
         // service's condition ran, so it doesn't count as one.
-        assertThatCode(() -> check("true", true, HEALTH_SERVICE).afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
+        assertThat(check("true", HEALTH_SERVICE).mismatch()).isNull();
     }
 
     @Test
-    void passesWithoutTheReflectionServiceClass() throws Exception {
+    void reportsNothingWithoutTheReflectionServiceClass() throws Exception {
         // Boot's reflection bean is @ConditionalOnClass(ProtoReflectionServiceV1): without grpc-services it is
         // absent whatever the property says.
         try (FilteredClassLoader classLoader = new FilteredClassLoader(ProtoReflectionServiceV1.class)) {
-            ReflectionAotCheck check = new ReflectionAotCheck(environment("true"), beans("catalog"), classLoader,
-                    () -> true);
+            ReflectionAotCheck check = new ReflectionAotCheck(environment("true"), beans("catalog"), classLoader);
 
-            assertThatCode(check::afterSingletonsInstantiated).doesNotThrowAnyException();
+            assertThat(check.mismatch()).isNull();
         }
     }
 
     @Test
     void readsThePropertyAsBootsConditionMatchesIt() {
         // Boot's @ConditionalOnBooleanProperty matches only "true", ignoring case: "on" defined no reflection bean.
-        assertThatCode(() -> check("on", true, "catalog").afterSingletonsInstantiated()).doesNotThrowAnyException();
-        assertThatCode(() -> check("TRUE", true, "catalog", REFLECTION_SERVICE).afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
+        assertThat(check("on", "catalog").mismatch()).isNull();
+        assertThat(check("TRUE", "catalog", REFLECTION_SERVICE).mismatch()).isNull();
         // A value that is no boolean doesn't match either, and is no conversion failure.
-        assertThatCode(() -> check("maybe", true, "catalog").afterSingletonsInstantiated())
-                .doesNotThrowAnyException();
-        assertThatThrownBy(() -> check("maybe", true, "catalog", REFLECTION_SERVICE).afterSingletonsInstantiated())
-                .isInstanceOf(SynapseConfigurationException.class)
-                .hasMessageStartingWith("spring.grpc.server.reflection.enabled is false but the AOT build used true");
+        assertThat(check("maybe", "catalog").mismatch()).isNull();
+        assertThat(check("maybe", "catalog", REFLECTION_SERVICE).mismatch()).isEqualTo(mismatch("false", "true"));
     }
 }

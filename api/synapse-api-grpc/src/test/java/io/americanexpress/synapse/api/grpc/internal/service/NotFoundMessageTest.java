@@ -98,8 +98,10 @@ class NotFoundMessageTest {
     private static UnaryOperationHandler handler(ErrorDetails notFound) {
         MethodDeclaration method = MethodDeclaration
                 .declared(CatalogServiceGrpc.getGetItemMethod(), new BindingFixtures.GetItemOperation(), List.of(),
-                        List.of(), notFound);
-        return UnaryOperationHandler.create(method, GetItemRequest.getDescriptor(), Item.getDescriptor());
+                        List.of(), List.of(), notFound);
+        return UnaryOperationHandler
+                .create(method, GetItemRequest.getDescriptor(), Item.getDescriptor(), Compilers.cursors(),
+                        Compilers.PAGING);
     }
 
     private static SynapseException notFound(ErrorDetails declared) {

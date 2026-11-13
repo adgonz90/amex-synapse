@@ -53,7 +53,7 @@ import io.americanexpress.synapse.core.error.ErrorMessages;
 @ConditionalOnWebApplication(type = Type.SERVLET)
 @ConditionalOnClass(RouterFunction.class)
 @EnableConfigurationProperties(SynapseRestProperties.class)
-public class SynapseRestErrorAutoConfiguration {
+public final class SynapseRestErrorAutoConfiguration {
 
     /**
      * Resolves the problem titles of the error categories.

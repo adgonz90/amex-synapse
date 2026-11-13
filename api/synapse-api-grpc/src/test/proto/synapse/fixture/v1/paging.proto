@@ -1,0 +1,272 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// Test fixture of the gRPC plugin's AIP-158 paging: page fields, page responses, and the shapes startup rejects.
+syntax = "proto3";
+
+package synapse.fixture.v1;
+
+option java_package = "io.americanexpress.synapse.api.grpc.fixture.proto";
+option java_multiple_files = true;
+
+// AIP-158 pages bound to Synapse operations.
+service PagedBookService {
+  // A filter, the four page fields, and a page with its total.
+  rpc ListBooks(ListPagedBooksRequest) returns (ListPagedBooksResponse);
+  // Another operation, with the same request: a token of ListBooks is not valid here.
+  rpc ListTitles(ListPagedBooksRequest) returns (ListPagedBooksResponse);
+  // A PageQuery input, and a page without a total.
+  rpc ListAll(PageOnlyRequest) returns (PageWithoutTotalResponse);
+}
+
+message PagedBook {
+  string id = 1;
+  string title = 2;
+  int32 published_year = 3;
+}
+
+message ListPagedBooksRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  int32 skip = 4;
+  string order_by = 5;
+}
+
+message ListPagedBooksResponse {
+  repeated PagedBook books = 1;
+  string next_page_token = 2;
+  optional int32 total_size = 3;
+  // REST's hasNext: whether another page follows, with or without a next_page_token.
+  bool has_next = 4;
+}
+
+// A paged write with an If-Match etag, for the order of the precondition checks and the page token.
+message PagedUpdateRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  string etag = 4;
+}
+
+message PageOnlyRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message PageWithoutTotalResponse {
+  repeated PagedBook books = 1;
+  string next_page_token = 2;
+  bool has_next = 3;
+}
+
+// One-method services whose messages startup rejects for a PageQuery, .sortable(...) or a PageResult.
+
+// The request has no page_size.
+service NoPageSizeService {
+  rpc List(NoPageSizeRequest) returns (ListPagedBooksResponse);
+}
+
+// The request's page_size is not an int32.
+service Int64PageSizeService {
+  rpc List(Int64PageSizeRequest) returns (ListPagedBooksResponse);
+}
+
+// The request has no page_token.
+service NoPageTokenService {
+  rpc List(NoPageTokenRequest) returns (ListPagedBooksResponse);
+}
+
+// The request's skip is not an int32.
+service Int64SkipService {
+  rpc List(Int64SkipRequest) returns (ListPagedBooksResponse);
+}
+
+// The request has no order_by.
+service NoOrderByService {
+  rpc List(NoOrderByRequest) returns (ListPagedBooksResponse);
+}
+
+// The request's page_token is in a oneof.
+service OneofPageTokenService {
+  rpc List(OneofPageTokenRequest) returns (ListPagedBooksResponse);
+}
+
+// The response has no next_page_token.
+service NoNextPageTokenService {
+  rpc List(ListPagedBooksRequest) returns (NoNextPageTokenResponse);
+}
+
+// The response's next_page_token is not a string.
+service NumberNextPageTokenService {
+  rpc List(ListPagedBooksRequest) returns (NumberNextPageTokenResponse);
+}
+
+// The response has no repeated message field for the items.
+service NoItemsService {
+  rpc List(ListPagedBooksRequest) returns (NoItemsResponse);
+}
+
+// The response has two repeated message fields.
+service TwoItemsService {
+  rpc List(ListPagedBooksRequest) returns (TwoItemsResponse);
+}
+
+// The response's total_size has no presence.
+service PlainTotalService {
+  rpc List(ListPagedBooksRequest) returns (PlainTotalResponse);
+}
+
+message NoPageSizeRequest {
+  string shelf = 1;
+  string page_token = 2;
+}
+
+message Int64PageSizeRequest {
+  string shelf = 1;
+  int64 page_size = 2;
+  string page_token = 3;
+}
+
+message NoPageTokenRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+}
+
+message Int64SkipRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  int64 skip = 4;
+}
+
+message NoOrderByRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message OneofPageTokenRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+  oneof position {
+    string page_token = 3;
+    int32 page_number = 4;
+  }
+}
+
+message NoNextPageTokenResponse {
+  repeated PagedBook books = 1;
+}
+
+message NumberNextPageTokenResponse {
+  repeated PagedBook books = 1;
+  int32 next_page_token = 2;
+}
+
+message NoItemsResponse {
+  repeated string ids = 1;
+  string next_page_token = 2;
+}
+
+message TwoItemsResponse {
+  repeated PagedBook books = 1;
+  repeated PagedBook more = 2;
+  string next_page_token = 3;
+}
+
+message PlainTotalResponse {
+  repeated PagedBook books = 1;
+  string next_page_token = 2;
+  int32 total_size = 3;
+  bool has_next = 4;
+}
+
+// The response has no has_next.
+service NoHasNextService {
+  rpc List(ListPagedBooksRequest) returns (NoHasNextResponse);
+}
+
+// The request's order_by is not a string.
+service Int32OrderByService {
+  rpc List(Int32OrderByRequest) returns (ListPagedBooksResponse);
+}
+
+// The request's order_by is repeated.
+service RepeatedOrderByService {
+  rpc List(RepeatedOrderByRequest) returns (ListPagedBooksResponse);
+}
+
+// An operation that pages by offset only: PageResult.of(items, hasNext), as SpringDataPages returns.
+service OffsetBookService {
+  rpc ListBooks(ListPagedBooksRequest) returns (ListPagedBooksResponse);
+}
+
+message NoHasNextResponse {
+  repeated PagedBook books = 1;
+  string next_page_token = 2;
+}
+
+message Int32OrderByRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  int32 order_by = 4;
+}
+
+message RepeatedOrderByRequest {
+  string shelf = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  repeated string order_by = 4;
+}
+
+// A page whose total may exceed the int32 range.
+message Int64TotalResponse {
+  repeated PagedBook books = 1;
+  string next_page_token = 2;
+  bool has_next = 3;
+  optional int64 total_size = 4;
+}
+
+// Page fields with presence: a value sent explicitly, 0 or empty included, follows REST's rules.
+message OptionalPagesRequest {
+  string shelf = 1;
+  optional int32 page_size = 2;
+  optional string page_token = 3;
+  optional int32 skip = 4;
+  optional string order_by = 5;
+}
+
+// The response's has_next is not a bool.
+service NumberHasNextService {
+  rpc List(ListPagedBooksRequest) returns (NumberHasNextResponse);
+}
+
+// The response's has_next is a proto3 optional bool, which is accepted.
+service OptionalHasNextService {
+  rpc List(ListPagedBooksRequest) returns (OptionalHasNextResponse);
+}
+
+message NumberHasNextResponse {
+  repeated PagedBook books = 1;
+  string next_page_token = 2;
+  int32 has_next = 3;
+}
+
+message OptionalHasNextResponse {
+  repeated PagedBook books = 1;
+  string next_page_token = 2;
+  optional bool has_next = 3;
+}

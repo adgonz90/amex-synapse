@@ -37,6 +37,33 @@
         <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 
+    <dependencies>
+        <!-- Test scope, never needed by anything but invoker:install, which resolves them in test scope (scope,
+             below). They put synapse-parent and synapse-bom in the reactor build order, and invoker:install copies
+             them (with their parents) into target/it-repo for the projects that inherit synapse-parent. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-parent</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-bom</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <scope>test</scope>
+        </dependency>
+        <!-- The same for synapse-core, which the parent-build-config projects depend on. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-core</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
     <build>
         <plugins>
             <plugin>
@@ -53,6 +80,8 @@
                     </properties>
                     <parallelThreads>1C</parallelThreads>
                     <postBuildHookScript>verify</postBuildHookScript>
+                    <!-- invoker:install installs the dependencies above, which are test scope (default: runtime). -->
+                    <scope>test</scope>
                     <streamLogsOnFailures>true</streamLogsOnFailures>
                 </configuration>
                 <executions>

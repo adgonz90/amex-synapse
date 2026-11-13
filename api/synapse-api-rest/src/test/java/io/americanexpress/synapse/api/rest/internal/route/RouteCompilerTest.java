@@ -34,12 +34,13 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
-import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.ListBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
@@ -52,11 +53,7 @@ class RouteCompilerTest {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    private final RouteCompiler compiler = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
-            new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
-            new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), RouteFixtures.cursors(),
-                    RouteFixtures.etags()),
-            RouteFixtures.cursors());
+    private final RouteCompiler compiler = compiler(RouteFixtures.cursors());
 
     @Test
     void mostSpecificTemplateWinsRegardlessOfDeclarationOrder() {
@@ -142,11 +139,7 @@ class RouteCompilerTest {
 
     @Test
     void generatedCursorKeyIsReportedOnceAfterValidation() {
-        PageCursors generated = RouteFixtures.cursors(null);
-        RouteCompiler generatedKeyCompiler = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
-                new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
-                new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), generated, RouteFixtures.etags()),
-                generated);
+        RouteCompiler generatedKeyCompiler = compiler(RouteFixtures.cursors(null));
         RestBindings paged = RestBindings
                 .builder()
                 .get("/books", new PagedBooksOperation())
@@ -158,29 +151,44 @@ class RouteCompilerTest {
                 .get("/books", new PagedBooksOperation())
                 .build();
 
-        List<ILoggingEvent> compiled = warnings(() -> generatedKeyCompiler.compile(List.of(paged), List.of()));
+        // A second compile with the same page cursors, as a second plugin of the context, reports nothing more.
+        List<ILoggingEvent> compiled = warnings(() -> {
+            generatedKeyCompiler.compile(List.of(paged), List.of());
+            generatedKeyCompiler.compile(List.of(paged), List.of());
+        });
         List<ILoggingEvent> failed = warnings(() -> assertThatExceptionOfType(SynapseConfigurationException.class)
-                .isThrownBy(() -> generatedKeyCompiler.compile(List.of(broken), List.of())));
+                .isThrownBy(() -> compiler(RouteFixtures.cursors(null)).compile(List.of(broken), List.of())));
         List<ILoggingEvent> configured = warnings(() -> compiler.compile(List.of(paged), List.of()));
 
         assertThat(compiled)
                 .singleElement()
-                .satisfies(line -> assertThat(line.getFormattedMessage())
-                        .startsWith("synapse.api.rest.paging.cursor.key is not set"));
+                .satisfies(line -> {
+                    assertThat(line.getLoggerName()).isEqualTo("io.americanexpress.synapse.core");
+                    assertThat(line.getFormattedMessage()).startsWith("synapse.paging.cursor.key is not set");
+                });
         assertThat(failed).isEmpty();
         assertThat(configured).isEmpty();
     }
 
     @Test
+    void generatedCursorKeyIsReportedOnlyWithAPagedRoute() {
+        RestBindings plain = RestBindings
+                .builder()
+                .get("/books/{id}", new GetBookOperation())
+                .get("/books", new ListBooksOperation())
+                .build();
+
+        assertThat(warnings(() -> compiler(RouteFixtures.cursors(null)).compile(List.of(plain), List.of())))
+                .isEmpty();
+    }
+
+    @Test
     void generatedCursorKeyIsNotReportedWhenABindabilityCheckFails() {
-        PageCursors generated = RouteFixtures.cursors(null);
-        RouteCompiler generatedKeyCompiler = new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
-                new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
-                new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), generated, RouteFixtures.etags()),
-                generated);
+        RouteCompiler generatedKeyCompiler = compiler(RouteFixtures.cursors(null));
         RestBindings unconvertible = RestBindings.builder().get("/pairs/{pair}", new PairPageOperation()).build();
         // The route passes the binding rules; only the bindability check, which runs after them, fails it.
-        assertThat(new BindingValidator(PagingSettings.defaults()).validate(unconvertible.routes(), List.of()))
+        assertThat(new BindingValidator(PagingSettings.defaults())
+                .validate(RestBindingsAccess.routes(unconvertible), List.of()))
                 .hasSize(1);
 
         List<ILoggingEvent> failed = warnings(() -> assertThatExceptionOfType(SynapseConfigurationException.class)
@@ -190,9 +198,18 @@ class RouteCompilerTest {
         assertThat(failed).isEmpty();
     }
 
-    /** Runs the action and returns the WARN lines it logged on the REST logger. */
+    /** A compiler whose writer and handlers use the page cursors. */
+    private static RouteCompiler compiler(PageCursors cursors) {
+        return new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
+                new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
+                new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), cursors, PagingSettings.defaults(),
+                        RouteFixtures.etags()),
+                cursors, PagingSettings.defaults());
+    }
+
+    /** Runs the action and returns the WARN lines it logged on Synapse's loggers (REST's and core's). */
     private static List<ILoggingEvent> warnings(Runnable action) {
-        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse");
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
         logger.addAppender(appender);

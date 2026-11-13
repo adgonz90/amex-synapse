@@ -15,9 +15,11 @@
 
 Runs an operation (or a `BusinessOperation`) through the pipeline around a plain instance, with no Spring context.
 Validation, deadline and exception translation apply. As in the application, a `ConstraintViolationException` thrown
-by the operation or a collaborator becomes `VALIDATION_FAILED`; translators added with `translator(...)` are tried after
-that, in the order added. A lambda, anonymous, record or final operation class is rejected with an
-`IllegalArgumentException` that gives the reason.
+by the operation or a collaborator becomes `VALIDATION_FAILED`, unless a translator declares a lower order than that
+translator's `@Order(0)` (such as `@Order(-1)`), in tests and in the application alike. Translators added with
+`translator(...)` are tried in the order the application tries their beans: by `@Order` or `Ordered` first (Synapse's
+data translators declare one), then those that declare no order, in the order added. A lambda, anonymous, record or
+final operation class is rejected with an `IllegalArgumentException` that gives the reason.
 
 [source,java]
 ----
@@ -158,6 +160,10 @@ the `@Bean` method that binds it. The check covers operations that are parameter
 `RestBindings`. Operations reached another way, or bindings registered without a `@Bean` method, are not checked; a
 missing one then fails the test with Spring's own error.
 
+The check is `io.americanexpress.synapse.test.slice.BoundOperationMocksCheck`, registered as the bean
+`synapseRestBoundOperationMocksCheck`. Define a bean with that name in a `@TestConfiguration` to replace it. The
+back-off is by name, so the gRPC slice's check never hides this one.
+
 The doubles are used as they are, without the pipeline: Jakarta Validation, observation, translation and failure
 logging of the operation don't run. Request binding (with its violations), response mapping, the edge filters and the
 error responses do. A `@MockitoSpyBean` needs a real operation bean, which the slice doesn't create: add the
@@ -217,6 +223,9 @@ the `@Bean` method that binds it. The check covers operations that are parameter
 method whose operation has no double fails startup with the *no operation is bound* failure (see
 xref:grpc.adoc#startup-failures[Startup failures]), whose action ends with
 `In @SynapseGrpcTest, declare a @MockitoBean for it.`
+
+The check is the same `io.americanexpress.synapse.test.slice.BoundOperationMocksCheck`, registered as the bean
+`synapseGrpcBoundOperationMocksCheck`. Define a bean with that name in a `@TestConfiguration` to replace it.
 
 The doubles are used as they are, without the pipeline, as in `@SynapseRestTest`. Message mapping (with its
 violations), the edge and the error details run.
@@ -434,3 +443,63 @@ SynapseAotAssertions.assertThatHints(new MyRuntimeHints())
 
 Also `registersReflection(type, categories...)` and `registersJdkProxy(interfaces...)`. A failure names the missing
 hint.
+
+[#parity-suite]
+== One scenario suite for every protocol
+
+A service that binds the same operations over REST and gRPC promises the same contract on both: the same inputs, the
+same error codes and categories, the same entity tags and page tokens (see xref:grpc.adoc[gRPC]). The slices test
+each protocol's bindings on their own, with the operations mocked; one scenario suite against the running service
+tests the promise itself. Synapse has no class for it, because the scenarios are the service's. The reference
+bookstore (`samples/reference-bookstore`, `scenario/` in the service module's tests) and the service archetype's
+projects (`scenario/ItemScenarios`) follow this pattern:
+
+* A protocol-neutral outcome record, what one request did, with no transport detail in it:
++
+[source,java]
+----
+public record Outcome(Kind kind, @Nullable ErrorCategory category, @Nullable String code, @Nullable BookView book,
+        @Nullable String etag, List<String> violations) {
+
+    public enum Kind { OK, CREATED, NO_CONTENT, FAILED }
+}
+----
++
+On a failure, `code` is REST's problem `code` or gRPC's `ErrorInfo.reason`, and `category` is that code's
+`ErrorDetails.category()`, looked up in `SynapseErrors` and the service's own error enum, never derived from the
+transport status. A 304 has no gRPC form, so it stays in the REST slice test.
+* One client interface with an implementation per protocol (`RestBookstoreClient` on the JDK's HTTP client,
+  `GrpcBookstoreClient` on the generated stub). Each turns its protocol's answer into an `Outcome`, and also asserts
+  its own transport status for the code (REST 400, 404, 409, 412 or 428; gRPC `INVALID_ARGUMENT`, `NOT_FOUND`,
+  `ALREADY_EXISTS`, `ABORTED` or `FAILED_PRECONDITION`), so a wrong status fails that protocol's run.
+* An abstract scenario class whose tests are parameterized over the protocols and expect one `Outcome`, written
+  once:
++
+[source,java]
+----
+public abstract class BookstoreScenarios {
+
+    protected abstract Target target();          // where the service answers: ports and hosts
+
+    @ParameterizedTest
+    @EnumSource(Protocol.class)
+    void duplicateIsbnIsConflictAlreadyExists(Protocol protocol) {
+        String isbn = isbn();
+        client(protocol).create(isbn, "The Lathe of Heaven", AUTHOR, 1971);
+
+        Outcome duplicate = client(protocol).create(isbn, "Another title", AUTHOR, null);
+
+        assertThat(duplicate).isEqualTo(Outcome.failed(SynapseErrors.ALREADY_EXISTS));
+    }
+}
+----
++
+Cross-protocol scenarios take a value from one protocol to the other: an `ETag` read over REST updates over gRPC,
+and a page token from one protocol pages over the other.
+* A subclass per way of running the service. `BookstoreJvmIT` starts the application on free ports
+  (`server.port=0`, `spring.grpc.server.port=0`) with a PostgreSQL container. `BookstoreAotIT` (only with `-Paot`)
+  starts the packaged jar in AOT mode as its own process, with `AppProcess`, which picks free ports, waits for
+  `/health` and stops the process afterwards. The same scenarios then check every way the service is shipped.
+
+The scenarios share the service's database, so each works on data of its own (an ISBN and an author of its own, in the
+bookstore) and never assumes an empty table.

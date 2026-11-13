@@ -18,6 +18,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
 
+import io.americanexpress.synapse.api.rest.RestBindings;
+import io.americanexpress.synapse.test.slice.BoundOperationMocksCheck;
+
 /**
  * Auto-configuration of {@link SynapseRestTest}: the check that each operation the bindings use has a test double.
  * Active in servlet web applications only, like the REST plugin. It is imported by the slice only, never by an
@@ -25,17 +28,18 @@ import org.springframework.context.annotation.Bean;
  */
 @AutoConfiguration
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-public class SynapseRestTestAutoConfiguration {
+public final class SynapseRestTestAutoConfiguration {
 
     /**
      * The check that each operation the bindings use has a bean. It is {@code static} because it is a bean factory
-     * post-processor. Define a {@link BoundOperationMocksCheck} bean to replace it.
+     * post-processor. Define a bean named {@code synapseRestBoundOperationMocksCheck} to replace it; the name, not the type, backs
+     * it off, so that the gRPC slice's check does not hide this one.
      *
      * @return the check
      */
     @Bean
-    @ConditionalOnMissingBean
-    static BoundOperationMocksCheck boundOperationMocksCheck() {
-        return new BoundOperationMocksCheck();
+    @ConditionalOnMissingBean(name = "synapseRestBoundOperationMocksCheck")
+    static BoundOperationMocksCheck synapseRestBoundOperationMocksCheck() {
+        return new BoundOperationMocksCheck(RestBindings.class, "@SynapseRestTest");
     }
 }

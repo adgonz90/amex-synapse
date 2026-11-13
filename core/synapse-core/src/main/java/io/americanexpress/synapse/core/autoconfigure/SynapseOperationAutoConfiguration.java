@@ -67,7 +67,7 @@ import io.americanexpress.synapse.core.observability.OperationObservationConvent
         MicrometerTracingAutoConfiguration.class, CompositeMeterRegistryAutoConfiguration.class,
         SynapseCoreAutoConfiguration.class,
         SynapseContextAutoConfiguration.class}, afterName = "org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration")
-public class SynapseOperationAutoConfiguration {
+public final class SynapseOperationAutoConfiguration {
 
     /**
      * Marks operation and business bean definitions for class-based proxies and fails startup for classes that cannot

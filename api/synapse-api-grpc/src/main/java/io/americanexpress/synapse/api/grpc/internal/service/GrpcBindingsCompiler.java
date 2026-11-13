@@ -20,6 +20,8 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 
 import io.americanexpress.synapse.api.grpc.GrpcBindings;
 import io.americanexpress.synapse.api.grpc.internal.binding.ServiceDeclaration;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 /**
@@ -34,17 +36,27 @@ public final class GrpcBindingsCompiler implements BeanPostProcessor {
 
     private final ObjectProvider<ServiceOperation<?, ?>> operations;
 
+    private final ObjectProvider<PageCursors> cursors;
+
+    private final ObjectProvider<SynapsePagingProperties> paging;
+
     /**
      * Creates the post-processor. Its dependencies are resolved when the first bindings are compiled, so that
      * declaring it doesn't create beans early.
      *
-     * @param compiler the service compiler; a default one when there is none
+     * @param compiler the service compiler; a default one, on core's page cursors and paging properties, when there is
+     *     none
      * @param operations the operation beans, for {@code .bindAllByName()}
+     * @param cursors core's page cursors, for the default compiler
+     * @param paging core's {@code synapse.paging} properties, for the default compiler
      */
     public GrpcBindingsCompiler(ObjectProvider<ServiceCompiler> compiler,
-            ObjectProvider<ServiceOperation<?, ?>> operations) {
+            ObjectProvider<ServiceOperation<?, ?>> operations, ObjectProvider<PageCursors> cursors,
+            ObjectProvider<SynapsePagingProperties> paging) {
         this.compiler = compiler;
         this.operations = operations;
+        this.cursors = cursors;
+        this.paging = paging;
     }
 
     @Override
@@ -54,8 +66,9 @@ public final class GrpcBindingsCompiler implements BeanPostProcessor {
             List<ServiceOperation<?, ?>> candidates = declaration.bindAllByName()
                     ? operations.orderedStream().toList()
                     : List.of();
-            GrpcBindingsAccess
-                    .compiled(bindings, compiler.getIfAvailable(ServiceCompiler::new).compile(declaration, candidates));
+            ServiceCompiler serviceCompiler = compiler
+                    .getIfAvailable(() -> new ServiceCompiler(cursors.getObject(), paging.getObject()));
+            GrpcBindingsAccess.compiled(bindings, serviceCompiler.compile(declaration, candidates));
         }
         return bean;
     }

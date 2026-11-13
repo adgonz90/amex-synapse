@@ -33,6 +33,7 @@ import org.springframework.web.util.pattern.PathPatternParser;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 
@@ -84,7 +85,7 @@ public final class SynapseApiVersioning implements WebMvcConfigurer, Ordered {
     public void configureApiVersioning(ApiVersionConfigurer configurer) {
         List<RouteDefinition> versioned = bindings
                 .orderedStream()
-                .flatMap(each -> each.routes().stream())
+                .flatMap(each -> RestBindingsAccess.routes(each).stream())
                 .filter(route -> route.version() != null)
                 .toList();
         if (versioned.isEmpty()) {

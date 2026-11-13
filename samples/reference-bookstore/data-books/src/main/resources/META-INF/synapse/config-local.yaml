@@ -1,0 +1,12 @@
+# The books store in the local environment: the books-db container of compose.yaml (docker compose up -d).
+# Local compose only. The user name and password are those of that throwaway container. In every deployed
+# environment they come from the environment variables SYNAPSE_DATA_STORES_BOOKS_USERNAME and
+# SYNAPSE_DATA_STORES_BOOKS_PASSWORD, never from a file, and that environment's config-<env>.yaml sets only the url.
+# (config-build.yaml is not a deployed environment: its credentials are placeholders for a build that never connects.)
+synapse:
+  data:
+    stores:
+      books:
+        url: jdbc:postgresql://localhost:5432/bookstore
+        username: bookstore
+        password: bookstore

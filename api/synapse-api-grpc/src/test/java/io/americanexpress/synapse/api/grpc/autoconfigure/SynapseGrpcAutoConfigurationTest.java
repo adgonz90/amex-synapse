@@ -71,13 +71,17 @@ import io.americanexpress.synapse.api.grpc.internal.edge.GrpcDeadlinePolicy;
 import io.americanexpress.synapse.api.grpc.internal.edge.MetadataMasking;
 import io.americanexpress.synapse.api.grpc.internal.edge.SynapseGrpcContextInterceptor;
 import io.americanexpress.synapse.api.grpc.internal.edge.SynapseGrpcEdgeInterceptor;
+import io.americanexpress.synapse.api.grpc.internal.service.Compilers;
 import io.americanexpress.synapse.api.grpc.internal.service.ExposureInventory;
 import io.americanexpress.synapse.api.grpc.internal.service.GrpcBindingsCompiler;
 import io.americanexpress.synapse.api.grpc.internal.service.ServiceCompiler;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.error.ErrorMessages;
+import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -425,10 +429,9 @@ class SynapseGrpcAutoConfigurationTest {
 
     @Test
     void reflectionAotCheckBacksOffToAUserBean() {
-        SmartInitializingSingleton user = () -> {
-        };
+        BuildTimeSwitch user = () -> null;
         runner
-                .withBean(REFLECTION_AOT_CHECK, SmartInitializingSingleton.class, () -> user)
+                .withBean(REFLECTION_AOT_CHECK, BuildTimeSwitch.class, () -> user)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context.getBean(REFLECTION_AOT_CHECK)).isSameAs(user);
@@ -615,10 +618,11 @@ class SynapseGrpcAutoConfigurationTest {
 
     @Test
     void serviceCompilationBeansBackOffToUserBeans() {
-        ServiceCompiler compiler = new ServiceCompiler("In a test slice, mock it.");
+        ServiceCompiler compiler = Compilers.compiler("In a test slice, mock it.");
         GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(
                 new StaticListableBeanFactory().getBeanProvider(ServiceCompiler.class),
-                operations());
+                operations(), new StaticListableBeanFactory().getBeanProvider(PageCursors.class),
+                new StaticListableBeanFactory().getBeanProvider(SynapsePagingProperties.class));
         ExposureInventory inventory = new ExposureInventory(
                 new StaticListableBeanFactory().getBeanProvider(GrpcBindings.class));
         runner
@@ -657,7 +661,7 @@ class SynapseGrpcAutoConfigurationTest {
     @Test
     void aBindingProblemFailsStartup() {
         serverRunner()
-                .withBean("catalog", GrpcBindings.class, () -> catalog(new BindingFixtures.PageItemsOperation()))
+                .withBean("catalog", GrpcBindings.class, () -> catalog(new BindingFixtures.OptionalPageOperation()))
                 .run(context -> assertThat(context)
                         .hasFailed()
                         .getFailure()

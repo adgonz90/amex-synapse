@@ -34,7 +34,7 @@ import io.americanexpress.synapse.core.binding.ComponentRef;
  * Registers lambda hints for the method references in gRPC bindings.
  *
  * <p>
- * Synapse reads each {@link ComponentRef} of a {@code .map} or {@code .context} declaration, such as
+ * Synapse reads each {@link ComponentRef} of a {@code .map}, {@code .context} or {@code .etag} declaration, such as
  * {@code ItemView::title}, by calling {@code writeReplace} on its lambda class, which a native image allows only with
  * metadata for that class. For every {@link GrpcBindings} bean defined by a factory method ({@code @Bean}, static or
  * not), this processor registers a lambda hint for the class that declares that method, matching every
@@ -49,7 +49,7 @@ import io.americanexpress.synapse.core.binding.ComponentRef;
  *
  * <p>
  * The records a binding reaches are its operation's input and output and the records nested in them: the binding
- * checks reject a {@code .map} or {@code .context} reference to any other record. The core's
+ * checks reject a {@code .map}, {@code .context} or {@code .etag} reference to any other record. The core's
  * {@code OperationTypesAotProcessor} registers all of them, from the operation bean's declared type. This processor
  * never creates the beans, so an operation passed to {@code .unary} that is not a bean, or a bean declared with a
  * less specific type than its class (such as {@code ServiceOperation<?, ?>}), is the case those hints miss. Listed in

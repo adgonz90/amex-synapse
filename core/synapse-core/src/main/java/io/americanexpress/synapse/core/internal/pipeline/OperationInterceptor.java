@@ -27,6 +27,7 @@ import org.aopalliance.intercept.MethodInvocation;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.slf4j.spi.LoggingEventBuilder;
 
 import io.americanexpress.synapse.core.context.RequestContext;
@@ -266,6 +267,13 @@ final class OperationInterceptor implements MethodInterceptor {
      * Logs the failure: ERROR with the stack trace for {@code INTERNAL}; WARN with the cause's stack trace for
      * {@code UNAVAILABLE} and {@code TIMEOUT} when a translator kept a cause (a downstream fault, not the caller's);
      * WARN without a stack trace otherwise, which includes the pipeline's own drain rejection and deadline check.
+     * <p>
+     * The code and category keys have no dot: Spring Boot's ECS format nests dotted keys, and it writes the logged
+     * throwable as the {@code error} object, so a key under {@code error.} would be a second {@code error} member and
+     * the writer would drop the whole line.
+     * <p>
+     * The line always carries the correlation id, but as a key-value only when the MDC doesn't hold it (see
+     * {@link #withCorrelationId}).
      */
     private static void logFailure(String name, @Nullable String correlationId, SynapseException failure) {
         ErrorCategory category = failure.category();
@@ -278,20 +286,32 @@ final class OperationInterceptor implements MethodInterceptor {
         } else {
             event = FAILURES.atWarn();
         }
-        event
+        withCorrelationId(event, correlationId)
                 .addKeyValue("operation", name)
-                .addKeyValue("error.code", failure.code())
-                .addKeyValue("error.category", failure.category().name())
-                .addKeyValue("correlationId", correlationId)
+                .addKeyValue("errorCode", failure.code())
+                .addKeyValue("errorCategory", failure.category().name())
                 .log("Operation {} failed with {} ({}): {}", name, failure.code(), failure.category(),
                         failure.getMessage());
     }
 
-    private void logPayload(String direction, String name, String correlationId, @Nullable Object payload) {
-        PAYLOADS
-                .atDebug()
+    /** Logs a payload, with the correlation id as the failure line has it. */
+    private void logPayload(String direction, String name, @Nullable String correlationId, @Nullable Object payload) {
+        withCorrelationId(PAYLOADS.atDebug(), correlationId)
                 .addKeyValue("operation", name)
-                .addKeyValue("correlationId", correlationId)
                 .log("Operation {} {}: {}", name, direction, logMasking.toJson(payload));
+    }
+
+    /**
+     * Adds the correlation id as a key-value only when the MDC doesn't hold it. With tracing on, Boot's correlation
+     * fields put it in the MDC, and Boot's Logback structured formats write the MDC and the key-values into one
+     * object, so a key-value of the same name would make the encoder throw and the line would be lost. Without it in
+     * the MDC (tracing or baggage off, or a thread the MDC wasn't propagated to), the key-value carries it, so a line
+     * always has the correlation id. No other key-value here may share a name with an MDC entry.
+     */
+    private static LoggingEventBuilder withCorrelationId(LoggingEventBuilder event, @Nullable String correlationId) {
+        if (correlationId != null && MDC.get(ContextBinder.CORRELATION_BAGGAGE_FIELD) == null) {
+            return event.addKeyValue(ContextBinder.CORRELATION_BAGGAGE_FIELD, correlationId);
+        }
+        return event;
     }
 }

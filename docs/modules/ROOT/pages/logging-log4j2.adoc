@@ -5,13 +5,26 @@ one module that brings a backend, and only your bootable service module declares
 
 == Add the module
 
-Exclude `spring-boot-starter-logging` from the service module (Logback must be absent), then add the module:
+Exclude `spring-boot-starter-logging` from the service module (Logback must be absent), then add the module. The
+samples exclude it from the two starters a Synapse service declares beside its API plugin,
+`spring-boot-starter-opentelemetry` and `spring-boot-starter-actuator` (the plugin brings Spring MVC or gRPC itself,
+without a starter):
 
 [source,xml]
 ----
 <dependency>
   <groupId>org.springframework.boot</groupId>
-  <artifactId>spring-boot-starter-web</artifactId>
+  <artifactId>spring-boot-starter-opentelemetry</artifactId>
+  <exclusions>
+    <exclusion>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-logging</artifactId>
+    </exclusion>
+  </exclusions>
+</dependency>
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-actuator</artifactId>
   <exclusions>
     <exclusion>
       <groupId>org.springframework.boot</groupId>
@@ -48,12 +61,61 @@ Log4j2.
 
 The module ships no Log4j2 configuration file, so it never overrides yours.
 
+[#ecs]
 == ECS JSON by default
 
 Console output uses Boot's structured logging in the Elastic Common Schema format. The module sets
 `logging.structured.format.console=ecs` at the lowest precedence: anything you set in application properties or with
 `SpringApplication.setDefaultProperties` wins. In Boot 4.1 the level is nested (`"log":{"level":"ERROR"}`) and
 `correlationId` is a top-level field.
+
+MDC entries and SLF4J key-values become fields of the line, in the same object as the fields Boot writes itself, and
+the ECS format nests a name with a dot (`a.b` becomes `"a":{"b":...}`). Boot doesn't merge them with its own fields: a
+line that has an MDC entry or key-value named after one of Boot's top-level fields, or starting with that name and a
+dot, can't be written. Boot drops the whole line and prints, for example, `The name 'error' has already been written`
+on standard error
+(https://github.com/spring-projects/spring-boot/issues/45217[spring-boot#45217]). Boot 4.1's ECS format writes these
+top-level fields:
+
+[cols="1,3",options="header"]
+|===
+|Field |Written on
+|`@timestamp`, `log`, `process`, `service`, `message`, `ecs` |Every line
+|`error` (the exception's `type`, `message` and `stack_trace`) |Every line with an exception
+|`tags` |Every line with a marker
+|===
+
+So:
+
+* Synapse's failure line names its fields `errorCode` and `errorCategory`, not `error.code` and `error.category`.
+* In the structured formats, Synapse's failure and payload lines always carry `correlationId` (Boot's default text
+  pattern prints neither `correlationId` nor key-values): from the MDC when tracing puts it there, and as a key-value
+  only when the MDC doesn't hold it (tracing or baggage off, or a thread the MDC didn't reach). Never both: on Logback,
+  Boot's structured formats (all three) write the MDC and the key-values into one object, so a key-value that
+  repeats an MDC name drops the line; Log4j2 merges key-values into the MDC, so the repeat is only overwritten there.
+* The names on a line must not nest either: the ECS format can't write an MDC entry `tenant` and another
+  `tenant.region` on one line (`Duplicate nested pairs added under 'tenant'`), on either backend.
+* Context attributes (xref:rest.adoc#correlation-id[REST], xref:grpc.adoc#correlation-id[gRPC]) are MDC entries for the
+  whole call. Startup fails when a context attribute's name:
+** is one of the ECS fields above, or starts with one and a dot, such as `error`, `log.level` or `service.name`;
+** is one of the log fields Synapse and Boot's tracing set: the MDC fields `correlationId`, `traceId` and `spanId`, and
+   the key-values `operation`, `errorCode` and `errorCategory` of Synapse's failure and payload lines; or starts with
+   one and a dot, such as `traceId.x`;
+** starts with another attribute's name and a dot, such as `tenant` and `tenant.region`. The same name under both
+   `synapse.api.rest.context.headers` and `synapse.api.grpc.context.metadata` is one attribute, and is accepted.
++
+The match is case-sensitive, like Boot's: `Error`, `errorSource` and `tenantRegion` are accepted.
+* The names you list in `management.tracing.baggage.correlation.fields` are MDC entries too, and startup checks them
+  the same way, except that one may be `correlationId` or a context attribute's name (Synapse adds those anyway).
+* The MDC entries your code puts and your own key-values must follow the same rules. Synapse can't check them.
+
+Synapse checks the top-level field list against ECS only, the format it sets; it applies the reserved log fields and
+the nesting rule whatever the format. The `logstash` and `gelf` formats don't nest names, so `error.` names are safe
+there, but a name equal to one of their own fields collides the same way. In `logstash` those are
+`@timestamp`, `@version`, `message`, `logger_name`, `thread_name`, `level`, `level_value`, `tags` and `stack_trace`. In
+`gelf`, which prefixes additional fields with `_`, they are `level_name`, `process_pid`, `process_thread_name`,
+`log_logger`, `service_version`, `error_type`, `error_message` and `error_stack_trace` (and `id` is dropped with a
+warning). If you switch format, keep context attributes and MDC entries off those names.
 
 == Burst limit on failure logs
 

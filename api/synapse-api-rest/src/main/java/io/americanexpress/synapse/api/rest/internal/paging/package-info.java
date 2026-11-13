@@ -12,8 +12,8 @@
  * the License.
  */
 /**
- * Paging at the REST edge: the paging parameter settings, the per-route sort allow-lists, and the default cursor
- * codec with its keys.
+ * Paging at the REST edge: the paging parameter settings, the per-route sort allow-lists, the page body and links,
+ * and the route's entries in the cursor scope. The cursor codec, its keys and the input digest are core's.
  */
 @NullMarked
 package io.americanexpress.synapse.api.rest.internal.paging;

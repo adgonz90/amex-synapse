@@ -31,11 +31,20 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.ResolvableType;
 
 import io.americanexpress.synapse.api.grpc.fixture.proto.Author;
+import io.americanexpress.synapse.api.grpc.fixture.proto.Doc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.Int64TotalResponse;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Item;
+import io.americanexpress.synapse.api.grpc.fixture.proto.ListPagedBooksResponse;
 import io.americanexpress.synapse.api.grpc.fixture.proto.ListTagsResponse;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Node;
+import io.americanexpress.synapse.api.grpc.fixture.proto.NumberDoc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.OneofEtagDoc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PageWithoutTotalResponse;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBook;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PlainDoc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.PlainNumbers;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Scalars;
+import io.americanexpress.synapse.api.grpc.fixture.proto.StampedDoc;
 import io.americanexpress.synapse.api.grpc.internal.binding.FieldOverride;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.AuthorRec;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.CountryCode;
@@ -46,8 +55,13 @@ import io.americanexpress.synapse.api.grpc.internal.mapping.RecordReaderTest.Con
 import io.americanexpress.synapse.api.grpc.internal.mapping.RecordReaderTest.Flat;
 import io.americanexpress.synapse.api.grpc.internal.mapping.RecordReaderTest.NodeRec;
 import io.americanexpress.synapse.api.grpc.internal.mapping.RecordReaderTest.Wrappers;
+import io.americanexpress.synapse.core.binding.ComponentRef;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.binding.ComponentRefs;
+import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.internal.conditional.EntityTags;
+import io.americanexpress.synapse.core.paging.PageResult;
 
 import static io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.item;
 import static io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.itemOverrides;
@@ -73,6 +87,145 @@ class RecordWriterTest {
         assertThat(writer.fieldPaths())
                 .containsEntry("createdAt", "created_at")
                 .containsEntry("author.countryCode", "author.country_code");
+    }
+
+    @Test
+    void etagWritesTheStrongTag() throws InvalidProtocolBufferException {
+        RecordWriter writer = docs(DocView::version);
+
+        Doc written = Doc.parseFrom(writer.write(new DocView("d", "t", 7L)).toByteString());
+
+        assertThat(written.getEtag()).isEqualTo("\"7\"").isEqualTo(EntityTags.strong("7"));
+        assertThat(written.getVersion()).isEqualTo(7L);
+        assertThat(written.getId()).isEqualTo("d");
+        // Without .etag the field stays unset, and so it does for a null component or a null output.
+        assertThat(Doc
+                .parseFrom(MessageMapping
+                        .writer(Doc.getDescriptor(), ResolvableType.forClass(DocView.class), List.of())
+                        .write(new DocView("d", "t", 7L))
+                        .toByteString())
+                .getEtag()).isEmpty();
+        assertThat(Doc.parseFrom(docs(Labeled::label).write(new Labeled("d", "t", 1L, null)).toByteString()).getEtag())
+                .isEmpty();
+        assertThat(Doc.parseFrom(docs(Labeled::label).write(new Labeled("d", "t", 1L, "v1")).toByteString()))
+                .satisfies(doc -> {
+                    assertThat(doc.getEtag()).isEqualTo("\"v1\"");
+                    assertThat(doc.getLabel()).isEqualTo("v1");
+                });
+        assertThat(docs(DocView::version).write(null))
+                .isEqualTo(DynamicMessage.getDefaultInstance(Doc.getDescriptor()));
+    }
+
+    @Test
+    void etagValueOutsideEtagcIsAnOperationBug() {
+        RecordWriter writer = docs(Labeled::label);
+
+        for (String bad : List.of("", "a b", "a\"b", "aĀ")) {
+            assertThatIllegalStateException()
+                    .as(bad)
+                    .isThrownBy(() -> writer.write(new Labeled("d", "t", 1L, bad)))
+                    .withMessageStartingWith("The etag value computed from the operation's output is not a valid "
+                            + "entity tag: The version token ");
+        }
+        assertThatIllegalStateException()
+                .isThrownBy(() -> writer.write(new Labeled("d", "t", 1L, "a b")))
+                .withMessage("The etag value computed from the operation's output is not a valid entity tag: The "
+                        + "version token has a character an entity tag can't carry (a double quote, a space, a "
+                        + "control character, DEL or a character above U+00FF)");
+    }
+
+    @Test
+    void etagIsTheSharedVersionTokenInEveryLocale() throws InvalidProtocolBufferException {
+        // The token REST sends for the same value (SynapseRestAutoConfigurationTest), MVC's format notwithstanding.
+        RecordWriter writer = MessageMapping
+                .writer(StampedDoc.getDescriptor(), ResolvableType.forClass(Stamped.class), List.of(),
+                        ComponentRefs.resolve(Stamped::modified));
+        Locale saved = Locale.getDefault();
+        try {
+            for (Locale locale : List.of(Locale.US, Locale.GERMANY, Locale.forLanguageTag("ar-EG"))) {
+                Locale.setDefault(locale);
+                StampedDoc written = StampedDoc
+                        .parseFrom(writer
+                                .write(new Stamped("d", LocalDateTime.of(2026, 11, 7, 15, 4, 5)))
+                                .toByteString());
+                assertThat(written.getEtag()).as(locale.toLanguageTag()).isEqualTo("\"2026-11-07T15:04:05\"");
+                assertThat(written.getModified()).isEqualTo("2026-11-07T15:04:05");
+            }
+        } finally {
+            Locale.setDefault(saved);
+        }
+    }
+
+    @Test
+    void etagInAOneofIsRejected() {
+        assertThatExceptionOfType(MappingException.class)
+                .isThrownBy(() -> MessageMapping
+                        .writer(OneofEtagDoc.getDescriptor(), ResolvableType.forClass(DocView.class), List.of(),
+                                ComponentRefs.resolve(DocView::version)))
+                .satisfies(e -> {
+                    assertThat(e.problem())
+                            .isEqualTo(".etag(...) writes the response's string field etag, but "
+                                    + "synapse.fixture.v1.OneofEtagDoc.etag is part of oneof pick");
+                    assertThat(e.action())
+                            .isEqualTo("Move synapse.fixture.v1.OneofEtagDoc.etag out of oneof pick, or remove "
+                                    + ".etag(...).");
+                });
+    }
+
+    @Test
+    void etagNeedsAStringResponseFieldThatNoComponentWrites() {
+        ResolvedComponent version = ComponentRefs.resolve(DocView::version);
+        assertThatExceptionOfType(MappingException.class)
+                .isThrownBy(() -> MessageMapping
+                        .writer(PlainDoc.getDescriptor(),
+                                ResolvableType.forClass(DocView.class), List.of(), version))
+                .satisfies(e -> assertThat(e.problem())
+                        .isEqualTo(
+                                ".etag(...) writes the response's string field etag, but synapse.fixture.v1.PlainDoc "
+                                        + "has no string field etag"));
+        assertThatExceptionOfType(MappingException.class)
+                .isThrownBy(() -> MessageMapping
+                        .writer(Doc.getDescriptor(), ResolvableType.forClass(Tagged.class),
+                                List.of(), ComponentRefs.resolve(Tagged::version)))
+                .satisfies(e -> {
+                    assertThat(e.problem())
+                            .isEqualTo("Tagged.etag and .etag(...) both write synapse.fixture.v1.Doc.etag");
+                    assertThat(e.action()).isEqualTo("Map Tagged.etag to another field, or remove .etag(...).");
+                });
+        assertThatExceptionOfType(MappingException.class)
+                .isThrownBy(() -> MessageMapping
+                        .writer(NumberDoc.getDescriptor(),
+                                ResolvableType.forClass(DocView.class), List.of(), version))
+                .satisfies(e -> {
+                    assertThat(e.problem())
+                            .isEqualTo(".etag(...) writes the response's string field etag, but "
+                                    + "synapse.fixture.v1.NumberDoc.etag is int64, not string");
+                    assertThat(e.action())
+                            .isEqualTo("Declare synapse.fixture.v1.NumberDoc.etag as string, or remove .etag(...).");
+                });
+    }
+
+    /** A doc versioned by a {@code LocalDateTime}, written as its ISO string and as the etag. */
+    record Stamped(String id, LocalDateTime modified) {
+    }
+
+    private static <T> RecordWriter docs(ComponentRef<T, ?> etag) {
+        Class<?> type = ComponentRefs.resolve(etag).recordType();
+        return MessageMapping
+                .writer(Doc.getDescriptor(), ResolvableType.forClass(type), List.of(),
+                        ComponentRefs.resolve(etag));
+    }
+
+    /** {@code synapse.fixture.v1.Doc} without its etag, which {@code .etag(DocView::version)} fills. */
+    record DocView(String id, String text, long version) {
+    }
+
+    /** A doc whose etag is its optional label. */
+    record Labeled(String id, String text, long version, @Nullable String label) {
+    }
+
+    /** A doc with a component of its own named {@code etag}. */
+    record Tagged(String id, long version, String etag) {
     }
 
     @Test
@@ -197,6 +350,114 @@ class RecordWriterTest {
         assertThat(ListTagsResponse.parseFrom(written.toByteString()))
                 .isEqualTo(ListTagsResponse.newBuilder().addTags("classic").addTags("space").build());
         assertThat(writer.write(null)).isEqualTo(DynamicMessage.getDefaultInstance(ListTagsResponse.getDescriptor()));
+    }
+
+    @Test
+    void pageResultWritesItemsTokenHasNextAndTotal() throws InvalidProtocolBufferException {
+        RecordWriter writer = MessageMapping
+                .writer(ListPagedBooksResponse.getDescriptor(),
+                        ResolvableType.forClassWithGenerics(PageResult.class, Book.class), List.of());
+        PageResult<Book> page = PageResult
+                .ofCursor(List.of(new Book("b1", "Dune", 1965), new Book("b2", "Solaris", 1961)), "raw-cursor")
+                .withTotal(42);
+
+        // The page's own nextCursor is the operation's raw cursor: the caller passes the token that wraps it.
+        ListPagedBooksResponse written = ListPagedBooksResponse
+                .parseFrom(writer.writePage(page, "wrapped-token").toByteString());
+
+        assertThat(writer.pages()).isTrue();
+        assertThat(written)
+                .isEqualTo(ListPagedBooksResponse
+                        .newBuilder()
+                        .addBooks(PagedBook.newBuilder().setId("b1").setTitle("Dune").setPublishedYear(1965))
+                        .addBooks(PagedBook.newBuilder().setId("b2").setTitle("Solaris").setPublishedYear(1961))
+                        .setNextPageToken("wrapped-token")
+                        .setHasNext(true)
+                        .setTotalSize(42)
+                        .build());
+        assertThat(written.toString()).doesNotContain("raw-cursor");
+    }
+
+    @Test
+    void hasNextIsThePagesOwnWhateverTheToken() throws InvalidProtocolBufferException {
+        RecordWriter writer = MessageMapping
+                .writer(ListPagedBooksResponse.getDescriptor(),
+                        ResolvableType.forClassWithGenerics(PageResult.class, Book.class), List.of());
+
+        // An offset page past the cap: another page follows, but no token reaches it (REST: hasNext, no Link).
+        ListPagedBooksResponse capped = ListPagedBooksResponse
+                .parseFrom(writer
+                        .writePage(PageResult.of(List.of(new Book("b1", "Dune", 1965)), true), null)
+                        .toByteString());
+
+        assertThat(capped.getHasNext()).isTrue();
+        assertThat(capped.getNextPageToken()).isEmpty();
+    }
+
+    @Test
+    void lastPageAndUnknownTotalLeaveTheirFieldsUnset() throws InvalidProtocolBufferException {
+        RecordWriter writer = MessageMapping
+                .writer(ListPagedBooksResponse.getDescriptor(),
+                        ResolvableType.forClassWithGenerics(PageResult.class, Book.class), List.of());
+
+        ListPagedBooksResponse last = ListPagedBooksResponse
+                .parseFrom(writer.writePage(PageResult.ofCursor(List.of(), null), null).toByteString());
+
+        assertThat(last.getBooksList()).isEmpty();
+        assertThat(last.getNextPageToken()).isEmpty();
+        assertThat(last.getHasNext()).isFalse();
+        assertThat(last.hasTotalSize()).isFalse();
+        assertThat(writer.writePage(null, null))
+                .isEqualTo(DynamicMessage.getDefaultInstance(ListPagedBooksResponse.getDescriptor()));
+    }
+
+    @Test
+    void responseWithoutTotalSizeDropsTheTotal() throws InvalidProtocolBufferException {
+        RecordWriter writer = MessageMapping
+                .writer(PageWithoutTotalResponse.getDescriptor(),
+                        ResolvableType.forClassWithGenerics(PageResult.class, Book.class), List.of());
+
+        PageWithoutTotalResponse written = PageWithoutTotalResponse
+                .parseFrom(writer
+                        .writePage(PageResult.ofCursor(List.of(new Book("b1", "Dune", 1965)), null).withTotal(1), "t")
+                        .toByteString());
+
+        assertThat(written.getBooksCount()).isOne();
+        assertThat(written.getNextPageToken()).isEqualTo("t");
+    }
+
+    @Test
+    void totalBeyondAnInt32TotalSizeIsUnknownAndAnInt64OneCarriesIt() throws InvalidProtocolBufferException {
+        RecordWriter int32 = MessageMapping
+                .writer(ListPagedBooksResponse.getDescriptor(),
+                        ResolvableType.forClassWithGenerics(PageResult.class, Book.class), List.of());
+        RecordWriter int64 = MessageMapping
+                .writer(Int64TotalResponse.getDescriptor(),
+                        ResolvableType.forClassWithGenerics(PageResult.class, Book.class), List.of());
+        PageResult<Book> huge = PageResult.of(List.<Book>of(), false).withTotal(1L << 40);
+
+        // The call succeeds, as over REST; an int32 field can't carry the total, so it is left unknown.
+        assertThat(ListPagedBooksResponse.parseFrom(int32.writePage(huge, null).toByteString()).hasTotalSize())
+                .isFalse();
+        assertThat(Int64TotalResponse.parseFrom(int64.writePage(huge, null).toByteString()).getTotalSize())
+                .isEqualTo(1L << 40);
+    }
+
+    @Test
+    void pageIsNeverWrittenAsARecord() {
+        RecordWriter pages = MessageMapping
+                .writer(ListPagedBooksResponse.getDescriptor(),
+                        ResolvableType.forClassWithGenerics(PageResult.class, Book.class), List.of());
+        RecordWriter items = MessageMapping
+                .writer(Item.getDescriptor(), ResolvableType.forClass(ItemRec.class), itemOverrides());
+
+        assertThatIllegalStateException()
+                .isThrownBy(() -> pages.write(PageResult.ofCursor(List.of(), "raw-cursor")))
+                .withMessage("A page is written with writePage, which takes the wrapped cursor");
+        assertThatIllegalStateException()
+                .isThrownBy(() -> items.writePage(PageResult.of(List.of(), false), null))
+                .withMessage("This writer doesn't write pages");
+        assertThat(items.pages()).isFalse();
     }
 
     @Test
@@ -380,5 +641,9 @@ class RecordWriterTest {
     }
 
     record Unsigned(int uint32Value, long fixed32Value, long uint64Value) {
+    }
+
+    /** {@code paging.proto}'s {@code PagedBook}. */
+    record Book(String id, String title, int publishedYear) {
     }
 }

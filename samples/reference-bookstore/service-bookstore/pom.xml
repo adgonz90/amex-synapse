@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    The bootable service: the operations of the bookstore, served over REST and gRPC from the same beans, on the books
+    store of data-books. It inherits synapse-parent through ../pom.xml, so no dependency below has a version.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse.samples</groupId>
+        <artifactId>reference-bookstore</artifactId>
+        <version>2.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>service-bookstore</artifactId>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Sample: the bootable reference bookstore, over REST and gRPC. Not published.</description>
+
+    <properties>
+        <!-- spring-boot:run runs the local environment (application-local.yaml); -Dspring-boot.run.profiles=<env>
+             picks another. It runs this module alone, so it needs contract-bookstore and data-books installed: in a
+             service of your own they are; this sample skips install, so run it with java -jar. -->
+        <spring-boot.run.profiles>local</spring-boot.run.profiles>
+        <!-- The OpenTelemetry Java agent that the build copies to target/otel (the otel-agent execution below). Spring
+             Boot doesn't manage its version. -->
+        <opentelemetry-javaagent.version>2.33.1</opentelemetry-javaagent.version>
+        <!-- The agent jar's SHA-256, which the otel-agent-checksum execution checks: the same value as Maven Central's
+             opentelemetry-javaagent-2.33.1.jar.sha256 and as the opentelemetry-javaagent.jar of the v2.33.1 GitHub
+             release. Change it together with the version. -->
+        <opentelemetry-javaagent.sha256>e43a270df53c6f423e0ab157be9c27ccc01d5dc3232e162fe54777573db2f149</opentelemetry-javaagent.sha256>
+        <!-- Where the build copies the agent. -->
+        <otel-agent.jar>${project.build.directory}/otel/opentelemetry-javaagent.jar</otel-agent.jar>
+    </properties>
+
+    <dependencies>
+        <!-- The service's own contract: the records the operations take and return, the error codes, and the classes
+             generated from bookstore.proto. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse.samples</groupId>
+            <artifactId>contract-bookstore</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- The books store: its entity, repository, migrations and settings. It brings JPA and PostgreSQL. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse.samples</groupId>
+            <artifactId>data-books</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- The REST plugin: Spring MVC on Tomcat (port 8080), the Synapse edge and the operation pipeline
+             (synapse-core). -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-api-rest</artifactId>
+        </dependency>
+        <!-- The OpenAPI document of the REST routes, at /v3/api-docs. It is off unless springdoc.api-docs.enabled is
+             true, which only application-local.yaml sets. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-api-rest-openapi</artifactId>
+        </dependency>
+        <!-- The gRPC plugin: Spring Boot's gRPC server on Netty (port 9090), the Synapse edge, and the protobuf and
+             grpc-java runtime with the reflection and health services. Both plugins call the same operations. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-api-grpc</artifactId>
+        </dependency>
+        <!-- The store's access and database. data-books brings both already; the service declares them too because
+             its operations use JPA (@Transactional on the store) and its tests need PostgreSQL, so a change to the
+             data module can't take them away silently. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-data-postgres</artifactId>
+        </dependency>
+        <!-- Prescriptive logging: synchronous Log4j2 with ECS JSON on the console. Logback must be absent, hence the
+             spring-boot-starter-logging exclusions below. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-logging-log4j2</artifactId>
+        </dependency>
+        <!-- Synapse carries the correlation id and context attributes as tracing baggage, so tracing is required. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- /actuator/health with the books store's indicator (db/books), the readiness group at /health, and Boot's
+             grpc.health.v1.Health service on the gRPC port. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- The REST slice (@SynapseRestTest). -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-test-rest</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The gRPC slice (@SynapseGrpcTest). -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-test-grpc</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- @StoreConnection and SynapseContainers for the integration tests, which run the store on PostgreSQL. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-test-data</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- An executable jar: java -jar target/service-bookstore-<version>.jar. synapse-parent configures the
+                 executions: repackage, and, with -Paot (Spring AOT processing is opt-in), process-aot, which runs in
+                 the build environment (application-build.yaml, data-books' config-build.yaml) and puts the generated
+                 code in the jar. java -Dspring.aot.enabled=true -jar runs that code instead of the configuration
+                 classes. With -Pimage, synapse-parent's image profile also binds build-image-no-fork here, the module
+                 that declares this plugin: ./mvnw -Pimage -pl samples/reference-bookstore/service-bookstore -am
+                 package builds the image service-bookstore:<version> (docs/modules/ROOT/pages/parent.adoc,
+                 Images). -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- The OpenTelemetry Java agent recipe (docs/modules/ROOT/pages/opentelemetry-agent.adoc): copies the agent
+                 jar to target/otel/opentelemetry-javaagent.jar, for java -javaagent:<it> -jar ..., spring-boot:run
+                 with -Potel-agent (below) and BookstoreAgentIT. It runs in generate-test-resources, in every build:
+                 before the tests, so that BookstoreAgentIT always runs, and before test-compile, the phase that
+                 spring-boot:run builds to, so that -Potel-agent spring-boot:run works on a fresh checkout. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>otel-agent</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>io.opentelemetry.javaagent</groupId>
+                                    <artifactId>opentelemetry-javaagent</artifactId>
+                                    <version>${opentelemetry-javaagent.version}</version>
+                                    <outputDirectory>${project.build.directory}/otel</outputDirectory>
+                                    <destFileName>opentelemetry-javaagent.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Fails the build when the copied agent jar isn't the one pinned by opentelemetry-javaagent.sha256, in the
+                 phase after the copy: the JVM runs a -javaagent with full rights, so a different jar must never start.
+                 Maven's own repository checksum policy only warns by default. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>otel-agent-checksum</id>
+                        <phase>process-test-resources</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireFileChecksum>
+                                    <file>${otel-agent.jar}</file>
+                                    <checksum>${opentelemetry-javaagent.sha256}</checksum>
+                                    <type>sha256</type>
+                                    <message>The OpenTelemetry Java agent jar (${otel-agent.jar}) doesn't have the SHA-256 in opentelemetry-javaagent.sha256. Don't run it: check where it was downloaded from, or set the checksum of the version you meant to use.</message>
+                                </requireFileChecksum>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Runs the *IT classes in the integration-test phase, after package has built the jar (the unit tests,
+                 *Test, run in surefire). Most need Docker, for the PostgreSQL container. BookstoreAotIT and
+                 BookstoreExitOnRefreshIT start the packaged jar itself, whose path they get here. BookstoreAotIT
+                 needs the AOT-generated code, so it runs only with -Paot (the aot profile below). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <bookstore.jar>${project.build.directory}/${project.build.finalName}.jar</bookstore.jar>
+                        <bookstore.otel-agent>${otel-agent.jar}</bookstore.otel-agent>
+                    </systemPropertyVariables>
+                    <excludes>
+                        <exclude>**/BookstoreAotIT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- spring-boot:run under the OpenTelemetry Java agent, with the agent jar that the otel-agent execution copied
+             (spring-boot:run builds to test-compile, after the copy) and every agent exporter off. To export, pass
+             -Dspring-boot.run.jvmArguments=... with your otel.*.exporter values: the system properties here win over
+             OTEL_* variables. BookstoreAgentIT starts the jar with the same options. Not in AOT mode: see
+             OpenTelemetryAgentAotConfiguration. -->
+
+        <profile>
+            <id>otel-agent</id>
+            <properties>
+                <spring-boot.run.jvmArguments>-javaagent:${otel-agent.jar} -Dotel.service.name=bookstore -Dotel.traces.exporter=none -Dotel.metrics.exporter=none -Dotel.logs.exporter=none</spring-boot.run.jvmArguments>
+            </properties>
+        </profile>
+        <!-- With synapse-parent's aot profile (-Paot), which runs process-aot, failsafe runs BookstoreAotIT too. -->
+        <profile>
+            <id>aot</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <excludes combine.self="override"/>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

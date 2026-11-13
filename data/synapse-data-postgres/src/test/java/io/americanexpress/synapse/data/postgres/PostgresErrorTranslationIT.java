@@ -33,22 +33,29 @@ import jakarta.persistence.LockModeType;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.orm.jpa.EntityManagerFactoryUtils;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.CommandOperation;
+import io.americanexpress.synapse.data.DataErrors;
 import io.americanexpress.synapse.data.postgres.fixture.books.Book;
 import io.americanexpress.synapse.data.postgres.fixture.books.BookRepository;
 import io.americanexpress.synapse.data.postgres.fixture.legacy.LegacyItem;
@@ -65,9 +72,12 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * service: the books store (JPA) and the legacy store (JDBC), each on its own container. Each test names the SQLState
  * PostgreSQL reports. A unique violation is {@code ALREADY_EXISTS}, an optimistic-lock conflict {@code STALE_VERSION}
  * and a statement timeout {@code DEADLINE_EXCEEDED}. Lock timeouts, serialization failures and deadlocks are
- * {@code INTERNAL} today: whether they get a retryable code is an open question for the maintainers.
+ * {@code INTERNAL} today: whether they get a retryable code is an open question for the maintainers. A connection
+ * that the server ends in the middle of a transaction ({@code pg_terminate_backend}) is {@code UNAVAILABLE}, though the
+ * rollback fails too; a deterministic failure that makes Hikari close the connection (0A000) stays {@code INTERNAL}.
  */
 @SpringBootTest(classes = PostgresTestApplication.class)
+@ExtendWith(OutputCaptureExtension.class)
 @ActiveProfiles("test")
 @Import({PostgresErrorTranslationIT.AddTwoCopiesOperation.class,
         PostgresErrorTranslationIT.RenameBothCopiesOperation.class, PostgresErrorTranslationIT.AddItemOperation.class,
@@ -324,6 +334,224 @@ class PostgresErrorTranslationIT {
         } finally {
             delete(first);
             delete(second);
+        }
+    }
+
+    /**
+     * The server ends the operation's JDBC connection after its INSERT; the next statement fails (57P01 or an I/O
+     * error, 08006), and so does the rollback, on a connection the pool has closed. The caller gets
+     * {@code UNAVAILABLE}, without detail, the server logs the failure with its cause, and nothing is written.
+     */
+    @Test
+    void jdbcConnectionLostMidTransactionIsUnavailable(CapturedOutput output) {
+        String name = "lost-" + UUID.randomUUID();
+        SynapseException failure = failure(() -> legacyScript
+                .execute(List
+                        .of(jdbc -> insert(jdbc, name), jdbc -> terminate(LEGACY, pid(jdbc)),
+                                jdbc -> jdbc.sql("SELECT 1").query(Integer.class).single())));
+
+        assertUnavailable(failure, output);
+        assertThat(count(name)).isZero();
+    }
+
+    /**
+     * The connection is lost when the commit is sent. The store's transaction manager can't know whether the database
+     * committed, so the failure is {@code COMMIT_OUTCOME_UNKNOWN} ({@code INTERNAL}, which no caller retries). Here
+     * the session had ended before the COMMIT arrived, so nothing was written: the code over-reports this case, which
+     * the client can't tell apart from a lost reply ({@code PostgresCommitOutcomeIT}).
+     */
+    @Test
+    void jdbcConnectionLostAtCommitHasAnUnknownOutcome(CapturedOutput output) {
+        String name = "lost-" + UUID.randomUUID();
+        SynapseException failure = failure(() -> legacyScript
+                .execute(List.of(jdbc -> insert(jdbc, name), jdbc -> terminate(LEGACY, pid(jdbc)))));
+
+        assertCommitOutcomeUnknown(failure, output);
+        assertThat(count(name)).isZero();
+    }
+
+    /** The same on a JPA store, through a repository: its query fails, then the rollback. */
+    @Test
+    void jpaConnectionLostMidTransactionIsUnavailable(CapturedOutput output) {
+        String isbn = "978-0-00-000008-0";
+        SynapseException failure = failure(() -> booksScript
+                .execute(List
+                        .of(entityManager -> entityManager.persist(new Book("Lost", isbn)), EntityManager::flush,
+                                entityManager -> terminate(BOOKS, pid(entityManager)),
+                                entityManager -> bookRepository.count())));
+
+        assertUnavailable(failure, output);
+        assertThat(books.sql("SELECT COUNT(*) FROM book WHERE isbn = ?").param(isbn).query(Integer.class).single())
+                .isZero();
+    }
+
+    /**
+     * On a JPA store whose book is still unflushed, the transaction manager flushes before it commits. The flush is the
+     * statement that finds the connection lost, before any COMMIT is sent, so the failure is {@code UNAVAILABLE}. The
+     * book is persisted after the session ended: Hibernate flushes pending changes before a native query, so persisting
+     * it before {@code pid} would flush it there.
+     */
+    @Test
+    void jpaConnectionLostInTheFlushBeforeTheCommitIsUnavailable(CapturedOutput output) {
+        String isbn = "978-0-00-000009-0";
+        List<Integer> completions = new ArrayList<>();
+        SynapseException failure = failure(() -> booksScript
+                .execute(List
+                        .of(entityManager -> TransactionSynchronizationManager
+                                .registerSynchronization(new TransactionSynchronization() {
+                                    @Override
+                                    public void afterCompletion(int status) {
+                                        completions.add(status);
+                                    }
+                                }), entityManager -> terminate(BOOKS, pid(entityManager)),
+                                entityManager -> entityManager.persist(new Book("Lost in the flush", isbn)))));
+
+        assertUnavailable(failure, output);
+        assertThat(books.sql("SELECT COUNT(*) FROM book WHERE isbn = ?").param(isbn).query(Integer.class).single())
+                .isZero();
+        // Hibernate ended its transaction in the failed flush, so Spring completes it as rolled back, its true
+        // outcome, and not with an unknown status after a second, failing rollback.
+        assertThat(completions).containsExactly(TransactionSynchronization.STATUS_ROLLED_BACK);
+    }
+
+    /**
+     * The same on a JPA store whose book was flushed already: the commit itself finds the connection lost (Hibernate's
+     * connection commit, not its flush), so the outcome is unknown.
+     */
+    @Test
+    void jpaConnectionLostAtCommitHasAnUnknownOutcome(CapturedOutput output) {
+        String isbn = "978-0-00-000011-0";
+        SynapseException failure = failure(() -> booksScript
+                .execute(List
+                        .of(entityManager -> entityManager.persist(new Book("Lost at commit", isbn)),
+                                EntityManager::flush, entityManager -> terminate(BOOKS, pid(entityManager)))));
+
+        assertCommitOutcomeUnknown(failure, output);
+        assertThat(books.sql("SELECT COUNT(*) FROM book WHERE isbn = ?").param(isbn).query(Integer.class).single())
+                .isZero();
+    }
+
+    /**
+     * The failure is {@code COMMIT_OUTCOME_UNKNOWN} ({@code INTERNAL}) with only its template message, and the
+     * pipeline's failure line is an ERROR whose stack trace says the outcome is unknown and shows the lost connection.
+     */
+    private static void assertCommitOutcomeUnknown(SynapseException failure, CapturedOutput output) {
+        assertThat(failure.code()).as(() -> chain(failure)).isEqualTo(DataErrors.COMMIT_OUTCOME_UNKNOWN.code());
+        assertThat(failure.category()).isEqualTo(ErrorCategory.INTERNAL);
+        assertThat(failure.getMessage()).isEqualTo("The outcome of the request is unknown");
+        assertThat(failure.args()).isEmpty();
+        String out = output.getOut();
+        int failed = out
+                .lastIndexOf("failed with COMMIT_OUTCOME_UNKNOWN (INTERNAL): The outcome of the request is unknown");
+        assertThat(failed).as("the failure line").isNotNegative();
+        assertThat(out.substring(out.lastIndexOf('\n', failed) + 1, failed)).as("the failure line").contains(" ERROR ");
+        assertThat(out.substring(failed))
+                .as("the failure line's stack trace")
+                .contains("whether it committed is unknown", "terminating connection due to administrator command");
+    }
+
+    /**
+     * {@code FOR UPDATE} with an aggregate is PostgreSQL's 0A000 (feature_not_supported), a state Hikari treats as fatal:
+     * it closes the connection, so the rollback fails too. The connection wasn't lost, so the failure stays
+     * {@code INTERNAL}, not a retryable {@code UNAVAILABLE}.
+     */
+    @Test
+    void jdbcFeatureNotSupportedInATransactionIsInternal() {
+        String name = "unsupported-" + UUID.randomUUID();
+        SynapseException failure = failure(() -> legacyScript
+                .execute(List
+                        .of(jdbc -> insert(jdbc, name),
+                                jdbc -> jdbc
+                                        .sql("SELECT COUNT(*) FROM legacy_item FOR UPDATE")
+                                        .query(Long.class)
+                                        .single())));
+
+        assertThat(failure.code()).as(() -> chain(failure)).isEqualTo(SynapseErrors.INTERNAL.code());
+        assertThat(count(name)).isZero();
+    }
+
+    /** The same through a JPA store's EntityManager. */
+    @Test
+    void jpaFeatureNotSupportedInATransactionIsInternal() {
+        String isbn = "978-0-00-000010-0";
+        SynapseException failure = failure(() -> booksScript
+                .execute(List
+                        .of(entityManager -> entityManager.persist(new Book("Unsupported", isbn)), EntityManager::flush,
+                                entityManager -> entityManager
+                                        .createNativeQuery("SELECT COUNT(*) FROM book FOR UPDATE")
+                                        .getSingleResult())));
+
+        assertThat(failure.code()).as(() -> chain(failure)).isEqualTo(SynapseErrors.INTERNAL.code());
+        assertThat(books.sql("SELECT COUNT(*) FROM book WHERE isbn = ?").param(isbn).query(Integer.class).single())
+                .isZero();
+    }
+
+    /**
+     * The failure is {@code UNAVAILABLE} with only its template message, and both failures are logged: the pipeline's
+     * failure line is a WARN with the thrown exception's stack trace, and the lost connection is in it or in Spring's
+     * own line for the failure that the rollback replaced.
+     */
+    private static void assertUnavailable(SynapseException failure, CapturedOutput output) {
+        assertThat(failure.code()).as(() -> chain(failure)).isEqualTo(SynapseErrors.UNAVAILABLE.code());
+        assertThat(failure.category()).isEqualTo(ErrorCategory.UNAVAILABLE);
+        assertThat(failure.getMessage()).isEqualTo("The service is unavailable");
+        assertThat(failure.args()).isEmpty();
+        String out = output.getOut();
+        int failed = out.lastIndexOf("failed with UNAVAILABLE (UNAVAILABLE): The service is unavailable");
+        assertThat(failed).as("the failure line").isNotNegative();
+        assertThat(out.substring(out.lastIndexOf('\n', failed) + 1, failed)).as("the failure line").contains(" WARN ");
+        String logged = out.substring(failed);
+        assertThat(logged)
+                .as("the failure line's stack trace")
+                .contains(Objects.requireNonNull(failure.getCause(), "cause").getClass().getName());
+        assertThat(out)
+                .as("the lost connection, logged")
+                .contains("terminating connection due to administrator command");
+    }
+
+    /** The failure's causes, application exceptions and suppressed exceptions, for an assertion's description. */
+    private static String chain(Throwable failure) {
+        StringBuilder chain = new StringBuilder();
+        int depth = 0;
+        for (Throwable current = failure; current != null && depth < 20; current = current.getCause(), depth++) {
+            chain.append("\n  ").append(current.getClass().getName()).append(": ").append(current.getMessage());
+            if (current instanceof SQLException sql) {
+                chain.append(" [SQLState ").append(sql.getSQLState()).append(']');
+            }
+            Throwable application = current instanceof TransactionSystemException system
+                    ? system.getApplicationException()
+                    : null;
+            if (application != null) {
+                chain.append("\n    application exception: ").append(chain(application));
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                chain.append("\n    suppressed: ").append(chain(suppressed));
+            }
+        }
+        return chain.toString();
+    }
+
+    private static void insert(JdbcClient jdbc, String name) {
+        jdbc.sql("INSERT INTO legacy_item (version, name) VALUES (0, ?)").param(name).update();
+    }
+
+    private static int pid(JdbcClient jdbc) {
+        return jdbc.sql("SELECT pg_backend_pid()").query(Integer.class).single();
+    }
+
+    private static int pid(EntityManager entityManager) {
+        return ((Number) entityManager.createNativeQuery("SELECT pg_backend_pid()").getSingleResult()).intValue();
+    }
+
+    /** Ends a session from another connection, as an administrator or a failover would, and waits until it ends. */
+    private static void terminate(PostgreSQLContainer container, int pid) {
+        try (Connection admin = connection(container);
+                Statement statement = admin.createStatement();
+                ResultSet ended = statement.executeQuery("SELECT pg_terminate_backend(" + pid + ", 10000)")) {
+            assertThat(ended.next()).isTrue();
+            assertThat(ended.getBoolean(1)).as("session %d ended", pid).isTrue();
+        } catch (SQLException ex) {
+            throw new IllegalStateException(ex);
         }
     }
 

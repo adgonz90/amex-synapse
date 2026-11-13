@@ -24,9 +24,11 @@ import jakarta.validation.constraints.NotBlank;
 import io.micrometer.observation.tck.TestObservationRegistry;
 import io.micrometer.observation.tck.TestObservationRegistryAssert;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.Ordered;
 
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorCategory;
+import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.operation.BusinessOperation;
@@ -137,6 +139,35 @@ class SynapseOperationsTest {
         assertThatSynapseException(() -> invoker.invoke(new BoomOperation(), "x"))
                 .hasCode(SynapseErrors.UNAVAILABLE)
                 .hasCategory(ErrorCategory.UNAVAILABLE);
+    }
+
+    /**
+     * Translators are ordered as the application orders their beans: an {@code Ordered} translator (as Synapse's data
+     * translators are) is tried before one that declares no order, even when that one was added first.
+     */
+    @Test
+    void invokerOrdersTranslatorsAsTheApplicationDoes() {
+        OperationInvoker invoker = SynapseOperations
+                .with()
+                .translator(failure -> new SynapseException(SynapseErrors.CONFLICT))
+                .translator(new OrderedTranslator())
+                .invoker();
+
+        assertThatSynapseException(() -> invoker.invoke(new BoomOperation(), "x")).hasCode(SynapseErrors.UNAVAILABLE);
+    }
+
+    /** Translates everything into {@code UNAVAILABLE}, at the data translator's order. */
+    static class OrderedTranslator implements ExceptionTranslator, Ordered {
+
+        @Override
+        public SynapseException translate(Throwable exception) {
+            return new SynapseException(SynapseErrors.UNAVAILABLE, exception);
+        }
+
+        @Override
+        public int getOrder() {
+            return Ordered.LOWEST_PRECEDENCE - 100;
+        }
     }
 
     /** Fails the way a collaborator does with method validation: a {@code ConstraintViolationException}. */

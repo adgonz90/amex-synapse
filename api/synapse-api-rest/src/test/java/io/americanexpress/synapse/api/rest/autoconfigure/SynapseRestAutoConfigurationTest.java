@@ -17,10 +17,13 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -101,10 +104,6 @@ import io.americanexpress.synapse.api.rest.internal.error.ClientErrorFilter;
 import io.americanexpress.synapse.api.rest.internal.error.ProblemTitles;
 import io.americanexpress.synapse.api.rest.internal.error.ProblemWriter;
 import io.americanexpress.synapse.api.rest.internal.error.RestErrorStatuses;
-import io.americanexpress.synapse.api.rest.internal.paging.AesGcmCursorCodec;
-import io.americanexpress.synapse.api.rest.internal.paging.CursorKeys;
-import io.americanexpress.synapse.api.rest.internal.paging.InputDigest;
-import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.ExposureInventory;
 import io.americanexpress.synapse.api.rest.internal.route.MethodNotAllowedHandler;
@@ -113,27 +112,38 @@ import io.americanexpress.synapse.api.rest.internal.route.OperationHandler;
 import io.americanexpress.synapse.api.rest.internal.route.ResponseWriter;
 import io.americanexpress.synapse.api.rest.internal.route.RouteCompiler;
 import io.americanexpress.synapse.api.rest.internal.version.SynapseApiVersioning;
-import io.americanexpress.synapse.api.rest.paging.CursorCodec;
-import io.americanexpress.synapse.api.rest.paging.CursorScope;
-import io.americanexpress.synapse.api.rest.paging.InvalidCursorException;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.paging.AesGcmCursorCodec;
+import io.americanexpress.synapse.core.internal.paging.CursorKeys;
+import io.americanexpress.synapse.core.internal.paging.InputDigest;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
+import io.americanexpress.synapse.core.paging.CursorCodec;
+import io.americanexpress.synapse.core.paging.CursorScope;
+import io.americanexpress.synapse.core.paging.InvalidCursorException;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.test.time.MutableClock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 class SynapseRestAutoConfigurationTest {
+
+    /** A valid cursor key: core builds the codec, and checks its keys, in every context. */
+    private static final String PREVIOUS_KEY = Base64.getEncoder().encodeToString(new byte[32]);
 
     private final WebApplicationContextRunner webRunner = new WebApplicationContextRunner()
             .withConfiguration(AutoConfigurations
@@ -206,15 +216,17 @@ class SynapseRestAutoConfigurationTest {
     void bindsPagingProperties() {
         webRunner
                 .withPropertyValues("synapse.api.rest.paging.parameters.size=page_size",
-                        "synapse.api.rest.paging.max-offset=500", "synapse.api.rest.paging.cursor.max-age=1d",
-                        "synapse.api.rest.paging.cursor.previous-keys[0]=b2xkb2xkb2xk")
+                        "synapse.paging.max-offset=500", "synapse.paging.cursor.max-age=1d",
+                        "synapse.paging.cursor.previous-keys[0]=" + PREVIOUS_KEY)
                 .run(context -> {
                     SynapseRestProperties.Paging paging = context.getBean(SynapseRestProperties.class).paging();
                     assertThat(paging.parameters().size()).isEqualTo("page_size");
                     assertThat(paging.parameters().cursor()).isEqualTo("cursor");
-                    assertThat(paging.maxOffset()).isEqualTo(500);
-                    assertThat(paging.cursor().maxAge()).isEqualTo(Duration.ofDays(1));
-                    assertThat(paging.cursor().previousKeys()).containsExactly("b2xkb2xkb2xk");
+                    // The offset cap and the cursor settings are core's, beside the REST plugin's parameter names.
+                    SynapsePagingProperties core = context.getBean(SynapsePagingProperties.class);
+                    assertThat(core.maxOffset()).isEqualTo(500);
+                    assertThat(core.cursor().maxAge()).isEqualTo(Duration.ofDays(1));
+                    assertThat(core.cursor().previousKeys()).containsExactly(PREVIOUS_KEY);
                 });
     }
 
@@ -509,10 +521,13 @@ class SynapseRestAutoConfigurationTest {
                     .doesNotHaveBean(PagingSettings.class)
                     .doesNotHaveBean(RequestBinder.class)
                     .doesNotHaveBean(ResponseWriter.class)
-                    .doesNotHaveBean(InputDigest.class)
                     .doesNotHaveBean(ETagValues.class)
-                    .doesNotHaveBean(PageCursors.class)
                     .doesNotHaveBean(ExposureInventory.class);
+            // The cursor beans are core's, whatever the plugins.
+            assertThat(context)
+                    .hasBean("synapseCursorCodec")
+                    .hasBean("synapseInputDigest")
+                    .hasBean("synapsePageCursors");
         });
     }
 
@@ -755,14 +770,14 @@ class SynapseRestAutoConfigurationTest {
         InputDigest digest = new InputDigest();
         PageCursors cursors = new PageCursors(new AesGcmCursorCodec(CursorKeys
                 .from(
-                        new SynapseRestProperties.Paging.Cursor(null, List.of(), null), new SecureRandom()),
+                        new SynapsePagingProperties.Cursor(null, List.of(), null), new SecureRandom()),
                 Clock.systemUTC(),
-                null, new SecureRandom()), digest, PagingSettings.defaults());
-        ETagValues etags = new ETagValues(conversions);
-        ResponseWriter writer = new ResponseWriter(mapper, conversions, cursors, etags);
+                null, new SecureRandom()), digest);
+        ETagValues etags = new ETagValues();
+        ResponseWriter writer = new ResponseWriter(mapper, conversions, cursors, PagingSettings.defaults(), etags);
         BindingValidator validator = new BindingValidator(PagingSettings.defaults());
         RequestBinder binder = new RequestBinder(mapper, conversions, PagingSettings.defaults());
-        RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors);
+        RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors, PagingSettings.defaults());
         ExposureInventory inventory = new ExposureInventory(new StaticListableBeanFactory()
                 .getBeanProvider(
                         ResolvableType.forClassWithGenerics(RouterFunction.class, ServerResponse.class)));
@@ -790,7 +805,49 @@ class SynapseRestAutoConfigurationTest {
     }
 
     @Test
-    void etagValuesFormatWithTheMvcConversionService() {
+    void versionTokensIgnoreMvcFormattingAndTheLocale() {
+        // The token every protocol shares: plain decimal and ISO-8601, whatever MVC's formatters, its date format and
+        // the default locale say. VersionedBooks registers a Long-to-String converter that MVC would use ("v3").
+        Locale saved = Locale.getDefault();
+        Locale.setDefault(Locale.GERMANY);
+        try {
+            routesRunner
+                    .withUserConfiguration(VersionedBooks.class)
+                    .withPropertyValues("spring.mvc.format.date=dd/MM/yyyy")
+                    .run(context -> {
+                        MockMvc mvc = MockMvcBuilders
+                                .webAppContextSetup(
+                                        context.getSourceApplicationContext(ConfigurableWebApplicationContext.class))
+                                .build();
+
+                        MockHttpServletResponse versioned = mvc
+                                .perform(get("/versioned/b1"))
+                                .andReturn()
+                                .getResponse();
+                        MockHttpServletResponse stamped = mvc.perform(get("/stamped/b1")).andReturn().getResponse();
+                        MockHttpServletResponse dated = mvc.perform(get("/dated/b1")).andReturn().getResponse();
+                        MockHttpServletResponse revised = mvc
+                                .perform(put("/dated/b1").header("If-Match", "\"2026-11-07\""))
+                                .andReturn()
+                                .getResponse();
+
+                        assertThat(versioned.getHeader("ETag")).isEqualTo("\"3\"");
+                        // MVC's default formats it "07.11.26, 15:04" here (a space, so a 500).
+                        assertThat(stamped.getStatus()).isEqualTo(200);
+                        assertThat(stamped.getHeader("ETag")).isEqualTo("\"2026-11-07T15:04:05\"");
+                        // spring.mvc.format.date would make it "07/11/2026".
+                        assertThat(dated.getHeader("ETag")).isEqualTo("\"2026-11-07\"");
+                        // And the token reads back as the same version.
+                        assertThat(revised.getStatus()).isEqualTo(200);
+                        assertThat(revised.getContentAsString()).contains("\"day\":\"2026-11-07\"");
+                    });
+        } finally {
+            Locale.setDefault(saved);
+        }
+    }
+
+    @Test
+    void etagValuesSendTheVersionTokenAnd304() {
         routesRunner.withUserConfiguration(VersionedBooks.class).run(context -> {
             MockMvc mvc = MockMvcBuilders
                     .webAppContextSetup(context.getSourceApplicationContext(ConfigurableWebApplicationContext.class))
@@ -799,9 +856,9 @@ class SynapseRestAutoConfigurationTest {
             MockHttpServletResponse response = mvc.perform(get("/versioned/b1")).andReturn().getResponse();
 
             assertThat(response.getStatus()).isEqualTo(200);
-            assertThat(response.getHeader("ETag")).isEqualTo("\"v3\"");
+            assertThat(response.getHeader("ETag")).isEqualTo("\"3\"");
             assertThat(mvc
-                    .perform(get("/versioned/b1").header("If-None-Match", "\"v3\""))
+                    .perform(get("/versioned/b1").header("If-None-Match", "\"3\""))
                     .andReturn()
                     .getResponse()
                     .getStatus()).isEqualTo(304);
@@ -813,7 +870,7 @@ class SynapseRestAutoConfigurationTest {
         routesRunner
                 .withUserConfiguration(Books.class)
                 .withPropertyValues("synapse.api.rest.paging.parameters.size=page_size",
-                        "synapse.api.rest.paging.parameters.cursor=after", "synapse.api.rest.paging.max-offset=500",
+                        "synapse.api.rest.paging.parameters.cursor=after", "synapse.paging.max-offset=500",
                         "synapse.paging.default-size=10", "synapse.paging.max-size=50")
                 .run(context -> assertThat(context.getBean(PagingSettings.class))
                         .isEqualTo(new PagingSettings("after", "offset", "page_size", "sort", 500, 10, 50)));
@@ -935,7 +992,7 @@ class SynapseRestAutoConfigurationTest {
     }
 
     @Test
-    void cursorCodecActivatesWithBindings() {
+    void cursorCodecIsCoresWithOrWithoutBindings() {
         routesRunner.withUserConfiguration(Books.class).run(context -> {
             assertThat(context).hasSingleBean(CursorCodec.class).hasBean("synapseCursorCodec");
             CursorCodec codec = context.getBean(CursorCodec.class);
@@ -944,7 +1001,11 @@ class SynapseRestAutoConfigurationTest {
             CursorScope scope = new CursorScope("get-plain-book", List.of(), "digest");
             assertThat(codec.decode(codec.encode("raw-7", scope), scope)).isEqualTo("raw-7");
         });
-        routesRunner.run(context -> assertThat(context).hasNotFailed().doesNotHaveBean(CursorCodec.class));
+        routesRunner
+                .run(context -> assertThat(context)
+                        .hasNotFailed()
+                        .hasSingleBean(CursorCodec.class)
+                        .hasBean("synapseCursorCodec"));
     }
 
     @Test
@@ -959,7 +1020,7 @@ class SynapseRestAutoConfigurationTest {
         routesRunner
                 .withUserConfiguration(Books.class)
                 .withBean(Clock.class, () -> clock)
-                .withPropertyValues("synapse.api.rest.paging.cursor.key=" + oldKey)
+                .withPropertyValues("synapse.paging.cursor.key=" + oldKey)
                 .run(context -> {
                     AesGcmCursorCodec codec = context.getBean(AesGcmCursorCodec.class);
                     assertThat(codec.keyGenerated()).isFalse();
@@ -968,9 +1029,9 @@ class SynapseRestAutoConfigurationTest {
         routesRunner
                 .withUserConfiguration(Books.class)
                 .withBean(Clock.class, () -> clock)
-                .withPropertyValues("synapse.api.rest.paging.cursor.key=" + newKey,
-                        "synapse.api.rest.paging.cursor.previous-keys[0]=" + oldKey,
-                        "synapse.api.rest.paging.cursor.max-age=1h")
+                .withPropertyValues("synapse.paging.cursor.key=" + newKey,
+                        "synapse.paging.cursor.previous-keys[0]=" + oldKey,
+                        "synapse.paging.cursor.max-age=1h")
                 .run(context -> {
                     CursorCodec codec = context.getBean(CursorCodec.class);
                     // The previous key still reads the token, until it is older than the maximum age.
@@ -1025,10 +1086,14 @@ class SynapseRestAutoConfigurationTest {
                     OperationHandler handler = (OperationHandler) Objects
                             .requireNonNull(handlerFor(context, "GET", "/books"));
                     PagedBooksRequest first = new PagedBooksRequest(null, PageQuery.first(20));
-                    assertThat(cursors.wrap(handler.route(), first, "raw")).isEqualTo("token-for-paged-books");
-                    PagedBooksRequest next = new PagedBooksRequest(null, PageQuery.ofCursor("t", 20, List.of()));
+                    assertThat(cursors.wrap(handler.route().operationName(), first, Map.of(), "raw"))
+                            .isEqualTo("token-for-paged-books");
+                    // The handler names the configured cursor parameter in the violation.
+                    MockHttpServletRequest request = new MockHttpServletRequest("GET", "/books");
+                    request.setQueryString("after=t");
+                    request.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Map.of());
                     assertThatExceptionOfType(SynapseException.class)
-                            .isThrownBy(() -> cursors.unwrap(handler.route(), next))
+                            .isThrownBy(() -> handler.handle(ServerRequest.create(request, List.of())))
                             .satisfies(e -> assertThat(e.violations())
                                     .containsExactly(new Violation("after", "is not valid for this request")));
                 });
@@ -1036,7 +1101,8 @@ class SynapseRestAutoConfigurationTest {
 
     @Test
     void generatedCursorKeyIsWarnedAtStartupOnlyWithPagedRoutes() {
-        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+        // Core logs it, once the REST plugin reports a paged route.
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.core");
         ListAppender<ILoggingEvent> lines = new ListAppender<>();
         lines.start();
         logger.addAppender(lines);
@@ -1048,7 +1114,10 @@ class SynapseRestAutoConfigurationTest {
             assertThat(lines.list)
                     .filteredOn(line -> line.getFormattedMessage().contains("cursor.key is not set"))
                     .singleElement()
-                    .satisfies(line -> assertThat(line.getLevel()).isEqualTo(Level.WARN));
+                    .satisfies(line -> {
+                        assertThat(line.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(line.getFormattedMessage()).startsWith("synapse.paging.cursor.key is not set");
+                    });
         } finally {
             logger.detachAppender(lines);
         }
@@ -1058,7 +1127,7 @@ class SynapseRestAutoConfigurationTest {
     void invalidCursorKeyFailsStartup() {
         routesRunner
                 .withUserConfiguration(Books.class)
-                .withPropertyValues("synapse.api.rest.paging.cursor.key=short")
+                .withPropertyValues("synapse.paging.cursor.key=short")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
@@ -1066,10 +1135,10 @@ class SynapseRestAutoConfigurationTest {
                             .isInstanceOfSatisfying(SynapseConfigurationException.class, failure -> {
                                 // The failure analyzer prints the description and the action.
                                 assertThat(failure.description())
-                                        .contains("synapse.api.rest.paging.cursor.key")
+                                        .contains("synapse.paging.cursor.key")
                                         .doesNotContain("short");
                                 assertThat(failure.action())
-                                        .contains("synapse.api.rest.paging.cursor.key")
+                                        .contains("synapse.paging.cursor.key")
                                         .doesNotContain("short");
                             });
                 });
@@ -1306,8 +1375,34 @@ class SynapseRestAutoConfigurationTest {
         }
 
         @Bean
-        RestBindings versionedBooks(GetVersionedBookOperation getBook) {
-            return RestBindings.builder().get("/versioned/{id}", getBook).etag(VersionedBook::version).build();
+        GetStampedBookOperation getStampedBookOperation() {
+            return new GetStampedBookOperation();
+        }
+
+        @Bean
+        GetDatedBookOperation getDatedBookOperation() {
+            return new GetDatedBookOperation();
+        }
+
+        @Bean
+        ReviseDatedBookOperation reviseDatedBookOperation() {
+            return new ReviseDatedBookOperation();
+        }
+
+        @Bean
+        RestBindings versionedBooks(GetVersionedBookOperation getBook, GetStampedBookOperation getStamped,
+                GetDatedBookOperation getDated, ReviseDatedBookOperation reviseDated) {
+            return RestBindings
+                    .builder()
+                    .get("/versioned/{id}", getBook)
+                    .etag(VersionedBook::version)
+                    .get("/stamped/{id}", getStamped)
+                    .etag(StampedBook::modified)
+                    .get("/dated/{id}", getDated)
+                    .etag(DatedBook::day)
+                    .put("/dated/{id}", reviseDated)
+                    .header("If-Match", ReviseDatedBook::version)
+                    .build();
         }
     }
 
@@ -1315,6 +1410,43 @@ class SynapseRestAutoConfigurationTest {
     }
 
     record VersionedBook(String id, long version) {
+    }
+
+    /** Versioned by a {@code LocalDateTime}, which MVC's default formatter writes with a space. */
+    record StampedBook(String id, LocalDateTime modified) {
+    }
+
+    /** Versioned by a {@code LocalDate}, which {@code spring.mvc.format.date} would format. */
+    record DatedBook(String id, LocalDate day) {
+    }
+
+    record ReviseDatedBook(String id, VersionCondition<LocalDate> version) {
+    }
+
+    static class GetStampedBookOperation implements QueryOperation<VersionedBookId, StampedBook> {
+        @Override
+        public StampedBook execute(VersionedBookId input) {
+            return new StampedBook(input.id(), LocalDateTime.of(2026, 11, 7, 15, 4, 5));
+        }
+    }
+
+    static class GetDatedBookOperation implements QueryOperation<VersionedBookId, DatedBook> {
+        @Override
+        public DatedBook execute(VersionedBookId input) {
+            return new DatedBook(input.id(), LocalDate.of(2026, 11, 7));
+        }
+    }
+
+    /** Echoes the version the token named. */
+    static class ReviseDatedBookOperation implements CommandOperation<ReviseDatedBook, DatedBook> {
+        @Override
+        public DatedBook execute(ReviseDatedBook input) {
+            LocalDate day = switch (input.version()) {
+                case VersionCondition.AnyVersion<LocalDate> any -> LocalDate.EPOCH;
+                case VersionCondition.Version<LocalDate>(LocalDate version) -> version;
+            };
+            return new DatedBook(input.id(), day);
+        }
     }
 
     static class GetVersionedBookOperation implements QueryOperation<VersionedBookId, VersionedBook> {

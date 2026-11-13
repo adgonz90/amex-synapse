@@ -94,5 +94,44 @@
             <artifactId>spring-core-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- FailureLineStructuredFormatIT: the data module's COMMIT_OUTCOME_UNKNOWN failure line. -->
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-data-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Only for FailureLineStructuredFormatIT's COMMIT_OUTCOME_UNKNOWN case: synapse-data-core brings
+                 spring-boot-jdbc, whose auto-configuration needs a DataSource, so Boot builds an embedded H2 one for
+                 every application this module's tests start. -->
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <!-- src/shared-it/java holds the failure-line IT that synapse-logging-logback-tests runs on Logback too:
+                     one source, compiled here with Log4j2 on the class path. -->
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>shared-it-sources</id>
+                        <phase>generate-test-sources</phase>
+                        <goals>
+                            <goal>add-test-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.basedir}/src/shared-it/java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

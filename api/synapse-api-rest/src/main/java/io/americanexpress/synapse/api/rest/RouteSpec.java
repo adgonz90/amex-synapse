@@ -309,7 +309,7 @@ public final class RouteSpec<I, O> {
     }
 
     /**
-     * Sends an output component as the response's strong {@code ETag}, formatted with Spring MVC's conversion service.
+     * Sends an output component as the response's strong {@code ETag}, formatted as a version token (see below).
      * The component stays in the body. A {@code null} value sends no {@code ETag}. Responses with an {@code ETag} also
      * carry {@code Cache-Control: no-cache} and {@code Vary: Accept}, and a {@code GET} or {@code HEAD} whose
      * {@code If-None-Match} matches is answered 304.
@@ -318,7 +318,9 @@ public final class RouteSpec<I, O> {
      * {@code .etag} is declared once, on a {@code GET} or {@code HEAD} route, or on a {@code POST} route with
      * {@link #created}: a {@code PUT} or {@code DELETE} response carries no {@code ETag} (RFC 9110 §9.3.4). The output
      * must be a single value or an {@code Optional}, not a {@code List} or a {@code PageResult}, and the component a
-     * string, number, boolean, enum or {@code java.time} value of the output record. {@code ETag} is reserved on every
+     * string, an integral number or a {@code java.time} value of the output record (a version type of core's version
+     * token codec, which formats it: plain decimal or ISO-8601, never Spring MVC's conversion service, so gRPC sends
+     * the same token). {@code ETag} is reserved on every
      * route, and {@code Cache-Control} and {@code Vary} on a route with {@code .etag}, so no output header may use
      * them. Anything else fails startup.
      *

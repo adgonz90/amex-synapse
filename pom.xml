@@ -74,10 +74,19 @@
         <module>data/synapse-data-postgres</module>
         <!-- Runnable samples; never published. -->
         <module>samples/rest-books</module>
+        <module>samples/hello-rest</module>
+        <module>samples/grpc-inventory</module>
+        <module>samples/multi-store</module>
+        <module>samples/reference-bookstore</module>
+        <!-- Archetypes, which generate projects in the samples' shape. -->
+        <module>archetypes/synapse-archetype-quickstart</module>
+        <module>archetypes/synapse-archetype-service</module>
         <!-- Build-rule tests; never published. -->
         <module>tests/synapse-build-rules-tests</module>
         <!-- Tests of several data modules together; never published. -->
         <module>tests/synapse-data-mixed-tests</module>
+        <!-- Synapse's log lines on Logback; never published. -->
+        <module>tests/synapse-logging-logback-tests</module>
     </modules>
 
     <properties>
@@ -131,6 +140,9 @@
         <pitest.mutation.threshold>70</pitest.mutation.threshold>
         <pitest-maven.version>1.30.1</pitest-maven.version>
         <pitest-junit5-plugin.version>1.2.3</pitest-junit5-plugin.version>
+        <!-- The phase of synapse-release's placeholder javadoc jar: none, except in an archetype module (the
+             archetype-module profile sets package). Internal, not a setting. -->
+        <synapse.javadoc.placeholder.phase>none</synapse.javadoc.placeholder.phase>
 
         <!-- Plugins -->
         <maven-antrun-plugin.version>3.2.0</maven-antrun-plugin.version>
@@ -152,7 +164,13 @@
         <jacoco-maven-plugin.version>0.8.16</jacoco-maven-plugin.version>
         <spotless-maven-plugin.version>3.10.4</spotless-maven-plugin.version>
         <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
+        <!-- Same value as spring-boot-dependencies 4.1.2, which synapse-parent's consumers get it from (the root build
+             doesn't inherit Boot's plugin management). Bump it with Boot. -->
+        <build-helper-maven-plugin.version>3.6.2</build-helper-maven-plugin.version>
         <maven-invoker-plugin.version>3.10.1</maven-invoker-plugin.version>
+        <!-- maven-archetype-plugin and the archetype-packaging extension (build extensions below) are released
+             together, and need Maven >= 3.6.3: https://github.com/apache/maven-archetype/releases -->
+        <maven-archetype-plugin.version>3.4.1</maven-archetype-plugin.version>
 
         <!-- Architecture rules for consumers (synapse-test, archunit support); not managed by Spring Boot. -->
         <archunit.version>1.5.1</archunit.version>
@@ -231,6 +249,8 @@
                 <artifactId>synapse-test-data</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <!-- The next four third-party entries are repeated from synapse-bom, and synapse-parent repeats them too;
+                 the bom-guava-pin build-rules test keeps all three equal. -->
             <dependency>
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
@@ -272,6 +292,15 @@
     </dependencyManagement>
 
     <build>
+        <extensions>
+            <!-- The maven-archetype packaging of the archetypes/ modules. Same release as maven-archetype-plugin:
+                 https://github.com/apache/maven-archetype/releases -->
+            <extension>
+                <groupId>org.apache.maven.archetype</groupId>
+                <artifactId>archetype-packaging</artifactId>
+                <version>${maven-archetype-plugin.version}</version>
+            </extension>
+        </extensions>
         <pluginManagement>
             <plugins>
                 <plugin>
@@ -441,6 +470,11 @@
                     <artifactId>maven-invoker-plugin</artifactId>
                     <version>${maven-invoker-plugin.version}</version>
                 </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-archetype-plugin</artifactId>
+                    <version>${maven-archetype-plugin.version}</version>
+                </plugin>
                 <!-- Configured as spring-boot-starter-parent 4.1.2 does; modules add their own executions. -->
                 <plugin>
                     <groupId>io.github.ascopes</groupId>
@@ -463,6 +497,11 @@
                     <groupId>org.codehaus.mojo</groupId>
                     <artifactId>versions-maven-plugin</artifactId>
                     <version>${versions-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>build-helper-maven-plugin</artifactId>
+                    <version>${build-helper-maven-plugin.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -526,6 +565,8 @@
                                         <exclude>org.assertj:*:*:*:runtime</exclude>
                                         <exclude>org.springframework.boot:spring-boot-starter-test:*:*:compile</exclude>
                                         <exclude>org.springframework.boot:spring-boot-starter-test:*:*:runtime</exclude>
+                                        <exclude>org.testcontainers:*:*:*:compile</exclude>
+                                        <exclude>org.testcontainers:*:*:*:runtime</exclude>
                                     </excludes>
                                 </bannedDependencies>
                             </rules>
@@ -543,6 +584,19 @@
                 <configuration>
                     <lineEndings>UNIX</lineEndings>
                     <java>
+                        <!--
+                            The default includes, the test sources shared by two modules (src/shared-it/java, in
+                            synapse-logging-log4j2), and the Java sources of the samples (samples/**), which inherit
+                            synapse-parent and so don't go through this build parent. Only the root has samples/ below it,
+                            so for the modules the extra pattern matches nothing. Archetype templates hold ${package} and
+                            Velocity syntax and are deliberately not formatted (see the license-header-samples check).
+                        -->
+                        <includes>
+                            <include>src/main/java/**/*.java</include>
+                            <include>src/test/java/**/*.java</include>
+                            <include>src/shared-it/java/**/*.java</include>
+                            <include>samples/**/src/**/*.java</include>
+                        </includes>
                         <eclipse>
                             <version>${eclipse-formatter.version}</version>
                             <file>${maven.multiModuleProjectDirectory}/.config/synapse-java-format.xml</file>
@@ -584,6 +638,33 @@
                                 </fileset>
                                 <pathconvert property="files-without-license-header" refid="without-license-header" pathsep="${line.separator}" setonempty="false"/>
                                 <fail if="files-without-license-header" message="Missing license header (Spotless does not check package-info.java or module-info.java); copy .config/license-header.txt into:${line.separator}${files-without-license-header}"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <!--
+                        Root only (not inherited): the samples inherit synapse-parent, not this POM, so they carry none
+                        of the checks above. This covers every Java file of the samples, and of the archetype templates
+                        (whose ${package} lines Spotless can't parse, so Spotless skips them), including the
+                        package-info.java files Spotless never checks.
+                    -->
+                    <execution>
+                        <id>license-header-samples</id>
+                        <inherited>false</inherited>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <fileset id="samples-without-license-header" dir="${project.basedir}" erroronmissingdir="false">
+                                    <include name="samples/**/src/**/*.java"/>
+                                    <include name="archetypes/**/src/main/resources/archetype-resources/**/*.java"/>
+                                    <not>
+                                        <contains text="Licensed under the Apache License, Version 2.0"/>
+                                    </not>
+                                </fileset>
+                                <pathconvert property="samples-files-without-license-header" refid="samples-without-license-header" pathsep="${line.separator}" setonempty="false"/>
+                                <fail if="samples-files-without-license-header" message="Missing license header; copy .config/license-header.txt into:${line.separator}${samples-files-without-license-header}"/>
                             </target>
                         </configuration>
                     </execution>
@@ -672,6 +753,46 @@
             </build>
         </profile>
 
+        <!-- Applied to every archetype (activated by its archetype descriptor): with -Psynapse-release it attaches the
+             placeholder javadoc jar (see synapse-release). -->
+        <profile>
+            <id>archetype-module</id>
+            <activation>
+                <file>
+                    <exists>${basedir}/src/main/resources/META-INF/maven/archetype-metadata.xml</exists>
+                </file>
+            </activation>
+            <properties>
+                <synapse.javadoc.placeholder.phase>package</synapse.javadoc.placeholder.phase>
+            </properties>
+        </profile>
+
+        <!-- -Djvm=<path to java> (CI's JDK 21 legs) also reaches the projects the archetype ITs generate, so their tests
+             run on that JVM too. -->
+        <profile>
+            <id>archetype-it-jvm</id>
+            <activation>
+                <property>
+                    <name>jvm</name>
+                </property>
+            </activation>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-archetype-plugin</artifactId>
+                            <configuration>
+                                <properties>
+                                    <jvm>${jvm}</jvm>
+                                </properties>
+                            </configuration>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+            </build>
+        </profile>
+
         <!-- Applied to every module that produces a jar (activated by the presence of src/main/java). -->
         <profile>
             <id>java-module</id>
@@ -697,23 +818,22 @@
                     </plugin>
                     <plugin>
                         <!-- Sets synapse.mockitoAgentArg to the Mockito -javaagent when the module has Mockito, and to
-                             nothing otherwise, so the test JVM never gets an unresolved agent path. -->
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-antrun-plugin</artifactId>
+                             nothing otherwise, so the test JVM never gets an unresolved agent path. As in
+                             parent/synapse-parent/pom.xml, which explains the regex. -->
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
                         <executions>
                             <execution>
                                 <id>mockito-agent-arg</id>
                                 <phase>process-test-classes</phase>
                                 <goals>
-                                    <goal>run</goal>
+                                    <goal>regex-property</goal>
                                 </goals>
                                 <configuration>
-                                    <exportAntProperties>true</exportAntProperties>
-                                    <target>
-                                        <condition property="synapse.mockitoAgentArg" value="&quot;-javaagent:${org.mockito:mockito-core:jar}&quot;" else="">
-                                            <available file="${org.mockito:mockito-core:jar}"/>
-                                        </condition>
-                                    </target>
+                                    <name>synapse.mockitoAgentArg</name>
+                                    <value>"-javaagent:${org.mockito:mockito-core:jar}"</value>
+                                    <regex>^"-javaagent:\$\{.*|^(.+)$</regex>
+                                    <replacement>$1</replacement>
                                 </configuration>
                             </execution>
                         </executions>
@@ -889,6 +1009,30 @@
                                 <goals>
                                     <goal>jar</goal>
                                 </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!--
+                        Maven Central requires a -javadoc.jar for every artifact that isn't a pom, and accepts a
+                        placeholder with a README (https://central.sonatype.org/publish/requirements/). An archetype has
+                        no Java sources, so maven-javadoc-plugin attaches none; this attaches archetypes/javadoc-placeholder
+                        (a README) as the javadoc jar instead. Bound only in an archetype module (the archetype-module
+                        profile sets synapse.javadoc.placeholder.phase), so a Java module keeps its real Javadoc.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>placeholder-javadoc</id>
+                                <phase>${synapse.javadoc.placeholder.phase}</phase>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                                <configuration>
+                                    <classifier>javadoc</classifier>
+                                    <classesDirectory>${maven.multiModuleProjectDirectory}/archetypes/javadoc-placeholder</classesDirectory>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>

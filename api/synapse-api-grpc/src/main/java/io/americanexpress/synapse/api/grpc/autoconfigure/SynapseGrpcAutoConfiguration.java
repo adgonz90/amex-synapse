@@ -29,7 +29,6 @@ import java.util.concurrent.TimeUnit;
 import io.grpc.BindableService;
 import io.grpc.Metadata;
 import io.micrometer.observation.ObservationRegistry;
-import org.springframework.aot.AotDetector;
 import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
@@ -72,8 +71,11 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseContextProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.SynapseBaggageFields;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 /**
@@ -87,7 +89,7 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
 @ConditionalOnClass({GrpcServerFactory.class, BindableService.class})
 @ConditionalOnBooleanProperty(name = "spring.grpc.server.enabled", matchIfMissing = true)
 @EnableConfigurationProperties(SynapseGrpcProperties.class)
-public class SynapseGrpcAutoConfiguration {
+public final class SynapseGrpcAutoConfiguration {
 
     private static final String SERVLET_REGISTRATION = "org.springframework.boot.grpc.server.GrpcServletRegistration";
 
@@ -187,14 +189,18 @@ public class SynapseGrpcAutoConfiguration {
 
     /**
      * Compiles {@link GrpcBindings} into gRPC services: binds {@code .bindAllByName()} methods, maps the messages to
-     * the operations' records and fails startup on a binding problem. Define a bean of this type to replace it.
+     * the operations' records and fails startup on a binding problem. Paged methods wrap and unwrap page tokens with
+     * core's cursors, the same ones REST uses, and apply core's {@code synapse.paging} sizes and offset cap. Define a
+     * bean of this type to replace it.
      *
+     * @param cursors core's page cursors
+     * @param paging core's paging properties
      * @return the compiler
      */
     @Bean
     @ConditionalOnMissingBean
-    ServiceCompiler synapseGrpcServiceCompiler() {
-        return new ServiceCompiler();
+    ServiceCompiler synapseGrpcServiceCompiler(PageCursors cursors, SynapsePagingProperties paging) {
+        return new ServiceCompiler(cursors, paging);
     }
 
     /**
@@ -204,13 +210,16 @@ public class SynapseGrpcAutoConfiguration {
      *
      * @param compiler the service compiler
      * @param operations the operation beans, for {@code .bindAllByName()}
+     * @param cursors core's page cursors, for a compiler when there is none
+     * @param paging core's paging properties, for a compiler when there is none
      * @return the post-processor
      */
     @Bean
     @ConditionalOnMissingBean
     static GrpcBindingsCompiler synapseGrpcBindingsCompiler(ObjectProvider<ServiceCompiler> compiler,
-            ObjectProvider<ServiceOperation<?, ?>> operations) {
-        return new GrpcBindingsCompiler(compiler, operations);
+            ObjectProvider<ServiceOperation<?, ?>> operations, ObjectProvider<PageCursors> cursors,
+            ObjectProvider<SynapsePagingProperties> paging) {
+        return new GrpcBindingsCompiler(compiler, operations, cursors, paging);
     }
 
     /**
@@ -283,22 +292,21 @@ public class SynapseGrpcAutoConfiguration {
     }
 
     /**
-     * Fails startup in AOT mode when {@code spring.grpc.server.reflection.enabled} differs from the value the AOT build
-     * used, which decided whether Boot's server reflection bean exists. Outside AOT mode it does nothing. Define a bean
-     * with the same name to replace it.
+     * The build-time switch for {@code spring.grpc.server.reflection.enabled}, which decided whether Boot's server
+     * reflection bean exists. Core's check fails startup in AOT mode when it differs from the build, with every other
+     * switch that differs. Define a bean with the same name to replace it.
      *
      * @param environment the environment, for the property's value now
      * @param beanFactory the bean factory, for the services the build defined
      * @param resourceLoader the application's resource loader, whose class loader tells whether Boot's reflection
      *     service class is present
-     * @return the check, run once all singletons exist
+     * @return the switch
      */
     @Bean
     @ConditionalOnMissingBean(name = "synapseGrpcReflectionAotCheck")
-    static SmartInitializingSingleton synapseGrpcReflectionAotCheck(Environment environment,
+    static BuildTimeSwitch synapseGrpcReflectionAotCheck(Environment environment,
             ListableBeanFactory beanFactory, ResourceLoader resourceLoader) {
-        return new ReflectionAotCheck(environment, beanFactory, resourceLoader.getClassLoader(),
-                AotDetector::useGeneratedArtifacts);
+        return new ReflectionAotCheck(environment, beanFactory, resourceLoader.getClassLoader());
     }
 
     /**

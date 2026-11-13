@@ -16,31 +16,24 @@ package io.americanexpress.synapse.api.rest.internal.conditional;
 import java.lang.reflect.Method;
 
 import org.jspecify.annotations.Nullable;
-import org.springframework.core.convert.ConversionService;
 import org.springframework.http.ETag;
 import org.springframework.util.ReflectionUtils;
 
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.internal.conditional.EntityTags;
+import io.americanexpress.synapse.core.internal.conditional.VersionTokens;
 
 /**
- * The strong {@code ETag} of a route with {@code .etag}: its output component, formatted by the conversion service as
- * output header values are. A {@code null} component means no tag. A formatted value with a character an entity tag
- * can't carry (a double quote, a space, a control character, DEL, or anything above {@code U+00FF}) is an operation
- * bug: it is an {@link IllegalStateException} (500), never a malformed header.
+ * The strong {@code ETag} of a route with {@code .etag}: its output component, formatted by core's
+ * {@link VersionTokens}, the codec every protocol shares (plain decimal for an integral number, ISO-8601 for a
+ * {@code java.time} value, a string as it is), so the token never depends on Spring MVC's formatters, its
+ * {@code spring.mvc.format.*} settings or the locale, and a gRPC response carries the same one. A {@code null}
+ * component means no tag. A string that is empty or has a character an entity tag can't carry (a double quote, a space,
+ * a control character, DEL, or anything above {@code U+00FF}) is an operation bug: it is an
+ * {@link IllegalStateException} (500), never a malformed header.
  */
 public final class ETagValues {
-
-    private final ConversionService conversionService;
-
-    /**
-     * Creates the values.
-     *
-     * @param conversionService formats the component (in an application, Spring MVC's conversion service bean)
-     */
-    public ETagValues(ConversionService conversionService) {
-        this.conversionService = conversionService;
-    }
 
     /**
      * Returns the strong entity tag of the output.
@@ -48,8 +41,8 @@ public final class ETagValues {
      * @param route the resolved route
      * @param output the operation's output value (an {@code Optional} already unwrapped)
      * @return the tag, or {@code null} when the route has no {@code .etag} or the component is {@code null}
-     * @throws IllegalStateException when the formatted value is empty or has a character outside RFC 9110 {@code etagc}; the
-     *         message never repeats the value
+     * @throws IllegalStateException when the value is not a valid version token (an empty string, or one with a
+     *         character outside RFC 9110 {@code etagc}); the message never repeats the value
      */
     public @Nullable ETag of(RouteDefinition route, Object output) {
         ResolvedComponent component = route.conditional().etag();
@@ -62,31 +55,26 @@ public final class ETagValues {
         if (value == null) {
             return null;
         }
-        String text = conversionService.convert(value, String.class);
-        if (text == null) {
-            return null;
-        }
-        if (text.isEmpty()) {
+        try {
+            return new ETag(VersionTokens.format(value), false);
+        } catch (IllegalArgumentException e) {
             // Spring's ETag.compare never matches an empty tag, so it could never satisfy a conditional request.
-            throw new IllegalStateException("The ETag value computed from the operation's output is empty");
+            throw new IllegalStateException(
+                    "The ETag value computed from the operation's output is not a valid entity tag: " + e.getMessage(),
+                    e);
         }
-        for (int i = 0; i < text.length(); i++) {
-            if (!EntityTags.isEtagc(text.charAt(i))) {
-                throw new IllegalStateException("The ETag value computed from the operation's output has a character "
-                        + "an entity tag can't carry (a double quote, a space, a control character, DEL or a "
-                        + "character above U+00FF)");
-            }
-        }
-        return new ETag(text, false);
     }
 
     /**
-     * Formats a strong tag as an {@code ETag} header value.
+     * Formats a strong tag as an {@code ETag} header value, with the entity tag grammar every protocol shares
+     * ({@link EntityTags#strong}), so the token a REST client reads is the one a gRPC client sends, and the reverse.
      *
-     * @param tag the tag
+     * @param tag the tag, as {@link #of} returns it
      * @return the quoted tag
+     * @throws IllegalArgumentException when the tag is empty or has a character outside RFC 9110 {@code etagc}, which
+     *         {@link #of} never returns
      */
     public static String header(ETag tag) {
-        return "\"" + tag.tag() + "\"";
+        return EntityTags.strong(tag.tag());
     }
 }

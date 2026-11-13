@@ -16,7 +16,6 @@ package io.americanexpress.synapse.api.rest.internal.conditional;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.springframework.http.ETag;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.web.servlet.function.ServerRequest;
@@ -26,6 +25,7 @@ import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.conditional.EntityTags;
 
 /**
  * The preconditions of a write (RFC 9110 §13.2): what the edge checks itself before the operation runs, and how a
@@ -168,6 +168,6 @@ public final class Preconditions {
         } catch (IllegalArgumentException e) {
             return true;
         }
-        return parsed.tags().stream().anyMatch(ETag::weak);
+        return parsed instanceof EntityTags.Parsed.Tags tags && tags.tags().stream().anyMatch(EntityTags.Tag::weak);
     }
 }

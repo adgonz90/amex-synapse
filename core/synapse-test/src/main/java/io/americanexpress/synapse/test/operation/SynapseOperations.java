@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Objects;
 
 import io.micrometer.observation.ObservationRegistry;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.internal.pipeline.ConstraintViolationTranslator;
@@ -100,9 +101,12 @@ public final class SynapseOperations {
         }
 
         /**
-         * Adds an exception translator; translators are tried in the order added. As in the application, where its
+         * Adds an exception translator. Translators are tried in the order the application tries their beans: by
+         * {@code @Order} or {@link org.springframework.core.Ordered} (Synapse's data translators declare one), then those
+         * that declare no order, in the order added. As in the application, where its
          * bean has {@code @Order(0)}, Synapse's translator of {@code ConstraintViolationException} into
-         * {@code VALIDATION_FAILED} is always tried first.
+         * {@code VALIDATION_FAILED} is tried first, unless a translator declares a lower order (such as
+         * {@code @Order(-1)}).
          *
          * @param translator the translator
          * @return this builder
@@ -143,6 +147,9 @@ public final class SynapseOperations {
             List<ExceptionTranslator> all = new ArrayList<>();
             all.add(new ConstraintViolationTranslator());
             all.addAll(translators);
+            // As the application orders the translator beans (ObjectProvider.orderedStream()): by @Order or Ordered, the
+            // constraint translator first (@Order(0)), and translators that declare no order last, in the order added.
+            AnnotationAwareOrderComparator.sort(all);
             return new OperationInvoker(pipeline.translators(all).build());
         }
     }

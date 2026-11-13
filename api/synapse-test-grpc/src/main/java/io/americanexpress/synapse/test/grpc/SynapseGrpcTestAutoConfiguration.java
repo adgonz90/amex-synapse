@@ -21,8 +21,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean;
 import org.springframework.grpc.server.GrpcServerFactory;
 
+import io.americanexpress.synapse.api.grpc.GrpcBindings;
 import io.americanexpress.synapse.api.grpc.autoconfigure.SynapseGrpcAutoConfiguration;
 import io.americanexpress.synapse.api.grpc.internal.service.ServiceCompiler;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.test.slice.BoundOperationMocksCheck;
 
 /**
  * Auto-configuration of {@link SynapseGrpcTest}: the check that each operation the bindings use has a test double,
@@ -33,21 +37,22 @@ import io.americanexpress.synapse.api.grpc.internal.service.ServiceCompiler;
 @AutoConfiguration(before = SynapseGrpcAutoConfiguration.class)
 @ConditionalOnClass({GrpcServerFactory.class, BindableService.class})
 @ConditionalOnBooleanProperty(name = "spring.grpc.server.enabled", matchIfMissing = true)
-public class SynapseGrpcTestAutoConfiguration {
+public final class SynapseGrpcTestAutoConfiguration {
 
     /** Appended to the action of an unbound method's failure. */
     static final String UNBOUND_HINT = "In @SynapseGrpcTest, declare a @MockitoBean for it.";
 
     /**
      * The check that each operation the bindings use has a bean. It is {@code static} because it is a bean factory
-     * post-processor. Define a {@link BoundGrpcOperationMocksCheck} bean to replace it.
+     * post-processor. Define a bean named {@code synapseGrpcBoundOperationMocksCheck} to replace it; the name, not the type, backs
+     * it off, so that the REST slice's check does not hide this one.
      *
      * @return the check
      */
     @Bean
-    @ConditionalOnMissingBean
-    static BoundGrpcOperationMocksCheck boundGrpcOperationMocksCheck() {
-        return new BoundGrpcOperationMocksCheck();
+    @ConditionalOnMissingBean(name = "synapseGrpcBoundOperationMocksCheck")
+    static BoundOperationMocksCheck synapseGrpcBoundOperationMocksCheck() {
+        return new BoundOperationMocksCheck(GrpcBindings.class, "@SynapseGrpcTest");
     }
 
     /**
@@ -55,11 +60,13 @@ public class SynapseGrpcTestAutoConfiguration {
      * unbound: in the slice, that is an operation the test has no test double for. It has the plugin's bean name, and
      * the plugin's own compiler backs off to it.
      *
+     * @param cursors core's page cursors
+     * @param paging core's paging properties
      * @return the compiler
      */
     @Bean
     @ConditionalOnMissingBean
-    ServiceCompiler synapseGrpcServiceCompiler() {
-        return new ServiceCompiler(UNBOUND_HINT);
+    ServiceCompiler synapseGrpcServiceCompiler(PageCursors cursors, SynapsePagingProperties paging) {
+        return new ServiceCompiler(cursors, paging, UNBOUND_HINT);
     }
 }

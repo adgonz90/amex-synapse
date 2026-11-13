@@ -1,0 +1,3 @@
+greeting: from-build
+# Set only here, so a run in another environment that still reads this file would show it.
+build-only: from-build

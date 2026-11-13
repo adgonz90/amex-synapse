@@ -1,0 +1,16 @@
+# The dev environment (ENV=dev): an example of a deployed environment. It needs nothing of its own here: every safety
+# setting keeps its default, and the books store's dev database is in data-books' config-dev.yaml, with the user name
+# and password from the environment (SYNAPSE_DATA_STORES_BOOKS_USERNAME and SYNAPSE_DATA_STORES_BOOKS_PASSWORD).
+# What a deployed environment typically adds, for example:
+#
+# synapse:
+#   api:
+#     rest:
+#       cors:
+#         # The exact origins of this environment's front ends, never a wildcard.
+#         allowed-origins:
+#           - https://bookstore.dev.example.internal
+#
+# Never put a secret here (passwords, keys, tokens): they come from the environment or a secret store. Nothing here
+# may differ from the build environment for a key fixed at build time (springdoc.api-docs.enabled,
+# spring.grpc.server.reflection.enabled), or an AOT run fails at startup.

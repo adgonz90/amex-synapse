@@ -52,6 +52,7 @@ import io.americanexpress.synapse.core.internal.binding.ComponentRefs;
 import io.americanexpress.synapse.core.internal.binding.OperationTypes;
 import io.americanexpress.synapse.core.internal.binding.PersistenceTypes;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.internal.conditional.VersionTokens;
 import io.americanexpress.synapse.core.operation.OperationKind;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.PageResult;
@@ -493,7 +494,7 @@ public final class BindingValidator {
             Set<HeaderRule> headers = new LinkedHashSet<>();
             List<ResponseHeader> responseHeaders = new ArrayList<>();
             for (RestConventions bean : beans) {
-                ConventionRules rules = bean.rules();
+                ConventionRules rules = RestBindingsAccess.rules(bean);
                 for (Class<?> recordType : rules.queryRecords()) {
                     if (!recordType.isRecord()) {
                         throw new SynapseConfigurationException(
@@ -656,6 +657,9 @@ public final class BindingValidator {
          */
         private void checkDigestible(List<InputSource> sources, ConditionalRules conditional) {
             for (InputSource source : sources) {
+                // Skipped by route (the If-Match/If-None-Match sources); core's InputDigest skips the same components
+                // by type (VersionCondition). They agree: a VersionCondition bound another way (.context, .from)
+                // isn't digestible, an interface, so startup fails here. A change to either rule must keep them so.
                 if (source instanceof InputSource.Page || source.equals(conditional.ifMatch())
                         || source.equals(conditional.ifNoneMatch())) {
                     continue;
@@ -817,12 +821,11 @@ public final class BindingValidator {
                                 + outputValue.getSimpleName(),
                         "Reference a component of " + outputValue.getSimpleName() + ", such as its version.");
             }
-            if (!isSimpleType(component.type())) {
+            if (!VersionTokens.supports(component.type())) {
                 throw fail(route,
-                        "the ETag needs a simple type, but " + describe(component) + " is "
+                        "the ETag needs a version type, but " + describe(component) + " is "
                                 + component.genericType().getTypeName(),
-                        "Use a string, number, boolean, enum or java.time component, such as a version number, for "
-                                + "the ETag.");
+                        "Use a component of a version type for the ETag: " + VersionTokens.TYPES + ".");
             }
             etag = component;
         }
@@ -930,6 +933,13 @@ public final class BindingValidator {
                             "Declare the type of the resource's version, for example VersionCondition<Long>: the "
                                     + "bound value is converted to it and compared with the version the operation "
                                     + "reads.");
+                }
+                if (!VersionTokens.supports(versionClass)) {
+                    // One set of version types for every protocol: the ones core's version token codec reads.
+                    throw fail(route,
+                            "the component " + describe(component) + " is bound as VersionCondition<"
+                                    + versionClass.getSimpleName() + ">, which is not a version type",
+                            "Declare a version type: " + VersionTokens.TYPES + ".");
                 }
             }
         }

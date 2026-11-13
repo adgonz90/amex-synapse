@@ -17,14 +17,18 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
+import com.google.protobuf.Descriptors.OneofDescriptor;
+import com.google.protobuf.DynamicMessage;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.ResolvableType;
 
 import io.americanexpress.synapse.api.grpc.fixture.proto.Choice;
+import io.americanexpress.synapse.api.grpc.fixture.proto.CreateItemRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Item;
 import io.americanexpress.synapse.api.grpc.fixture.proto.ListTagsResponse;
+import io.americanexpress.synapse.api.grpc.fixture.proto.NoteChoice;
 import io.americanexpress.synapse.api.grpc.fixture.proto.PlainNumbers;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Scalars;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.AuthorRec;
@@ -211,15 +215,97 @@ class MessageMappingTest {
     }
 
     @Test
-    void twoComponentsWritingOneOneofFail() {
-        List<io.americanexpress.synapse.api.grpc.internal.binding.FieldOverride> overrides = List
-                .of(override("sku", Both::sku), override("barcode", Both::barcode));
+    void nullableComponentsShareAOneofAndTheOneSetIsWritten() {
+        RecordWriter writer = MessageMapping
+                .writer(Item.getDescriptor(), ResolvableType.forClass(Both.class), bothOverrides());
+        OneofDescriptor lookup = Item.getDescriptor().getOneofs().getFirst();
 
-        assertFails(() -> MessageMapping.writer(Item.getDescriptor(), ResolvableType.forClass(Both.class), overrides),
-                "Both.sku and Both.barcode both write oneof " + ITEM + ".lookup",
-                "Map at most one component to the members of a oneof.");
-        assertThatCode(() -> MessageMapping.reader(Item.getDescriptor(), Both.class, overrides, List.of()))
+        DynamicMessage bySku = writer.write(new Both("s-1", null));
+        DynamicMessage byBarcode = writer.write(new Both(null, "b-1"));
+
+        assertThat(bySku.getOneofFieldDescriptor(lookup).getName()).isEqualTo("sku");
+        assertThat(bySku.getField(lookup.getField(0))).isEqualTo("s-1");
+        assertThat(byBarcode.getOneofFieldDescriptor(lookup).getName()).isEqualTo("barcode");
+        assertThat(byBarcode.getField(lookup.getField(1))).isEqualTo("b-1");
+        assertThatCode(() -> MessageMapping.reader(Item.getDescriptor(), Both.class, bothOverrides(), List.of()))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void noComponentSetLeavesTheOneofUnset() {
+        RecordWriter writer = MessageMapping
+                .writer(Item.getDescriptor(), ResolvableType.forClass(Both.class), bothOverrides());
+
+        DynamicMessage written = writer.write(new Both(null, null));
+
+        assertThat(written.hasOneof(Item.getDescriptor().getOneofs().getFirst())).isFalse();
+    }
+
+    @Test
+    void twoComponentsSetInOneOneofFailTheWrite() {
+        RecordWriter members = MessageMapping
+                .writer(Item.getDescriptor(), ResolvableType.forClass(Both.class), bothOverrides());
+        RecordWriter messageMembers = MessageMapping
+                .writer(Choice.getDescriptor(), ResolvableType.forClass(BothPicks.class),
+                        List.of(override("first", BothPicks::first), override("second", BothPicks::second)));
+        AuthorRec ada = new AuthorRec("Ada", MappingFixtures.CountryCode.valueOf("GB"));
+
+        // Writing both would silently keep only the last member, so the call fails (INTERNAL at the edge).
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> members.write(new Both("s-1", "b-1")))
+                .withMessage("Both.sku and Both.barcode both have a value, but they write members of oneof " + ITEM
+                        + ".lookup, which holds one");
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> messageMembers.write(new BothPicks(ada, ada)))
+                .withMessage("BothPicks.first and BothPicks.second both have a value, but they write members of "
+                        + "oneof synapse.fixture.v1.Choice.pick, which holds one");
+        DynamicMessage first = messageMembers.write(new BothPicks(ada, null));
+        assertThat(first.getOneofFieldDescriptor(Choice.getDescriptor().getOneofs().getFirst()).getName())
+                .isEqualTo("first");
+    }
+
+    @Test
+    void componentsInsideOneMemberMaySetItTogether() {
+        RecordWriter writer = MessageMapping
+                .writer(NoteChoice.getDescriptor(), ResolvableType.forClass(Notes.class),
+                        List
+                                .of(override("first.title", Notes::firstTitle),
+                                        override("first.text", Notes::firstText),
+                                        override("second.title", Notes::secondTitle)));
+
+        DynamicMessage first = writer.write(new Notes("t", "x", null));
+
+        assertThat(first.getOneofFieldDescriptor(NoteChoice.getDescriptor().getOneofs().getFirst()).getName())
+                .isEqualTo("first");
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> writer.write(new Notes("t", null, "s")))
+                .withMessage("Notes.firstTitle and Notes.secondTitle both have a value, but they write members of "
+                        + "oneof synapse.fixture.v1.NoteChoice.pick, which holds one");
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> writer.write(new Notes("t", "x", "s")))
+                .withMessage("Notes.firstTitle, Notes.firstText and Notes.secondTitle all have a value, but they write "
+                        + "members of oneof synapse.fixture.v1.NoteChoice.pick, which holds one");
+    }
+
+    @Test
+    void sharedOneofInANestedRecordIsCheckedThere() {
+        // CreateItemRequest.item is an Item: the oneof group belongs to the nested record's mapping.
+        RecordWriter writer = MessageMapping
+                .writer(CreateItemRequest.getDescriptor(), ResolvableType.forClass(Wrapped.class), bothOverrides());
+
+        DynamicMessage one = writer.write(new Wrapped(new Both(null, "b-1")));
+
+        DynamicMessage item = (DynamicMessage) one.getField(CreateItemRequest.getDescriptor().findFieldByName("item"));
+        assertThat(item.getOneofFieldDescriptor(Item.getDescriptor().getOneofs().getFirst()).getName())
+                .isEqualTo("barcode");
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> writer.write(new Wrapped(new Both("s-1", "b-1"))))
+                .withMessage("Both.sku and Both.barcode both have a value, but they write members of oneof " + ITEM
+                        + ".lookup, which holds one");
+    }
+
+    private static List<io.americanexpress.synapse.api.grpc.internal.binding.FieldOverride> bothOverrides() {
+        return List.of(override("sku", Both::sku), override("barcode", Both::barcode));
     }
 
     @Test
@@ -233,19 +319,25 @@ class MessageMappingTest {
     }
 
     @Test
-    void componentsWritingInsideTwoMembersOfOneOneofFail() {
-        String action = "Map at most one component to the members of a oneof.";
+    void nonNullComponentInASharedOneofFails() {
+        // A component that always has a value would always clear the other members, so the binding can't be right.
+        String action = "Declare each component that writes a member of the oneof @Nullable, so that at most one has "
+                + "a value, or map only one component to the oneof.";
 
         assertFails(() -> MessageMapping
                 .writer(Choice.getDescriptor(), ResolvableType.forClass(Picks.class),
                         List
                                 .of(override("first.name", Picks::firstName), override("second.country_code",
                                         Picks::secondCountry))),
-                "Picks.firstName and Picks.secondCountry both write oneof synapse.fixture.v1.Choice.pick", action);
+                "Picks.firstName and Picks.secondCountry both write oneof synapse.fixture.v1.Choice.pick, and "
+                        + "Picks.firstName is not @Nullable",
+                action);
         assertFails(() -> MessageMapping
                 .writer(Choice.getDescriptor(), ResolvableType.forClass(Picked.class),
                         List.of(override("first", Picked::first), override("second.name", Picked::secondName))),
-                "Picked.first and Picked.secondName both write oneof synapse.fixture.v1.Choice.pick", action);
+                "Picked.first and Picked.secondName both write oneof synapse.fixture.v1.Choice.pick, and "
+                        + "Picked.secondName is not @Nullable",
+                action);
     }
 
     @Test
@@ -371,6 +463,15 @@ class MessageMappingTest {
     }
 
     record Picked(@Nullable AuthorRec first, String secondName) {
+    }
+
+    record BothPicks(@Nullable AuthorRec first, @Nullable AuthorRec second) {
+    }
+
+    record Wrapped(Both item) {
+    }
+
+    record Notes(@Nullable String firstTitle, @Nullable String firstText, @Nullable String secondTitle) {
     }
 
     /** A Java enum with a constant that matches the proto enum's unspecified zero value. */

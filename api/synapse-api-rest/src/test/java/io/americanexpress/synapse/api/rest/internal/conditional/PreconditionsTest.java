@@ -22,6 +22,7 @@ import org.springframework.web.servlet.function.ServerRequest;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CreateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetVersionedBookOperation;
@@ -269,6 +270,8 @@ class PreconditionsTest {
     }
 
     private static RouteDefinition route(RestBindings bindings) {
-        return new BindingValidator(PagingSettings.defaults()).validate(bindings.routes(), List.of()).getFirst();
+        return new BindingValidator(PagingSettings.defaults())
+                .validate(RestBindingsAccess.routes(bindings), List.of())
+                .getFirst();
     }
 }

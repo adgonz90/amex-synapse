@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.api.rest.internal.route;
 
 import java.util.List;
+import java.util.Map;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpHeaders;
@@ -30,8 +31,10 @@ import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.conditional.Preconditions;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestSizeLimits;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
-import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.paging.CursorExtras;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 /**
@@ -62,6 +65,15 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
 
     private final PageCursors cursors;
 
+    /** The cursor parameter's name, which a rejected token's violation names. */
+    private final String cursorParameter;
+
+    /** {@code synapse.paging.max-offset}: the furthest offset a cursor token may carry. */
+    private final long maxOffset;
+
+    /** The route's entries in the cursor scope: its version, on a versioned route. */
+    private final Map<String, String> cursorExtras;
+
     /**
      * Creates the handler.
      *
@@ -69,12 +81,17 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
      * @param binder binds the input
      * @param writer writes the response
      * @param cursors unwraps the client's cursor token
+     * @param paging the paging settings, for the cursor parameter's name and the offset cap
      */
-    public OperationHandler(RouteDefinition route, RequestBinder binder, ResponseWriter writer, PageCursors cursors) {
+    public OperationHandler(RouteDefinition route, RequestBinder binder, ResponseWriter writer, PageCursors cursors,
+            PagingSettings paging) {
         this.route = route;
         this.binder = binder;
         this.writer = writer;
         this.cursors = cursors;
+        this.cursorParameter = paging.cursor();
+        this.maxOffset = paging.maxOffset();
+        this.cursorExtras = CursorExtras.of(route);
     }
 
     /**
@@ -97,7 +114,7 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
         checkAccept(request);
         Object bound = binder.bind(route, request);
         // The digest leaves the PageQuery out, so the unwrapped input has the same cursor scope as the bound one.
-        Object input = cursors.unwrap(route, bound);
+        Object input = cursors.unwrap(route.operationName(), bound, cursorExtras, cursorParameter, maxOffset);
         // After the 400s, just before the action (RFC 9110 §13.2.1).
         Preconditions.check(route, request);
         Object result;
@@ -106,7 +123,7 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
         } catch (SynapseException e) {
             throw Preconditions.translate(route, request, e);
         }
-        return writer.write(route, result, request, input);
+        return writer.write(route, result, request, input, cursorExtras);
     }
 
     /**

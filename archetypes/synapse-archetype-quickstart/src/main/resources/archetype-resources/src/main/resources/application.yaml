@@ -1,0 +1,23 @@
+# Configuration of the service.
+
+spring:
+  application:
+    name: ${artifactId}
+  profiles:
+    # The environment: exactly one, with its own application-<env>.yaml. The platform sets ENV; local runs use local
+    # (application-local.yaml), and the tests use test (src/test/resources/application-test.yaml).
+    active: ${ENV}
+  threads:
+    virtual:
+      # Requests run on virtual threads; Synapse's concurrency limit (synapse.api.rest.max-concurrent-requests) is then
+      # what caps the work in flight.
+      enabled: true
+
+management:
+  otlp:
+    metrics:
+      export:
+        # Not a default. Boot pushes metrics to an OpenTelemetry collector at http://localhost:4318 every minute and
+        # logs a WARN when none is there. Turn it on (and set management.otlp.metrics.export.url) when you run one.
+        # Traces and logs are exported only once their endpoints are set (management.opentelemetry.*.export.otlp).
+        enabled: false

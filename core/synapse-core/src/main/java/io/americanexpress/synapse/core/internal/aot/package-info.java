@@ -12,8 +12,9 @@
  * the License.
  */
 /**
- * Ahead-of-time (AOT) support: runtime hints for the core's reflective and service-loaded types, and binding hints
- * for the input and output types of operations.
+ * Ahead-of-time (AOT) support: runtime hints for the core's reflective and service-loaded types, binding hints for the
+ * input and output types of operations, and the build-time switch check, which fails an AOT-mode startup when a
+ * property that conditions read at build time differs from the value the build used.
  */
 @NullMarked
 package io.americanexpress.synapse.core.internal.aot;

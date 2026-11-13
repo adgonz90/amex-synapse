@@ -1,0 +1,20 @@
+# Failsafe exclude patterns for the JDK 21 pull request leg (ci.yml, smoke job: -Dfailsafe.excludesFile=<this file>).
+#
+# The modules that inherit the root build run only their @Tag("smoke") ITs there (-Dsynapse.it.groups=smoke). The
+# samples that inherit synapse-parent don't read that property (synapse-parent is what consumers inherit, so it carries
+# no repository-internal switch), so without these patterns they would run every IT on that leg. Their ITs run on the
+# JDK 25 leg of every pull request and in the nightly JDK 21 run, and the archetype ITs, which generate projects shaped
+# like hello-rest and the reference bookstore, run their tests on JDK 21 in this leg.
+#
+# One line per synapse-parent sample's package. A sample that is missing here runs all its ITs on the leg: more tests,
+# never fewer, and the build-rules test jdk21-pr-excludes fails the build until it is listed. Every sample inherits
+# synapse-parent, directly or through its aggregator (rest-books too, since it became the REST-only tour).
+#
+# With an excludes file, Failsafe drops its default exclude, **/*$* (nested classes, which JUnit runs through the
+# class that encloses them), so the file keeps it.
+**/*$*
+io/americanexpress/synapse/samples/hello/**
+io/americanexpress/synapse/samples/inventory/**
+io/americanexpress/synapse/samples/multistore/**
+io/americanexpress/synapse/samples/bookstore/**
+io/americanexpress/synapse/samples/books/**

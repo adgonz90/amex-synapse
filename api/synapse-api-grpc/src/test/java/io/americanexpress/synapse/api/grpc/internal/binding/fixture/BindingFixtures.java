@@ -17,9 +17,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 
+import org.jspecify.annotations.Nullable;
+
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.operation.CommandOperation;
@@ -175,6 +179,185 @@ public final class BindingFixtures {
         }
     }
 
+    /** Returns a page inside an {@code Optional}, which is not the operation's direct output. */
+    public static class OptionalPageOperation implements QueryOperation<GetItem, Optional<PageResult<ItemRecord>>> {
+
+        @Override
+        public Optional<PageResult<ItemRecord>> execute(GetItem input) {
+            return Optional.empty();
+        }
+    }
+
+    /** The sort keys of {@link PagedItems}. */
+    public enum ItemSort {
+        NAME, CREATED_AT
+    }
+
+    /** An enum without constants, which can't be a sort allow-list. */
+    public enum NoSort {
+    }
+
+    /** A constant whose lower-case name has a character outside {@code a-z0-9_}. */
+    public enum DollarSort {
+        TITLE$
+    }
+
+    /** Two constants with the same lower-case name. */
+    @SuppressWarnings("EnumConstantNaming")
+    public enum ClashingSort {
+        NAME, Name
+    }
+
+    /** A filter and a {@code PageQuery}. */
+    public record PagedItems(String shelf, PageQuery page) {
+    }
+
+    /** Two {@code PageQuery} components. */
+    public record TwoPages(PageQuery first, PageQuery second) {
+    }
+
+    /** A {@code PageQuery} inside a nested record. */
+    public record NestedPage(Inner inner) {
+
+        /** Holds the page. */
+        public record Inner(PageQuery page) {
+        }
+    }
+
+    /** An input that holds a {@code PageResult}. */
+    public record PageInInput(PageResult<String> page) {
+    }
+
+    /** An output that holds a {@code PageQuery}. */
+    public record PageQueryOutput(PageQuery query) {
+    }
+
+    /** Lists a shelf's items by page. */
+    public static class PagedItemsOperation implements QueryOperation<PagedItems, PageResult<ItemRecord>> {
+
+        @Override
+        public PageResult<ItemRecord> execute(PagedItems input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** A book of {@code paging.proto}'s {@code PagedBook}. */
+    public record BookRecord(String id, String title, int publishedYear) {
+    }
+
+    /** The sort keys of {@code paging.proto}'s books. */
+    public enum BookSort {
+        TITLE, PUBLISHED_YEAR
+    }
+
+    /** Lists a shelf's books by page: {@code paging.proto}'s {@code ListBooks}. */
+    public static class PagedBooksOperation implements QueryOperation<PagedItems, PageResult<BookRecord>> {
+
+        @Override
+        public PageResult<BookRecord> execute(PagedItems input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** Lists every book: a {@code PageQuery} input, {@code paging.proto}'s {@code ListAll}. */
+    public static class ListAllBooksOperation implements QueryOperation<PageQuery, PageResult<BookRecord>> {
+
+        @Override
+        public PageResult<BookRecord> execute(PageQuery input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** A value the cursor digest can't write: a class with no properties. */
+    public static final class Opaque {
+    }
+
+    /** A paged input with a component the digest can't write (set with {@code .context}). */
+    public record PagedOpaque(Opaque opaque, PageQuery page) {
+    }
+
+    /** A paged input whose every component the digest writes, gRPC's {@code bytes} and {@code map} keys included. */
+    @SuppressWarnings("ArrayRecordComponent")
+    public record PagedRich(byte[] data, Map<Integer, List<AuthorRecord>> authors, Set<UUID> ids,
+            @Nullable VersionCondition<Long> version, PageQuery page) {
+    }
+
+    /** Takes {@link PagedOpaque}. */
+    public static class PagedOpaqueOperation implements QueryOperation<PagedOpaque, PageResult<BookRecord>> {
+
+        @Override
+        public PageResult<BookRecord> execute(PagedOpaque input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** Takes {@link PagedRich}. */
+    public static class PagedRichOperation implements QueryOperation<PagedRich, PageResult<BookRecord>> {
+
+        @Override
+        public PageResult<BookRecord> execute(PagedRich input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** A component named like the {@code page_size} page field, beside a {@code PageQuery}. */
+    public record PagedWithSize(int pageSize, PageQuery page) {
+    }
+
+    /** Takes a component that reads a page field. */
+    public static class PagedWithSizeOperation implements QueryOperation<PagedWithSize, PageResult<BookRecord>> {
+
+        @Override
+        public PageResult<BookRecord> execute(PagedWithSize input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** Takes two {@code PageQuery} components. */
+    public static class TwoPagesOperation implements QueryOperation<TwoPages, PageResult<ItemRecord>> {
+
+        @Override
+        public PageResult<ItemRecord> execute(TwoPages input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** Takes a {@code PageQuery} in a nested record. */
+    public static class NestedPageOperation implements QueryOperation<NestedPage, PageResult<ItemRecord>> {
+
+        @Override
+        public PageResult<ItemRecord> execute(NestedPage input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** Takes a {@code PageResult}. */
+    public static class PageInInputOperation implements QueryOperation<PageInInput, ItemRecord> {
+
+        @Override
+        public ItemRecord execute(PageInInput input) {
+            return new ItemRecord("i", "n", new AuthorRecord("a", "US"));
+        }
+    }
+
+    /** Returns a {@code PageQuery}. */
+    public static class PageQueryOutputOperation implements QueryOperation<GetItem, PageQueryOutput> {
+
+        @Override
+        public PageQueryOutput execute(GetItem input) {
+            return new PageQueryOutput(PageQuery.first(1));
+        }
+    }
+
+    /** Returns a page of pages. */
+    public static class PageOfPagesOperation implements QueryOperation<GetItem, PageResult<PageResult<ItemRecord>>> {
+
+        @Override
+        public PageResult<PageResult<ItemRecord>> execute(GetItem input) {
+            return PageResult.of(List.of(), false);
+        }
+    }
+
     /** Takes records inside an array and a map. */
     public static class ShelveOperation implements CommandOperation<Shelve, Void> {
 
@@ -295,5 +478,188 @@ public final class BindingFixtures {
     /** Level 10 of {@link Wide1}, the last; its type argument only keeps the types of each branch distinct. */
     @SuppressWarnings("UnusedTypeParameter")
     public record Wide10<T>(String end) {
+    }
+
+    /** The key of a doc ({@code conditional.proto}). */
+    public record DocKey(String id) {
+    }
+
+    /** A doc, versioned. */
+    public record DocView(String id, String text, long version) {
+    }
+
+    /** A doc with components of types that are not version types. */
+    public record TaggedDoc(String id, String text, long version, List<String> tags, boolean archived) {
+    }
+
+    /** The input of a create: no version. */
+    public record NewDoc(String text) {
+    }
+
+    /** An update, optionally conditional. */
+    public record DocUpdate(String id, String text, @Nullable VersionCondition<Long> version) {
+    }
+
+    /** A delete, always conditional. */
+    public record DocDeletion(String id, VersionCondition<Long> version) {
+    }
+
+    /** An input with two conditions. */
+    public record TwoConditions(String id, VersionCondition<Long> version, @Nullable VersionCondition<Long> other) {
+    }
+
+    /** A condition in a nested record. */
+    public record NestedCondition(String id, DocDeletion deletion) {
+    }
+
+    /** A condition inside an {@code Optional}. */
+    public record WrappedCondition(String id, Optional<VersionCondition<Long>> version) {
+    }
+
+    /** A condition on {@code Object}, which every etag value is, and which never equals a version of another type. */
+    public record ObjectCondition(String id, VersionCondition<Object> version) {
+    }
+
+    /** A condition without a version type. */
+    public record WildcardCondition(String id, VersionCondition<?> version) {
+    }
+
+    /** A condition on a UUID: a string converts to it, but it is not a version type. */
+    public record UuidCondition(String id, VersionCondition<UUID> version) {
+    }
+
+    /** A read whose input has an optional condition, as REST binds one from If-None-Match on GET. */
+    public static class ReadUpdateOperation implements QueryOperation<DocUpdate, DocView> {
+
+        @Override
+        public DocView execute(DocUpdate input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Takes a condition on a UUID. */
+    public static class UuidConditionOperation implements CommandOperation<UuidCondition, Void> {
+
+        @Override
+        public Void execute(UuidCondition input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Reads a doc. */
+    public static class GetDocOperation implements QueryOperation<DocKey, Optional<DocView>> {
+
+        @Override
+        public Optional<DocView> execute(DocKey input) {
+            return Optional.empty();
+        }
+    }
+
+    /** Reads a doc with tags. */
+    public static class GetTaggedDocOperation implements QueryOperation<DocKey, TaggedDoc> {
+
+        @Override
+        public TaggedDoc execute(DocKey input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Lists docs. */
+    public static class ListDocsOperation implements QueryOperation<DocKey, List<DocView>> {
+
+        @Override
+        public List<DocView> execute(DocKey input) {
+            return List.of();
+        }
+    }
+
+    /** Creates a doc. */
+    public static class CreateDocOperation implements CommandOperation<NewDoc, DocView> {
+
+        @Override
+        public DocView execute(NewDoc input) {
+            return new DocView("d", input.text(), 1);
+        }
+    }
+
+    /** Updates a doc. */
+    public static class UpdateDocOperation implements CommandOperation<DocUpdate, DocView> {
+
+        @Override
+        public DocView execute(DocUpdate input) {
+            return new DocView(input.id(), input.text(), 2);
+        }
+    }
+
+    /** Deletes a doc. */
+    public static class DeleteDocOperation implements CommandOperation<DocDeletion, Void> {
+
+        @Override
+        public Void execute(DocDeletion input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** A read whose input has a condition. */
+    public static class ReadDeletionOperation implements QueryOperation<DocDeletion, DocView> {
+
+        @Override
+        public DocView execute(DocDeletion input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Returns a condition. */
+    public static class ConditionOutputOperation implements QueryOperation<DocKey, DocDeletion> {
+
+        @Override
+        public DocDeletion execute(DocKey input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Takes two conditions. */
+    public static class TwoConditionsOperation implements CommandOperation<TwoConditions, Void> {
+
+        @Override
+        public Void execute(TwoConditions input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Takes a condition in a nested record. */
+    public static class NestedConditionOperation implements CommandOperation<NestedCondition, Void> {
+
+        @Override
+        public Void execute(NestedCondition input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Takes a condition inside an {@code Optional}. */
+    public static class WrappedConditionOperation implements CommandOperation<WrappedCondition, Void> {
+
+        @Override
+        public Void execute(WrappedCondition input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Takes a condition on {@code Object}. */
+    public static class ObjectConditionOperation implements CommandOperation<ObjectCondition, Void> {
+
+        @Override
+        public Void execute(ObjectCondition input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Takes a condition without a version type. */
+    public static class WildcardConditionOperation implements CommandOperation<WildcardCondition, Void> {
+
+        @Override
+        public Void execute(WildcardCondition input) {
+            throw new UnsupportedOperationException();
+        }
     }
 }

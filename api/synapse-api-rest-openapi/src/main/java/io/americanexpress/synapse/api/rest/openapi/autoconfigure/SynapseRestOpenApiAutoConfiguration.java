@@ -22,6 +22,7 @@ import org.springdoc.core.customizers.OpenApiCustomizer;
 import org.springdoc.core.properties.SpringDocConfigProperties;
 import org.springdoc.core.properties.SpringDocConfigProperties.ApiDocs.OpenApiVersion;
 import org.springdoc.webmvc.core.configuration.SpringDocWebMvcConfiguration;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -40,14 +41,17 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestAutoConfiguration;
 import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestProperties;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.error.RestErrorStatuses;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.OperationRoutes;
 import io.americanexpress.synapse.api.rest.openapi.internal.RouteDocumenter;
 import io.americanexpress.synapse.api.rest.openapi.internal.SynapseOpenApiCustomizer;
+import io.americanexpress.synapse.api.rest.openapi.internal.aot.OpenApiAotCheck;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationProperties;
+import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch;
 
 /**
  * Auto-configuration of the OpenAPI documentation of REST bindings: the routes of every {@link RestBindings} bean join
@@ -59,7 +63,7 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationPropertie
         SpringDocWebMvcConfiguration.class})
 @ConditionalOnWebApplication(type = Type.SERVLET)
 @ConditionalOnClass(OpenApiCustomizer.class)
-public class SynapseRestOpenApiAutoConfiguration {
+public final class SynapseRestOpenApiAutoConfiguration {
 
     static final String VERSION = "springdoc.api-docs.version";
 
@@ -108,7 +112,7 @@ public class SynapseRestOpenApiAutoConfiguration {
         // The routes bean is ordered by specificity; the bindings in bean order are the order the routes bean compiles.
         List<RouteDefinition> resolved = RouteDocumenter
                 .inDeclarationOrder(OperationRoutes.of(List.of(routes)),
-                        bindings.orderedStream().flatMap(each -> each.routes().stream()).toList());
+                        bindings.orderedStream().flatMap(each -> RestBindingsAccess.routes(each).stream()).toList());
         SpringDocConfigProperties filters = springdoc.getIfAvailable();
         if (filters != null) {
             resolved = RouteDocumenter.matching(resolved, filters.getPathsToMatch(), filters.getPathsToExclude());
@@ -131,5 +135,20 @@ public class SynapseRestOpenApiAutoConfiguration {
         return new SynapseOpenApiCustomizer(resolved, mapper, Validation.buildDefaultValidatorFactory(), paging,
                 statuses,
                 correlation.header(), properties.deadline().header());
+    }
+
+    /**
+     * The build-time switch for {@code springdoc.api-docs.enabled}, which decides whether springdoc defines its document
+     * endpoint. Core's check fails startup in AOT mode when it differs from the build, with every other switch that
+     * differs. Define a bean with the same name to replace it.
+     *
+     * @param environment the environment, for the property's value now
+     * @param beanFactory the bean factory, for whether the build defined springdoc's document endpoint
+     * @return the switch
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseOpenApiAotCheck")
+    static BuildTimeSwitch synapseOpenApiAotCheck(Environment environment, ListableBeanFactory beanFactory) {
+        return new OpenApiAotCheck(environment, beanFactory);
     }
 }

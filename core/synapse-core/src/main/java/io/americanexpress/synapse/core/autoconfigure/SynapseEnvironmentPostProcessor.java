@@ -25,6 +25,7 @@ import org.springframework.core.env.ConfigurableEnvironment;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.internal.environment.AotEnvironmentCheck;
+import io.americanexpress.synapse.core.internal.environment.BakedProfiles;
 import io.americanexpress.synapse.core.internal.environment.EnvironmentName;
 import io.americanexpress.synapse.core.internal.environment.ModuleConfigFiles;
 import io.americanexpress.synapse.core.internal.environment.ServiceConfigFiles;
@@ -32,8 +33,9 @@ import io.americanexpress.synapse.core.internal.environment.ServiceConfigFiles;
 /**
  * Applies Synapse's environment rules right after Boot has loaded the service's config data. In order, it:
  * <ol>
+ * <li>in AOT mode, checks that the AOT-generated code activates no profile;</li>
  * <li>resolves the single environment name ({@code spring.profiles.active} plus {@code SpringApplication}
- * additional profiles);</li>
+ * additional profiles; during AOT processing, the one {@code spring.profiles.default}, with no profile active);</li>
  * <li>checks that the service has a file for it, and that no config document uses
  * {@code spring.config.activate.on-profile};</li>
  * <li>loads the module files from fixed resource names and inserts them below Boot's config data, after the
@@ -63,6 +65,9 @@ final class SynapseEnvironmentPostProcessor implements EnvironmentPostProcessor,
 
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
+        if (aotMode.getAsBoolean()) {
+            BakedProfiles.reject(application);
+        }
         String name = EnvironmentName.resolve(environment, application.getAdditionalProfiles()).name();
         ClassLoader classLoader = application.getClassLoader();
         ServiceConfigFiles.requireEnvironmentFile(environment, name, classLoader);

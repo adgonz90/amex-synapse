@@ -104,6 +104,12 @@ interface FieldConverter {
 
         private final List<Violation> violations = new ArrayList<>();
 
+        /** Whether a write's If-Match {@code etag} is a weak tag, which never matches under strong comparison. */
+        private boolean weakTag;
+
+        /** The required token fields the request doesn't send, each with its advice, in component order. */
+        private final List<Violation> missingPreconditions = new ArrayList<>(2);
+
         /**
          * Converts a value, recording a value the converter rejects as {@code {path, "is not a valid value"}}. Only
          * conversion failures are recorded ({@link ConversionException}, {@link IllegalArgumentException},
@@ -134,6 +140,34 @@ interface FieldConverter {
 
         void missing(String path) {
             add(new Violation(path, MISSING));
+        }
+
+        void violation(String path, String message) {
+            add(new Violation(path, message));
+        }
+
+        /** Records that a write's If-Match {@code etag} is weak: once the input is valid, the precondition fails. */
+        void weakTag() {
+            weakTag = true;
+        }
+
+        boolean hasWeakTag() {
+            return weakTag;
+        }
+
+        /**
+         * Records that a required token field is missing: not a violation, but {@code PRECONDITION_REQUIRED} once the
+         * input is otherwise valid, as REST answers 428 after its 400s, with one violation per missing field.
+         *
+         * @param path the field's path ({@code etag} or {@code if_none_match})
+         * @param advice how to resubmit, as REST's 428 violation says it for its header
+         */
+        void preconditionMissing(String path, String advice) {
+            missingPreconditions.add(new Violation(path, advice));
+        }
+
+        List<Violation> missingPreconditions() {
+            return missingPreconditions;
         }
 
         List<Violation> violations() {

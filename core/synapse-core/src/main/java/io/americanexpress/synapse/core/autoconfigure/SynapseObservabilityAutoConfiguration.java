@@ -33,7 +33,7 @@ import io.americanexpress.synapse.core.observability.SynapseObservations;
  */
 @AutoConfiguration(after = SynapseCoreAutoConfiguration.class)
 @ConditionalOnClass(MeterFilter.class)
-public class SynapseObservabilityAutoConfiguration {
+public final class SynapseObservabilityAutoConfiguration {
 
     /**
      * Denies the meters of {@value SynapseObservations#BUSINESS} observations in {@code spans} mode.

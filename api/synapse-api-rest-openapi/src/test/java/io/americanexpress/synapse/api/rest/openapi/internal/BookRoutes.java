@@ -28,6 +28,7 @@ import org.jspecify.annotations.Nullable;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.conditional.VersionCondition;
@@ -211,7 +212,7 @@ final class BookRoutes {
     /** Resolves the routes as the routes bean does. */
     static List<RouteDefinition> resolve(RestBindings bindings, PagingSettings paging,
             RestConventions... conventions) {
-        return new BindingValidator(paging).validate(bindings.routes(), List.of(conventions));
+        return new BindingValidator(paging).validate(RestBindingsAccess.routes(bindings), List.of(conventions));
     }
 
     enum BookErrors implements ErrorDetails {

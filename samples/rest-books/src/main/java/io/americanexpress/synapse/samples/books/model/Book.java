@@ -27,8 +27,9 @@ import org.jspecify.annotations.Nullable;
  * @param year the year of publication, if known
  * @param addedVia the channel the book was added through: the {@code X-Channel} header of the {@code POST}, taken from
  *        the request context (a different body value is rejected), or {@code null} when the caller sent none
- * @param version the version: 1 when the book is added, plus 1 on every change. Over REST it is also the book's
- *        {@code ETag}, and a client sends it back in {@code If-Match} to update or delete this version
+ * @param version the version: 1 when the book is added, plus 1 on every change. It is also the book's entity tag
+ *        ({@code "1"}): REST's {@code ETag} header, which a client sends back in {@code If-Match} to update or
+ *        delete this version
  */
 public record Book(UUID id, String isbn, String title, String author, @Nullable Integer year,
         @Nullable String addedVia, long version) {

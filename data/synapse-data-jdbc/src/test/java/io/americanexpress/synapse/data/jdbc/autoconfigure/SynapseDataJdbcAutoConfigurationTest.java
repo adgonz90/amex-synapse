@@ -34,6 +34,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.beans.factory.support.AutowireCandidateQualifier;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.boot.LazyInitializationBeanFactoryPostProcessor;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.AutoConfigurationPackages;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -85,6 +86,7 @@ import io.americanexpress.synapse.data.SynapseDataStore;
 import io.americanexpress.synapse.data.autoconfigure.SynapseDataAutoConfiguration;
 import io.americanexpress.synapse.data.internal.store.StoreBeans;
 import io.americanexpress.synapse.data.internal.store.StoreFactory;
+import io.americanexpress.synapse.data.jdbc.SynapseJdbcTransactionManager;
 import io.americanexpress.synapse.data.jdbc.fixture.H2TestVendor;
 import io.americanexpress.synapse.data.jdbc.fixture.books.Book;
 import io.americanexpress.synapse.data.jdbc.fixture.books.BookRepository;
@@ -96,6 +98,8 @@ import io.americanexpress.synapse.data.jdbc.fixture.legacy.Shelf;
 import io.americanexpress.synapse.data.jdbc.fixture.legacy.Slot;
 import io.americanexpress.synapse.data.jdbc.fixture.ownbeans.BooksStoreWithOwnBeans;
 import io.americanexpress.synapse.data.jdbc.fixture.ownnaming.BooksStoreWithOwnNaming;
+import io.americanexpress.synapse.data.jdbc.fixture.plaintm.BooksStoreWithPlainTransactionManager;
+import io.americanexpress.synapse.data.jdbc.fixture.synapsetm.BooksStoreWithSynapseTransactionManager;
 import io.americanexpress.synapse.data.jdbc.internal.JdbcAuditingCallback;
 import io.americanexpress.synapse.data.jdbc.internal.JdbcStoreFactory;
 import io.americanexpress.synapse.data.vendor.DataStoreVendor;
@@ -135,12 +139,79 @@ class SynapseDataJdbcAutoConfigurationTest {
             .withUserConfiguration(BooksStore.class)
             .withPropertyValues(store("books"));
 
+    /**
+     * A store whose transaction manager is a plain {@code DataSourceTransactionManager} loses the commit-outcome
+     * detection, so the startup report warns, naming the store and the bean.
+     */
+    @Test
+    void aPlainTransactionManagerIsWarnedAboutAtStartup(CapturedOutput output) {
+        runner
+                .withUserConfiguration(BooksStoreWithPlainTransactionManager.class)
+                .withPropertyValues(store("books"))
+                .run(started());
+        assertThat(output.getOut().lines().filter(line -> line.contains("booksTransactionManager")))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains(" WARN ", "io.americanexpress.synapse.data ")
+                        .endsWith("Data store books: its booksTransactionManager is a "
+                                + "org.springframework.jdbc.datasource.DataSourceTransactionManager, not a "
+                                + "io.americanexpress.synapse.data.jdbc.SynapseJdbcTransactionManager, so a connection "
+                                + "lost while a transaction commits can be reported as a retryable UNAVAILABLE "
+                                + "instead of COMMIT_OUTCOME_UNKNOWN, and with some managers (JdbcTransactionManager, "
+                                + "JpaTransactionManager) a failed rollback hides the failure it "
+                                + "replaced. Extend SynapseJdbcTransactionManager to keep both."));
+    }
+
+    /** Synapse's own transaction manager, or a subclass of it, gets no warning. */
+    @Test
+    void synapsesTransactionManagerOrASubclassIsNotWarnedAbout(CapturedOutput output) {
+        books.run(started());
+        runner
+                .withUserConfiguration(BooksStoreWithSynapseTransactionManager.class)
+                .withPropertyValues(store("books"))
+                .run(started());
+        assertThat(output.getOut()).contains("Synapse data stores: books").doesNotContain("booksTransactionManager");
+    }
+
+    /**
+     * With lazy initialization the store's own manager isn't created before the startup report, which then sees only
+     * its bean definition: still no WARN. A plain replacement not created yet, whose bean method declares a supertype of
+     * Synapse's, is warned about as one Synapse can't tell apart from a subclass.
+     */
+    @Test
+    void lazyInitializationWarnsOnlyAboutAReplacement(CapturedOutput output) {
+        books
+                .withInitializer(context -> context
+                        .addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor()))
+                .run(context -> {
+                    assertThat(context.getBeanFactory().containsSingleton("booksTransactionManager"))
+                            .as("created before the report")
+                            .isFalse();
+                    started().accept(context);
+                });
+        assertThat(output.getOut()).contains("Synapse data stores: books").doesNotContain("booksTransactionManager");
+        runner
+                .withUserConfiguration(BooksStoreWithPlainTransactionManager.class)
+                .withPropertyValues(store("books"))
+                .withInitializer(context -> context
+                        .addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor()))
+                .run(started());
+        assertThat(output.getOut().lines().filter(line -> line.contains("booksTransactionManager")))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains(" WARN ",
+                                "is declared as a org.springframework.jdbc.datasource.DataSourceTransactionManager "
+                                        + "and isn't created yet (lazy initialization)",
+                                "Declare the bean as a "
+                                        + "SynapseJdbcTransactionManager"));
+    }
+
     @Test
     void aJdbcStoreGetsItsInfrastructure() {
         books.run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(context.getBean("booksTransactionManager"))
-                    .isInstanceOfSatisfying(JdbcTransactionManager.class, transactionManager -> assertThat(
+                    .isInstanceOfSatisfying(SynapseJdbcTransactionManager.class, transactionManager -> assertThat(
                             transactionManager.getDataSource()).isSameAs(context.getBean("booksDataSource")));
             assertThat(context.getBean("booksJdbcDialect")).isSameAs(JdbcH2Dialect.INSTANCE);
             JdbcMappingContext mappingContext = context.getBean("booksJdbcMappingContext", JdbcMappingContext.class);

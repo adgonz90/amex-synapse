@@ -1,0 +1,4 @@
+# Settings for this module's tests: @SynapseDataTest activates the test environment, which needs a file of its own.
+# This one sets nothing. The store's settings come from the module's META-INF/synapse/config.yaml, as in a service,
+# and each test connects the store to a PostgreSQL container with @StoreConnection. Never put files in
+# src/test/resources/META-INF/synapse/: beside this file, Synapse would fail startup.

@@ -32,9 +32,21 @@ CI=true ./mvnw verify                          # exactly what CI runs (formattin
 ./mvnw verify -Djvm=/path/to/jdk-21/bin/java   # run tests on a Java 21 runtime
 ./mvnw -pl core/synapse-core -am verify        # one module and what it depends on
 ./mvnw -Pmutation verify                       # also run PIT mutation testing (nightly in CI)
+./mvnw -Paot -pl samples/reference-bookstore/service-bookstore -am verify   # Spring AOT (nightly in CI)
 ```
 
-Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (integration tests: `-Dit.test=...`).
+`-Paot` (synapse-parent's opt-in Spring AOT processing) works only for the reference bookstore, as above. The other
+samples have no build environment file (`application-build.yaml`) by design, so `./mvnw -Paot verify` at the root fails
+in them (`The environment 'build' has no file in the service`).
+
+Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false`. A single integration test with `-am`:
+`-Dit.test=ClassNameIT -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+-Djacoco.skip=true` (the modules `-am` adds have no such IT, and the coverage gate needs every test of the module).
+Neither is a passing build.
+
+The samples inherit `synapse-parent`, not the root build, so only a build that includes the root formats them and
+checks their license headers. `-pl samples/<name> -am` includes it (`-am` adds the root as the parent of the library
+modules); `./mvnw -N process-sources` does it alone.
 
 ## Quality gates (CI fails on any of these)
 - **Formatting:** Spotless with the Synapse Eclipse profile in `.config/synapse-java-format.xml`, plus import order, LF line endings and the license header. Local builds format files automatically; CI only checks.
@@ -43,7 +55,7 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 - **Static analysis:** Error Prone and NullAway (JSpecify mode). Every package has a `package-info.java` annotated `@NullMarked`, and nullable types are marked `@Nullable`. A test package with the same name as a main package has no `package-info.java` of its own: the main one covers it, and a second copy is a duplicate type in IDEs that compile main and test sources together.
 - **Dependencies:** the Maven Enforcer bans some dependencies (see the root `pom.xml`) and requires dependency convergence. Test libraries must stay in test scope (except `synapse-test` and the `synapse-test-<plugin>` slices).
 - **Tests:**
-  - Unit tests (`*Test`, surefire) and integration tests (`*IT`, failsafe) are never skipped. Pull requests run all of them on JDK 25, and unit tests plus each module's smoke integration tests on JDK 21; the full JDK 21 run is nightly. Oracle and SQL Server integration tests run nightly, on release, and on PRs that change those modules.
+  - Unit tests (`*Test`, surefire) and integration tests (`*IT`, failsafe) are never skipped. Pull requests run all of them on JDK 25, and unit tests plus each module's smoke integration tests on JDK 21; the full JDK 21 run is nightly. The samples inherit `synapse-parent`, which doesn't read the smoke filter, so the JDK 21 pull request leg leaves out the ITs of the samples listed in `.config/jdk21-pr-excluded-its.txt` (Failsafe's `excludesFile`); they run on JDK 25 on every pull request and on JDK 21 nightly. The exception is the reference bookstore's `BookstoreAotIT`, which needs `-Paot` and runs only in the nightly `aot-reference` job (JDK 25 and 21). Oracle and SQL Server integration tests run nightly, on release, and on PRs that change those modules.
   - Every module with integration tests tags at least one of them `@Tag("smoke")` (keep them fast); those are the ones the JDK 21 pull request leg runs (`-Dsynapse.it.groups=smoke`).
   - `-DskipTests` also skips the coverage gate (there is no execution data), so a build with it is not a passing build.
   - Per-module JaCoCo floor: 80% line / 70% branch.
@@ -51,7 +63,11 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 - **Security:**
   - CodeQL, secret scanning and Dependabot.
   - Dependency review, which fails on new high-severity dependencies.
-  - OSV-Scanner, which fails a PR only on vulnerabilities that PR introduces.
+  - OSV-Scanner, which fails a PR only on vulnerabilities that PR introduces (known gap: the modules that depend on
+    reactor SNAPSHOT artifacts fail transitive resolution and aren't scanned, yet the job passes; synapse-bom scans 0
+    packages too, so a regressed CVE pin in the BOM wouldn't show there either, and only the `bom-guava-pin` invoker
+    test guards the guava pin; see
+    [BUILD.md §14](specs/v2/BUILD.md), gate 8).
   - actionlint and zizmor on workflow changes.
   - OpenSSF Scorecard.
 
@@ -85,9 +101,10 @@ Single test: `-Dtest=ClassName#method -Dsurefire.failIfNoSpecifiedTests=false` (
 | `core/synapse-logging-log4j2` | Prescriptive Log4j2 logging: ECS JSON default, optional failure-log burst limit |
 | `api/` | API plugins, their test slices and add-ons (synapse-api-rest, synapse-test-rest, synapse-api-rest-openapi, synapse-api-grpc, synapse-test-grpc) |
 | `data/` | Data modules and their test slice (synapse-data-core, -jpa, -jdbc, -postgres, synapse-test-data) |
-| `samples/` | Runnable samples; never published |
+| `samples/` | Runnable samples (hello-rest, rest-books, grpc-inventory, multi-store, reference-bookstore), each on `synapse-parent` with a README run against the app; never published |
+| `archetypes/` | Maven archetypes (synapse-archetype-quickstart, shaped like hello-rest; synapse-archetype-service, shaped like the reference bookstore), each with an IT that generates a project and builds it; javadoc-placeholder (the javadoc jar they attach on release) |
 | `docs/` | Documentation site (Antora, AsciiDoc); property tables are generated from configuration metadata |
-| `tests/` | Tests of the build itself (maven-invoker projects for the Enforcer rules) and of modules that only meet in an application (synapse-data-mixed-tests: JPA and JDBC stores together); never published |
+| `tests/` | Tests of the build itself (maven-invoker projects for the Enforcer rules) and of modules that only meet in an application (synapse-data-mixed-tests: JPA and JDBC stores together; synapse-logging-logback-tests: Synapse's log lines on Logback in Boot's structured formats); never published |
 | `specs/` | Design specifications |
 | `.config/` | Formatter profile and license header |
 

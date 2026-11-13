@@ -13,6 +13,11 @@
  */
 package io.americanexpress.synapse.api.rest;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -23,7 +28,9 @@ import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.http.HttpMethod;
 import org.springframework.util.unit.DataSize;
 
+import io.americanexpress.synapse.api.rest.internal.binding.ConventionRules;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDeclaration;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.BookResult;
@@ -43,6 +50,7 @@ import io.americanexpress.synapse.core.paging.PageResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 class RestBindingsTest {
 
@@ -58,7 +66,7 @@ class RestBindingsTest {
                 .created(book -> "/books/" + book.id())
                 .build();
 
-        List<RouteDefinition> routes = bindings.routes();
+        List<RouteDefinition> routes = RestBindingsAccess.routes(bindings);
         assertThat(routes).hasSize(2);
         RouteDefinition get = routes.get(0);
         assertThat(get.method()).isEqualTo(HttpMethod.GET);
@@ -83,23 +91,25 @@ class RestBindingsTest {
         GetBookOperation getBook = new GetBookOperation();
         UpdateBookOperation updateBook = new UpdateBookOperation();
 
-        List<RouteDefinition> routes = RestBindings
-                .builder()
-                .head("/a/{id}", getBook)
-                .get("/b/{id}", getBook)
-                .head("/c/{id}", getBook)
-                .post("/d/{id}", updateBook)
-                .put("/e/{id}", updateBook)
-                .delete("/f/{id}", getBook)
-                .build()
-                .routes();
-        List<RouteDefinition> fromBuilder = RestBindings
-                .builder()
-                .put("/g/{id}", updateBook)
-                .build()
-                .routes();
-        List<RouteDefinition> deleteFromBuilder = RestBindings.builder().delete("/h/{id}", getBook).build().routes();
-        List<RouteDefinition> postFromBuilder = RestBindings.builder().post("/i/{id}", updateBook).build().routes();
+        List<RouteDefinition> routes = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .head("/a/{id}", getBook)
+                        .get("/b/{id}", getBook)
+                        .head("/c/{id}", getBook)
+                        .post("/d/{id}", updateBook)
+                        .put("/e/{id}", updateBook)
+                        .delete("/f/{id}", getBook)
+                        .build());
+        List<RouteDefinition> fromBuilder = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .put("/g/{id}", updateBook)
+                        .build());
+        List<RouteDefinition> deleteFromBuilder = RestBindingsAccess
+                .routes(RestBindings.builder().delete("/h/{id}", getBook).build());
+        List<RouteDefinition> postFromBuilder = RestBindingsAccess
+                .routes(RestBindings.builder().post("/i/{id}", updateBook).build());
 
         assertThat(routes)
                 .extracting(RouteDefinition::method)
@@ -128,25 +138,25 @@ class RestBindingsTest {
 
     @Test
     void routeRecordsDeclarationsInOrderWithoutResolvingThem() {
-        RouteDefinition route = RestBindings
-                .builder()
-                .put("/books/{bookId}", new UpdateBookOperation())
-                .path("bookId", UpdateBookRequest::id)
-                .query("t", UpdateBookRequest::title)
-                .query(UpdateBookRequest::options)
-                .cookie("c", UpdateBookRequest::title)
-                .context(UpdateBookRequest::title, context -> context.correlationId())
-                .from(UpdateBookRequest::title, request -> "x")
-                .header("X-Title", BookResult::title)
-                .alsoInBody()
-                .body(BookResult::id)
-                .header("X-Rate", (UpdateBookRequest request) -> request.id())
-                .status(202)
-                .accepted(book -> "/jobs/" + book.id())
-                .emptyAs(204)
-                .maxRequestSize(DataSize.ofKilobytes(64))
-                .build()
-                .routes()
+        RouteDefinition route = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .put("/books/{bookId}", new UpdateBookOperation())
+                        .path("bookId", UpdateBookRequest::id)
+                        .query("t", UpdateBookRequest::title)
+                        .query(UpdateBookRequest::options)
+                        .cookie("c", UpdateBookRequest::title)
+                        .context(UpdateBookRequest::title, context -> context.correlationId())
+                        .from(UpdateBookRequest::title, request -> "x")
+                        .header("X-Title", BookResult::title)
+                        .alsoInBody()
+                        .body(BookResult::id)
+                        .header("X-Rate", (UpdateBookRequest request) -> request.id())
+                        .status(202)
+                        .accepted(book -> "/jobs/" + book.id())
+                        .emptyAs(204)
+                        .maxRequestSize(DataSize.ofKilobytes(64))
+                        .build())
                 .getFirst();
 
         assertThat(route.declarations())
@@ -173,25 +183,25 @@ class RestBindingsTest {
 
     @Test
     void laterStatusDeclarationReplacesTheEarlierOne() {
-        RouteDefinition computed = RestBindings
-                .builder()
-                .post("/books", new CreateBookOperation())
-                .status(200)
-                .status(book -> book.remaining() > 0 ? 201 : 202)
-                .build()
-                .routes()
+        RouteDefinition computed = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .post("/books", new CreateBookOperation())
+                        .status(200)
+                        .status(book -> book.remaining() > 0 ? 201 : 202)
+                        .build())
                 .getFirst();
         assertThat(computed.response().status()).isNull();
         assertThat(computed.response().statusFunction()).isNotNull();
         assertThat(Objects.requireNonNull(computed.response().statusFunction()).applyAsInt(BOOK)).isEqualTo(201);
 
-        RouteDefinition fixed = RestBindings
-                .builder()
-                .post("/books", new CreateBookOperation())
-                .status(book -> 202)
-                .status(200)
-                .build()
-                .routes()
+        RouteDefinition fixed = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .post("/books", new CreateBookOperation())
+                        .status(book -> 202)
+                        .status(200)
+                        .build())
                 .getFirst();
         assertThat(fixed.response().status()).isEqualTo(200);
         assertThat(fixed.response().statusFunction()).isNull();
@@ -207,12 +217,12 @@ class RestBindingsTest {
         QueryOperation<GetBookRequest, Optional<BookResult>> jdk = (QueryOperation<GetBookRequest, Optional<BookResult>>) new ProxyFactory(
                 target).getProxy();
 
-        List<RouteDefinition> routes = RestBindings
-                .builder()
-                .get("/a/{id}", cglib)
-                .get("/b/{id}", jdk)
-                .build()
-                .routes();
+        List<RouteDefinition> routes = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/a/{id}", cglib)
+                        .get("/b/{id}", jdk)
+                        .build());
 
         assertThat(cglib.getClass()).isNotEqualTo(GetBookOperation.class);
         assertThat(java.lang.reflect.Proxy.isProxyClass(jdk.getClass())).isTrue();
@@ -233,12 +243,12 @@ class RestBindingsTest {
                 .responseHeader("X-Remaining", BookResult.class, BookResult::remaining)
                 .build();
 
-        assertThat(conventions.rules().queryRecords()).containsExactly(WriteOptions.class);
-        assertThat(conventions.rules().headers()).singleElement().satisfies(rule -> {
+        assertThat(RestBindingsAccess.rules(conventions).queryRecords()).containsExactly(WriteOptions.class);
+        assertThat(RestBindingsAccess.rules(conventions).headers()).singleElement().satisfies(rule -> {
             assertThat(rule.name()).isEqualTo("X-Tenant");
             assertThat(rule.componentType()).isEqualTo(String.class);
         });
-        assertThat(conventions.rules().responseHeaders()).singleElement().satisfies(rule -> {
+        assertThat(RestBindingsAccess.rules(conventions).responseHeaders()).singleElement().satisfies(rule -> {
             assertThat(rule.name()).isEqualTo("X-Remaining");
             assertThat(rule.outputType()).isEqualTo(BookResult.class);
         });
@@ -246,11 +256,11 @@ class RestBindingsTest {
 
     @Test
     void searchRouteHasAListOutput() {
-        RouteDefinition route = RestBindings
-                .builder()
-                .get("/books", new SearchBooksOperation())
-                .build()
-                .routes()
+        RouteDefinition route = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books", new SearchBooksOperation())
+                        .build())
                 .getFirst();
 
         assertThat(route.outputType()).isEqualTo(List.class);
@@ -259,14 +269,14 @@ class RestBindingsTest {
 
     @Test
     void sortableIsRecordedAsADeclaration() {
-        List<RouteDeclaration> declarations = RestBindings
-                .builder()
-                .get("/books", new PagedBooksOperation())
-                .sortable(SortKey.class)
-                .get("/all", new PagedBooksOperation())
-                .sortable("title", "year")
-                .build()
-                .routes()
+        List<RouteDeclaration> declarations = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books", new PagedBooksOperation())
+                        .sortable(SortKey.class)
+                        .get("/all", new PagedBooksOperation())
+                        .sortable("title", "year")
+                        .build())
                 .stream()
                 .flatMap(route -> route.declarations().stream())
                 .toList();
@@ -278,17 +288,17 @@ class RestBindingsTest {
 
     @Test
     void versionPrefixesThePath() {
-        List<RouteDefinition> routes = RestBindings
-                .builder()
-                .get("/books/{id}", new GetBookOperation())
-                .version("2")
-                .get("/", new GetBookOperation())
-                .version("1.1")
-                .get("books", new GetBookOperation())
-                .version("3")
-                .get("/books", new SearchBooksOperation())
-                .build()
-                .routes();
+        List<RouteDefinition> routes = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books/{id}", new GetBookOperation())
+                        .version("2")
+                        .get("/", new GetBookOperation())
+                        .version("1.1")
+                        .get("books", new GetBookOperation())
+                        .version("3")
+                        .get("/books", new SearchBooksOperation())
+                        .build());
 
         RouteDefinition versioned = routes.get(0);
         assertThat(versioned.path()).isEqualTo("/v2/books/{id}");
@@ -311,16 +321,56 @@ class RestBindingsTest {
 
     @Test
     void pagedRouteIsDeclaredWithoutPagingRules() {
-        RouteDefinition route = RestBindings
-                .builder()
-                .get("/books", new PagedBooksOperation())
-                .build()
-                .routes()
+        RouteDefinition route = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books", new PagedBooksOperation())
+                        .build())
                 .getFirst();
 
         assertThat(route.outputType()).isEqualTo(PageResult.class);
         assertThat(route.outputValueType()).isEqualTo(BookResult.class);
         assertThat(route.pagedOutput()).isTrue();
         assertThat(route.paging()).isNull();
+    }
+
+    @Test
+    void publicApiExposesNoInternalType() {
+        // An internal type in a public signature becomes API that applications can reach without importing an
+        // internal package, so Synapse reads the declarations through RestBindingsAccess instead.
+        List<String> exposed = new ArrayList<>();
+        Deque<Class<?>> types = new ArrayDeque<>(
+                List.of(RestBindings.class, RestConventions.class, RestErrors.class, RouteSpec.class));
+        while (!types.isEmpty()) {
+            Class<?> type = types.pop();
+            for (Class<?> nested : type.getDeclaredClasses()) {
+                if (Modifier.isPublic(nested.getModifiers())) {
+                    types.add(nested);
+                }
+            }
+            for (Method method : type.getMethods()) {
+                String signature = method.toGenericString();
+                if (method.getDeclaringClass() != Object.class && signature.contains(".internal.")) {
+                    exposed.add(signature);
+                }
+            }
+        }
+
+        assertThat(exposed).isEmpty();
+    }
+
+    @Test
+    void accessIsRegisteredOnce() {
+        // Initializes both classes, which register their access.
+        RestBindings.builder().build();
+        RestConventions.builder().build();
+
+        assertThatIllegalStateException()
+                .isThrownBy(() -> RestBindingsAccess.registerRoutes(bindings -> List.of()))
+                .withMessage("The RestBindings access is already registered");
+        assertThatIllegalStateException()
+                .isThrownBy(() -> RestBindingsAccess
+                        .registerRules(conventions -> new ConventionRules(List.of(), List.of(), List.of())))
+                .withMessage("The RestConventions access is already registered");
     }
 }

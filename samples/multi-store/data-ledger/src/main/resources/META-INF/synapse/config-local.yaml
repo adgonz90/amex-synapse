@@ -1,0 +1,11 @@
+# The ledger store in the local environment: the ledger-db container of compose.yaml (docker compose up -d).
+# Local compose only. The user name and password are those of that throwaway container; in every other environment
+# they come from the environment variables SYNAPSE_DATA_STORES_LEDGER_USERNAME and SYNAPSE_DATA_STORES_LEDGER_PASSWORD,
+# never from a file, and that environment's config-<env>.yaml sets only the url.
+synapse:
+  data:
+    stores:
+      ledger:
+        url: jdbc:postgresql://localhost:5434/ledger
+        username: ledger
+        password: ledger

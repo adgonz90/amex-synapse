@@ -15,6 +15,7 @@ package io.americanexpress.synapse.api.rest.internal.paging;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.operation.OperationNames;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.PageResult;
@@ -81,6 +84,12 @@ class RestPagingIT {
 
     @Autowired
     private TenantBooksOperation tenantBooks;
+
+    @Autowired
+    private NumbersOperation numbers;
+
+    @Autowired
+    private PageCursors cursors;
 
     /** A response: its status, headers and body. */
     record Result(int status, HttpHeaders headers, String body) {
@@ -350,6 +359,49 @@ class RestPagingIT {
     }
 
     @Test
+    void coreCursorKeyAndOffsetCapApplyAndTheVersionStaysInTheScope() {
+        String key = Base64.getEncoder().encodeToString(new byte[32]);
+        try (ConfigurableApplicationContext one = startVersioned(key);
+                ConfigurableApplicationContext two = startVersioned(key)) {
+            RestTestClient first = clientOf(one);
+            RestTestClient second = clientOf(two);
+            String token = call(first.get().uri("/v1/letters?size=1")).nextCursor();
+
+            // synapse.paging.cursor.key: the instances share the key, so each reads the other's tokens.
+            Result next = call(second.get().uri("/v1/letters?size=1&cursor={cursor}", token));
+            assertThat(next.status()).isEqualTo(200);
+            assertThat(next.json().get("items").get(0).asString()).isEqualTo("b");
+            // The route's version is in the scope: the same operation in another version rejects the token.
+            assertCursorViolation(call(second.get().uri("/v2/letters?size=1&cursor={cursor}", token)));
+            assertCursorViolation(call(first.get().uri("/v2/letters?size=1&cursor={cursor}", token)));
+            // synapse.paging.max-offset caps the offset.
+            Result over = call(second.get().uri("/v1/letters?offset=3"));
+            assertThat(over.status()).isEqualTo(400);
+            assertThat(over.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+            assertThat(violations(over)).containsExactly(Map.entry("offset", "must be less than or equal to 2"));
+            assertThat(call(second.get().uri("/v1/letters?offset=2")).status()).isEqualTo(200);
+        }
+    }
+
+    /** Starts {@link VersionedApplication} with the core cursor key and an offset cap of 2. */
+    private static ConfigurableApplicationContext startVersioned(String key) {
+        return new SpringApplicationBuilder(VersionedApplication.class)
+                .profiles("test")
+                .properties("server.port=0", "management.logging.export.otlp.enabled=false",
+                        "management.tracing.export.otlp.enabled=false",
+                        "management.otlp.metrics.export.enabled=false", "synapse.paging.cursor.key=" + key,
+                        "synapse.paging.max-offset=2")
+                .run();
+    }
+
+    private static RestTestClient clientOf(ConfigurableApplicationContext context) {
+        return RestTestClient
+                .bindToServer()
+                .baseUrl("http://localhost:" + context.getEnvironment().getProperty("local.server.port"))
+                .build();
+    }
+
+    @Test
     void getAndHeadSendLinkAndPostDoesNot() {
         Result get = call(client.get().uri("/books?size=2"));
         Result head = call(client.head().uri("/books?size=2"));
@@ -398,6 +450,33 @@ class RestPagingIT {
         assertThat(page.json().get("hasNext").asBoolean()).isFalse();
     }
 
+    @Test
+    void offsetTokenPagesOverTheCursorParameter() {
+        // The token gRPC writes to next_page_token for an offset page (core's PageCursors.next, no extra entries),
+        // sent as REST's cursor on an unversioned route of the same operation.
+        String token = cursors
+                .next(OperationNames.nameOf(NumbersOperation.class), PageQuery.first(2), Map.of(),
+                        PageResult.of(List.of("one", "two"), true), 1000);
+        assertThat(token).isNotNull();
+
+        Result second = call(client.get().uri("/numbers?size=2&cursor={cursor}", token));
+
+        assertThat(second.status()).isEqualTo(200);
+        assertThat(second.json().get("items").valueStream().map(JsonNode::asString).toList())
+                .containsExactly("three", "four");
+        // The operation receives the offset the token carries, and no cursor.
+        assertThat(numbers.inputs().getLast()).isEqualTo(new PageQuery(null, 2L, 2, List.of()));
+        // Exactly as offset=2: the Link continues by offset, and the body carries the token gRPC would write.
+        assertThat(second.headers().getFirst(HttpHeaders.LINK)).isEqualTo("</numbers?size=2&offset=4>; rel=\"next\"");
+        Result third = call(client.get().uri("/numbers?size=2&cursor={cursor}", second.nextCursor()));
+        assertThat(third.json().get("items").valueStream().map(JsonNode::asString).toList()).containsExactly("five");
+        assertThat(numbers.inputs().getLast()).isEqualTo(new PageQuery(null, 4L, 2, List.of()));
+        assertThat(third.json().has("nextCursor")).isFalse();
+        assertThat(third.headers().getFirst(HttpHeaders.LINK)).isNull();
+        // For another operation the token is not valid.
+        assertCursorViolation(call(client.get().uri("/books?size=2&cursor={cursor}", token)));
+    }
+
     private static void assertCursorViolation(Result result) {
         assertThat(result.status()).isEqualTo(400);
         assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
@@ -433,12 +512,18 @@ class RestPagingIT {
         }
 
         @Bean
+        NumbersOperation numbersOperation() {
+            return new NumbersOperation();
+        }
+
+        @Bean
         TenantBooksOperation tenantBooksOperation() {
             return new TenantBooksOperation();
         }
 
         @Bean
         RestBindings paging(SearchBooksOperation books, ListAuthorsOperation authors, LettersOperation letters,
+                NumbersOperation numbers,
                 TenantBooksOperation tenantBooks) {
             return RestBindings
                     .builder()
@@ -448,8 +533,31 @@ class RestPagingIT {
                     .sortable(SortKey.class)
                     .get("/authors", authors)
                     .get("/letters", letters)
+                    .get("/numbers", numbers)
                     .get("/shelves", tenantBooks)
                     .from(TenantBooksRequest::tenant, request -> request.headers().firstHeader("X-Tenant"))
+                    .build();
+        }
+    }
+
+    /** One cursor operation in two versions, {@code /v1/letters} and {@code /v2/letters}. */
+    @SpringBootConfiguration
+    @EnableAutoConfiguration
+    static class VersionedApplication {
+
+        @Bean
+        LettersOperation lettersOperation() {
+            return new LettersOperation();
+        }
+
+        @Bean
+        RestBindings versioned(LettersOperation letters) {
+            return RestBindings
+                    .builder()
+                    .get("/letters", letters)
+                    .version("1")
+                    .get("/letters", letters)
+                    .version("2")
                     .build();
         }
     }
@@ -545,6 +653,27 @@ class RestPagingIT {
         public PageResult<String> execute(PageQuery input) {
             inputs.add(input);
             return page(List.of("a", "b", "c"), input, null);
+        }
+    }
+
+    /** Pages by offset only, as {@code SpringDataPages} does: {@code PageResult.of(items, hasNext)}. */
+    static class NumbersOperation implements QueryOperation<PageQuery, PageResult<String>> {
+
+        private static final List<String> NUMBERS = List.of("one", "two", "three", "four", "five");
+
+        private final List<PageQuery> inputs = new CopyOnWriteArrayList<>();
+
+        /** Public, so the call reaches the target through the pipeline proxy. */
+        public List<PageQuery> inputs() {
+            return inputs;
+        }
+
+        @Override
+        public PageResult<String> execute(PageQuery input) {
+            inputs.add(input);
+            int start = input.offset() == null ? 0 : input.offset().intValue();
+            int end = Math.min(start + input.size(), NUMBERS.size());
+            return PageResult.of(NUMBERS.subList(start, end), end < NUMBERS.size());
         }
     }
 

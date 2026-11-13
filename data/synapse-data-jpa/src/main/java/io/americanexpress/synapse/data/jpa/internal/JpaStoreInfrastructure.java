@@ -22,7 +22,6 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.data.jpa.repository.config.JpaRepositoryConfigExtension;
-import org.springframework.orm.jpa.JpaTransactionManager;
 import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
 import org.springframework.orm.jpa.persistenceunit.PersistenceManagedTypes;
 import org.springframework.util.ClassUtils;
@@ -33,6 +32,7 @@ import io.americanexpress.synapse.data.internal.store.StoreDefinition;
 import io.americanexpress.synapse.data.internal.store.StoreInfrastructure;
 import io.americanexpress.synapse.data.internal.store.StoreRegistrar;
 import io.americanexpress.synapse.data.internal.store.StoreRepositoryConfigurationSource;
+import io.americanexpress.synapse.data.jpa.SynapseJpaTransactionManager;
 
 /**
  * Registers a JPA store's beans: {@code <prefix>PersistenceManagedTypes}, {@code <prefix>EntityManagerFactory},
@@ -53,6 +53,11 @@ public final class JpaStoreInfrastructure implements StoreInfrastructure {
     @Override
     public DataAccess access() {
         return DataAccess.JPA;
+    }
+
+    @Override
+    public Class<?> transactionManagerType() {
+        return SynapseJpaTransactionManager.class;
     }
 
     /**
@@ -100,7 +105,7 @@ public final class JpaStoreInfrastructure implements StoreInfrastructure {
                         JpaStoreFactory.ENTITY_MANAGER_FACTORY_METHOD);
         StoreRegistrar
                 .registerStoreBean(registry, store, JpaStoreFactory.TRANSACTION_MANAGER_SUFFIX,
-                        JpaTransactionManager.class, JpaStoreFactory.BEAN_NAME, "transactionManager");
+                        SynapseJpaTransactionManager.class, JpaStoreFactory.BEAN_NAME, "transactionManager");
         StoreRegistrar
                 .registerStoreBean(registry, store, JpaStoreFactory.SCHEMA_ACTION_SUFFIX, JpaSchemaAction.class,
                         JpaStoreFactory.BEAN_NAME, "schemaActionStep");

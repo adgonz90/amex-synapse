@@ -127,10 +127,17 @@ public final class ProblemWriter {
         }
     }
 
-    /**     * Returns the HTTP status the error is written with.     *     * @param request the request     * @param error the error     * @return the status     */
+    /**
+     * Returns the HTTP status the error is written with.
+     *
+     * @param request the request
+     * @param error the error
+     * @return the status
+     */
     int statusOf(HttpServletRequest request, SynapseException error) {
         return statuses.statusFor(error.details(), RestRequestAttributes.operationName(request));
     }
+
     private static String correlationId(HttpServletRequest request) {
         String fromRequest = RestRequestAttributes.correlationId(request);
         if (fromRequest != null) {

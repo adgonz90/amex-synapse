@@ -12,7 +12,8 @@
  * the License.
  */
 /**
- * Paging types shared by every protocol: the page request, its sort order and the page result.
+ * Paging types shared by every protocol: the page request, its sort order and the page result, and the codec that
+ * turns an operation's raw cursor into the opaque token callers see, and back.
  */
 @NullMarked
 package io.americanexpress.synapse.core.paging;

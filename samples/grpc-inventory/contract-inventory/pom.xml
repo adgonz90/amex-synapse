@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    The inventory's contract: what a caller of the service depends on. The .proto in src/main/proto and the messages
+    and stubs generated from it, the records the operations take and return, and the error codes. It has no Synapse
+    API plugin and no service code, so a client (or another service) can depend on it without pulling the service in.
+    It does bring synapse-core (for ErrorDetails and PageQuery), and with it Synapse core's dependencies.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse.samples</groupId>
+        <artifactId>grpc-inventory</artifactId>
+        <version>2.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>contract-inventory</artifactId>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Sample: the contract of the gRPC inventory (proto, records, error codes). Not published.</description>
+
+    <dependencies>
+        <!-- The generated messages (protobuf-java) and the InventoryServiceGrpc stubs (grpc-stub, grpc-protobuf). -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+        </dependency>
+        <!-- The constraints on the request records (@NotBlank, @Valid), which the operation pipeline checks. -->
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+        <!-- ErrorDetails for InventoryErrors, PageQuery for ListItemsRequest, and JSpecify's @Nullable. -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-core</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Generates the messages and the InventoryServiceGrpc stubs from src/main/proto (the plugin's default
+                 source directory) into target/generated-sources. spring-boot-starter-parent, and so synapse-parent,
+                 configures protoc, the grpc-java plugin and the generate execution. -->
+            <plugin>
+                <groupId>io.github.ascopes</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

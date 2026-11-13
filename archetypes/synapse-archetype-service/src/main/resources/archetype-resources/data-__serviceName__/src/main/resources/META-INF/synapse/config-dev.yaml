@@ -1,0 +1,10 @@
+# The ${serviceName} store in the dev environment (ENV=dev): the shared dev database. The host below is an example; put
+# your dev database's address here. The user name and password are not here: they come from the environment variables
+# SYNAPSE_DATA_STORES_${serviceName.toUpperCase()}_USERNAME and SYNAPSE_DATA_STORES_${serviceName.toUpperCase()}_PASSWORD,
+# which the platform sets, and startup fails without them. A run that points dev at another database sets
+# SYNAPSE_DATA_STORES_${serviceName.toUpperCase()}_URL, which wins over this file.
+synapse:
+  data:
+    stores:
+      ${serviceName}:
+        url: jdbc:postgresql://${serviceName}-db.dev.example.internal:5432/${serviceName}

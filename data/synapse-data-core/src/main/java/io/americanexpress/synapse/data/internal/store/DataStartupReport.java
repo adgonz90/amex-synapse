@@ -55,6 +55,9 @@ public final class DataStartupReport implements ApplicationListener<ApplicationS
 
     private static final Logger logger = LoggerFactory.getLogger("io.americanexpress.synapse.data");
 
+    /** The suffix of a store's transaction manager bean name. */
+    private static final String TRANSACTION_MANAGER_SUFFIX = "TransactionManager";
+
     /** The Boot keys that every store ignores. */
     private static final List<IgnoredKeys> IGNORED = List
             .of(IgnoredKeys.prefix("spring.datasource"), IgnoredKeys.prefix("spring.flyway"),
@@ -82,30 +85,79 @@ public final class DataStartupReport implements ApplicationListener<ApplicationS
             return;
         }
         logger.info("{}", budget(started, stores));
+        ClassLoader classLoader = started.getClassLoader();
+        List<StoreInfrastructure> infrastructures = StoreRegistrar
+                .available(
+                        SpringFactoriesLoader.forDefaultResourceLocation(classLoader).load(StoreInfrastructure.class),
+                        classLoader);
         ConfigurableEnvironment environment = started.getEnvironment();
-        keys(environment, ignored(started, stores)).forEach((ignored, keys) -> {
+        keys(environment, ignored(infrastructures, stores)).forEach((ignored, keys) -> {
             // The value is only compared, never logged.
             if (!keys.isEmpty() && !ignored.isQuiet(environment.getProperty(ignored.name()))) {
                 logger.warn("{}", ignored.warning(List.copyOf(keys)));
             }
         });
+        stores.forEach(store -> warnAboutTransactionManager(started, infrastructures, store));
     }
 
     /** Returns data-core's ignored keys, then those of each access module that a store uses. */
-    private static List<IgnoredKeys> ignored(ConfigurableApplicationContext context, List<StoreDefinition> stores) {
+    private static List<IgnoredKeys> ignored(List<StoreInfrastructure> infrastructures, List<StoreDefinition> stores) {
         Set<DataAccess> used = EnumSet.noneOf(DataAccess.class);
         stores.forEach(store -> used.add(store.access()));
         List<IgnoredKeys> ignored = new ArrayList<>(IGNORED);
-        ClassLoader classLoader = context.getClassLoader();
-        List<StoreInfrastructure> infrastructures = SpringFactoriesLoader
-                .forDefaultResourceLocation(classLoader)
-                .load(StoreInfrastructure.class);
-        for (StoreInfrastructure infrastructure : StoreRegistrar.available(infrastructures, classLoader)) {
+        for (StoreInfrastructure infrastructure : infrastructures) {
             if (used.contains(infrastructure.access())) {
                 ignored.addAll(infrastructure.ignoredKeys());
             }
         }
         return ignored;
+    }
+
+    /**
+     * Warns when a store's {@code <prefix>TransactionManager} is not the type its access module builds, or a subclass of
+     * it: a replacement such as a plain Spring transaction manager loses the commit-outcome detection, so a connection
+     * lost while a transaction commits can then be reported as a retryable {@code UNAVAILABLE}.
+     * <p>
+     * The bean isn't created for the check. A created bean's type is its class; otherwise it is what its definition
+     * declares, which for Synapse's own manager is the Synapse type. A bean not created yet (lazy initialization) whose
+     * definition declares a supertype, such as {@code PlatformTransactionManager}, may still be a subclass, so its WARN
+     * says that Synapse can't tell, and how to make it tell.
+     */
+    private static void warnAboutTransactionManager(ConfigurableApplicationContext context,
+            List<StoreInfrastructure> infrastructures, StoreDefinition store) {
+        String name = store.beanName(TRANSACTION_MANAGER_SUFFIX);
+        if (!context.containsBean(name)) {
+            return;
+        }
+        for (StoreInfrastructure infrastructure : infrastructures) {
+            Class<?> expected = infrastructure.transactionManagerType();
+            if (infrastructure.access() != store.access() || expected == null) {
+                continue;
+            }
+            Class<?> actual = context.getType(name, false);
+            if (actual == null || expected.isAssignableFrom(actual)) {
+                continue;
+            }
+            boolean created = context.getBeanFactory().containsSingleton(name);
+            if (created || !actual.isAssignableFrom(expected)) {
+                logger
+                        .warn("Data store {}: its {} is a {}, not a {}, so a connection lost while a transaction "
+                                + "commits can be reported as a retryable UNAVAILABLE instead of "
+                                + "COMMIT_OUTCOME_UNKNOWN, and with some managers (JdbcTransactionManager, "
+                                + "JpaTransactionManager) a failed rollback hides the failure it replaced. Extend {} "
+                                + "to keep both.", store.name(), name,
+                                actual.getName(), expected.getName(), expected.getSimpleName());
+            } else {
+                logger
+                        .warn("Data store {}: its {} is declared as a {} and isn't created yet (lazy initialization), "
+                                + "so Synapse can't tell whether it is a {}. If it isn't, a connection lost while a "
+                                + "transaction commits can be reported as a retryable UNAVAILABLE instead of "
+                                + "COMMIT_OUTCOME_UNKNOWN, and with some managers (JdbcTransactionManager, "
+                                + "JpaTransactionManager) a failed rollback hides the failure it replaced. Declare "
+                                + "the bean as a {} to have it checked.", store.name(),
+                                name, actual.getName(), expected.getName(), expected.getSimpleName());
+            }
+        }
     }
 
     private static String budget(ApplicationContext context, List<StoreDefinition> stores) {

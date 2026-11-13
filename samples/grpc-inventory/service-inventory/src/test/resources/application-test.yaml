@@ -1,0 +1,6 @@
+# Settings for the tests: Synapse's test slices and the integration tests activate the test profile, which loads this
+# file. Error detail is off by default in every environment; turning it on here lets the tests check the status
+# description (the formatted message).
+synapse:
+  errors:
+    include-detail: true

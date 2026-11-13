@@ -1,0 +1,93 @@
+= Samples
+
+The repository's `samples/` directory holds runnable Synapse 2 services. They are never published; each one has a
+README with the commands to run it and the output they print. Every sample inherits
+xref:parent.adoc[`synapse-parent`], as a consumer's project does. Read them in the table's order: each one adds to the
+one before. The table follows
+https://github.com/americanexpress/synapse/blob/main/samples/README.md[`samples/README.md`], with links into these
+pages.
+
+:samples: https://github.com/americanexpress/synapse/blob/main/samples
+
+[cols="1,4,1",options="header"]
+|===
+|Sample |What it shows |Protocols
+
+|{samples}/hello-rest/README.md[hello-rest]
+|The quick start: one operation, one route, the tests. Inherits `synapse-parent` as a real service does. The
+xref:archetypes.adoc#quickstart[quickstart archetype] generates a project shaped like it.
+|REST
+
+|{samples}/rest-books/README.md[rest-books]
+|The REST tour, in memory: business rules, paging and cursors, ETags and conditional requests, API versions, CORS, the
+OpenAPI document, problem responses and the safe defaults.
+|REST
+
+|{samples}/grpc-inventory/README.md[grpc-inventory]
+|The gRPC tour, in memory, with the `.proto` in a contract module: every field kind (timestamps, durations, wrappers,
+enums, repeated, maps, nested messages), a `oneof` and a renamed field, entity tags, page tokens, context metadata,
+error details and a per-operation status override, called with `grpcurl`.
+|gRPC
+
+|{samples}/multi-store/README.md[multi-store]
+|Two named data stores on PostgreSQL, each in a data module of its own: `orders` on JPA (`AuditedEntity`, UUIDv7 ids)
+and `ledger` on Spring Data JDBC (an `Auditable` with its own columns). Flyway per store, module-owned settings,
+`@Transactional` that names its store, a write to two stores that is not atomic, the audit system user, readiness
+that only one store takes part in, and `@SynapseDataTest` on Testcontainers. Run with `docker compose`.
+|REST
+
+|{samples}/reference-bookstore/README.md[reference-bookstore]
+|The reference service, laid out as a Synapse service should be: a contract module (records, error codes and the
+`.proto`), a data module (the `books` store on JPA and PostgreSQL, with its settings per environment) and a service
+module, with one set of operations served over REST and gRPC with the same contract. An `ETag` and a page token from
+one protocol work on the other. Readiness at `/health`; the OpenAPI document and CORS in `local` only; the audit user;
+environments (`local` on `docker compose`, `test`, `build`, `dev`), and AOT mode, opt-in with `-Paot`, in which an
+environment that turns on a build-time switch fails startup. One scenario suite runs every case over both protocols,
+against the test context and, with `-Paot`, against the packaged jar in AOT mode. It also builds a container image
+(xref:parent.adoc#image-profile[`-Pimage`] or a Dockerfile, each with the JVM's AOT cache) and shows the
+xref:opentelemetry-agent.adoc[OpenTelemetry Java agent] recipe. The
+xref:archetypes.adoc#service[service archetype] generates a project shaped like it.
+|REST, gRPC
+|===
+
+== Building a sample
+
+Build and test one through its bootable module, from the repository root. A sample made of modules is built through
+the module that starts the service, which pulls in the others (`-pl samples/grpc-inventory` alone would build only
+its aggregator pom). `-am` builds and tests the Synapse modules the sample depends on first. multi-store and the
+reference bookstore need Docker, for their databases and their Testcontainers integration tests:
+
+[source,bash]
+----
+./mvnw -pl samples/hello-rest -am verify
+./mvnw -pl samples/grpc-inventory/service-inventory -am verify
+----
+
+The samples inherit `synapse-parent`, which has no formatter or license check, so the repository root formats their
+code (Spotless) and checks their license headers, as root-only executions. A build with `-pl samples/<name> -am`
+includes the root, because `-am` adds the parents of the modules the sample depends on, so it formats and checks the
+samples too (CI only checks). `./mvnw -N process-sources` formats them without a build. A copy of a sample outside the
+repository has neither until you add your own.
+
+Spring AOT processing is opt-in (`-Paot`, `synapse-parent`'s `aot` profile; see
+xref:parent.adoc#_build_environment[Build environment]), and only the reference bookstore uses it:
+
+[source,bash]
+----
+./mvnw -Paot -pl samples/reference-bookstore/service-bookstore -am verify
+----
+
+The other samples have no build environment file (`application-build.yaml`), on purpose: they show a service that
+needs none. So `-Paot` fails in them, with `The environment 'build' has no file in the service`, and a build with
+`-Paot` from the repository root fails too.
+
+== What every sample has
+
+* `application.yaml` with `spring.profiles.active: ${ENV}`, `application-local.yaml` with the local conveniences, and
+  `spring-boot.run.profiles=local` in the bootable module's pom (see xref:environments.adoc[Environments]).
+* `src/test/resources/application-test.yaml`: the tests run as `test`. The exceptions prove an environment's own
+  file: rest-books' `BooksLocalEnvironmentIT` runs as `local` (its `application-local.yaml` turns the OpenAPI document
+  on), and the reference bookstore's tests that start the packaged jar run it as `dev` (the scenarios, the agent),
+  `build` (the training run's start) or `local` (to show the build-time switch failure).
+* Tests at every level, and a one-line `ArchitectureTest` (see xref:testing.adoc[Testing]).
+* No later-phase features: no clients, Kafka, GraphQL, functions, security or scheduling.

@@ -25,7 +25,7 @@ import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
 
 /**
  * How a route writes its response. The functions take the operation's output exactly as {@code execute} returned it
- * (an {@code Optional} or {@code List} is not unwrapped). In a route returned by {@code RestBindings.routes()},
+ * (an {@code Optional} or {@code List} is not unwrapped). In a route returned by {@code RestBindingsAccess.routes},
  * {@link #outputHeaders()} is empty and {@link #bodyComponent()} is {@code null}: {@link BindingValidator} fills them
  * from the declarations and the conventions.
  *

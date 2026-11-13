@@ -29,7 +29,6 @@ import org.springframework.data.jdbc.core.mapping.JdbcMappingContext;
 import org.springframework.data.jdbc.repository.config.EnableJdbcRepositories;
 import org.springframework.data.jdbc.repository.config.JdbcRepositoryConfigExtension;
 import org.springframework.data.relational.RelationalManagedTypes;
-import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.util.ClassUtils;
 
 import io.americanexpress.synapse.data.DataAccess;
@@ -38,6 +37,7 @@ import io.americanexpress.synapse.data.internal.store.StoreDefinition;
 import io.americanexpress.synapse.data.internal.store.StoreInfrastructure;
 import io.americanexpress.synapse.data.internal.store.StoreRegistrar;
 import io.americanexpress.synapse.data.internal.store.StoreRepositoryConfigurationSource;
+import io.americanexpress.synapse.data.jdbc.SynapseJdbcTransactionManager;
 
 /**
  * Registers a Spring Data JDBC store's beans: {@code <prefix>TransactionManager}, {@code <prefix>JdbcDialect},
@@ -56,6 +56,11 @@ public final class JdbcStoreInfrastructure implements StoreInfrastructure {
     @Override
     public DataAccess access() {
         return DataAccess.JDBC;
+    }
+
+    @Override
+    public Class<?> transactionManagerType() {
+        return SynapseJdbcTransactionManager.class;
     }
 
     /**
@@ -100,7 +105,7 @@ public final class JdbcStoreInfrastructure implements StoreInfrastructure {
     @Override
     public void register(StoreDefinition store, BeanDefinitionRegistry registry, Environment environment,
             ResourceLoader resourceLoader) {
-        register(registry, store, JdbcStoreFactory.TRANSACTION_MANAGER_SUFFIX, JdbcTransactionManager.class,
+        register(registry, store, JdbcStoreFactory.TRANSACTION_MANAGER_SUFFIX, SynapseJdbcTransactionManager.class,
                 "transactionManager");
         register(registry, store, JdbcStoreFactory.DIALECT_SUFFIX, JdbcDialect.class, "dialect");
         register(registry, store, JdbcStoreFactory.MANAGED_TYPES_SUFFIX, RelationalManagedTypes.class,

@@ -13,9 +13,14 @@
  */
 package io.americanexpress.synapse.data.jpa.autoconfigure;
 
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -27,6 +32,7 @@ import jakarta.persistence.spi.PersistenceUnitInfo;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.hibernate.JDBCException;
+import org.hibernate.StaleStateException;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.dialect.H2Dialect;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
@@ -42,8 +48,11 @@ import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.beans.factory.support.AutowireCandidateQualifier;
+import org.springframework.boot.LazyInitializationBeanFactoryPostProcessor;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.context.event.ApplicationStartedEvent;
 import org.springframework.boot.data.jpa.autoconfigure.DataJpaRepositoriesAutoConfiguration;
 import org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration;
@@ -78,8 +87,13 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
+import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.data.CommitOutcomeUnknownException;
+import io.americanexpress.synapse.data.DataErrors;
 import io.americanexpress.synapse.data.autoconfigure.SynapseDataAutoConfiguration;
 import io.americanexpress.synapse.data.internal.store.StoreFactory;
+import io.americanexpress.synapse.data.jpa.SynapseJpaTransactionManager;
 import io.americanexpress.synapse.data.jpa.fixture.CustomH2Dialect;
 import io.americanexpress.synapse.data.jpa.fixture.H2TestVendor;
 import io.americanexpress.synapse.data.jpa.fixture.books.Book;
@@ -89,6 +103,7 @@ import io.americanexpress.synapse.data.jpa.fixture.legacy.LegacyStore;
 import io.americanexpress.synapse.data.jpa.fixture.ownemf.BooksStoreWithOwnEntityManagerFactory;
 import io.americanexpress.synapse.data.jpa.fixture.ownschemaaction.BooksStoreWithOwnSchemaAction;
 import io.americanexpress.synapse.data.jpa.fixture.owntm.BooksStoreWithOwnTransactionManager;
+import io.americanexpress.synapse.data.jpa.fixture.synapsetm.BooksStoreWithSynapseTransactionManager;
 import io.americanexpress.synapse.data.jpa.internal.JpaExceptionTranslator;
 import io.americanexpress.synapse.data.jpa.internal.JpaSchemaAction;
 import io.americanexpress.synapse.data.jpa.internal.JpaStoreFactory;
@@ -137,13 +152,29 @@ class SynapseDataJpaAutoConfigurationTest {
                     .getManagedClassNames()).containsExactly(Book.class.getName());
             assertThat(entities(entityManagerFactory)).containsExactly(Book.class);
             assertThat(context.getBean("booksTransactionManager"))
-                    .isInstanceOfSatisfying(JpaTransactionManager.class, transactionManager -> assertThat(
+                    .isInstanceOfSatisfying(SynapseJpaTransactionManager.class, transactionManager -> assertThat(
                             transactionManager.getEntityManagerFactory()).isSameAs(entityManagerFactory));
             for (String name : BOOKS_BEANS) {
                 BeanDefinition definition = context.getBeanFactory().getBeanDefinition(name);
                 assertThat(definition.isPrimary()).as(name).isTrue();
                 assertThat(qualifier(definition)).as(name).isEqualTo("books");
             }
+        });
+    }
+
+    /**
+     * An auto-configuration processed before this one whose condition looks beans up by annotation, as Boot's gRPC
+     * server configuration does ({@code @ConditionalOnBean(annotation = GrpcAdvice.class)}): Spring then asks every
+     * definition for its type, the store's EntityManagerFactory included, before {@code synapseJpaStoreFactory}, the
+     * factory bean that definition names, is defined. The definition carries its object type, so the lookup neither
+     * fails nor needs the factory bean.
+     */
+    @Test
+    void aConditionByAnnotationBeforeTheStoreFactoryIsDefinedFindsTheEntityManagerFactorysType() {
+        books.withConfiguration(AutoConfigurations.of(LooksUpBeansByAnnotation.class)).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).doesNotHaveBean(LooksUpBeansByAnnotation.class);
+            assertThat(context.getBean("booksEntityManagerFactory")).isInstanceOf(EntityManagerFactory.class);
         });
     }
 
@@ -514,6 +545,95 @@ class SynapseDataJpaAutoConfigurationTest {
     }
 
     /**
+     * A store whose transaction manager is a plain {@code JpaTransactionManager} loses the commit-outcome detection,
+     * so the startup report warns, naming the store and the bean.
+     */
+    @Test
+    void aPlainTransactionManagerIsWarnedAboutAtStartup(CapturedOutput output) {
+        runner
+                .withUserConfiguration(BooksStoreWithOwnTransactionManager.class)
+                .withPropertyValues(store("books"))
+                .run(started());
+        assertThat(output.getOut().lines().filter(line -> line.contains("booksTransactionManager")))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains(" WARN ", "io.americanexpress.synapse.data ")
+                        .endsWith("Data store books: its booksTransactionManager is a "
+                                + "org.springframework.orm.jpa.JpaTransactionManager, not a "
+                                + "io.americanexpress.synapse.data.jpa.SynapseJpaTransactionManager, so a connection "
+                                + "lost while a transaction commits can be reported as a retryable UNAVAILABLE "
+                                + "instead of COMMIT_OUTCOME_UNKNOWN, and with some managers (JdbcTransactionManager, "
+                                + "JpaTransactionManager) a failed rollback hides the failure it "
+                                + "replaced. Extend SynapseJpaTransactionManager to keep both."));
+    }
+
+    /** Synapse's own transaction manager, or a subclass of it, gets no warning. */
+    @Test
+    void synapsesTransactionManagerOrASubclassIsNotWarnedAbout(CapturedOutput output) {
+        books.run(started());
+        runner
+                .withUserConfiguration(BooksStoreWithSynapseTransactionManager.class)
+                .withPropertyValues(store("books"))
+                .run(started());
+        assertThat(output.getOut()).contains("Synapse data stores: books").doesNotContain("booksTransactionManager");
+    }
+
+    /**
+     * With lazy initialization the store's own manager isn't created before the startup report, which then sees only
+     * its bean definition: still no WARN.
+     */
+    @Test
+    void synapsesTransactionManagerIsNotWarnedAboutWithLazyInitialization(CapturedOutput output) {
+        books
+                .withInitializer(context -> context
+                        .addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor()))
+                .run(context -> {
+                    assertThat(context.getBeanFactory().containsSingleton("booksTransactionManager"))
+                            .as("created before the report")
+                            .isFalse();
+                    started().accept(context);
+                });
+        assertThat(output.getOut()).contains("Synapse data stores: books").doesNotContain("booksTransactionManager");
+    }
+
+    /**
+     * Translators run in {@code ObjectProvider.orderedStream()} order, as the operation pipeline takes them: the data
+     * translator, then the JPA one, then an application translator that declares no order, even one registered first.
+     * So an unknown commit outcome is reported by the data translator, whatever the others would say.
+     */
+    @Test
+    void translatorsRunInOrderAheadOfUnorderedApplicationTranslators() {
+        books
+                .withBean("applicationTranslator", ExceptionTranslator.class,
+                        () -> exception -> new SynapseException(SynapseErrors.INTERNAL, exception))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    List<ExceptionTranslator> translators = context
+                            .getBeanProvider(ExceptionTranslator.class)
+                            .orderedStream()
+                            .toList();
+                    ExceptionTranslator data = context
+                            .getBean("synapseDataExceptionTranslator",
+                                    ExceptionTranslator.class);
+                    ExceptionTranslator jpa = context.getBean(TRANSLATOR, ExceptionTranslator.class);
+                    ExceptionTranslator application = context
+                            .getBean("applicationTranslator",
+                                    ExceptionTranslator.class);
+                    assertThat(translators).containsSubsequence(data, jpa, application);
+                    CommitOutcomeUnknownException commit = new CommitOutcomeUnknownException(
+                            new RuntimeException("I/O error"));
+                    commit.initApplicationException(new StaleStateException("Row was updated by another transaction"));
+                    SynapseException first = translators
+                            .stream()
+                            .map(translator -> translator.translate(commit))
+                            .filter(Objects::nonNull)
+                            .findFirst()
+                            .orElseThrow();
+                    assertThat(first.code()).isEqualTo(DataErrors.COMMIT_OUTCOME_UNKNOWN.code());
+                });
+    }
+
+    /**
      * I3, the reviewer's probe: two stores, books primary, its transaction manager replaced in its store class. The
      * replacement is the books store's, qualified and primary as Synapse's would be.
      */
@@ -712,6 +832,21 @@ class SynapseDataJpaAutoConfigurationTest {
     private static String[] store(String name) {
         return new String[]{"synapse.data.stores." + name + ".url=jdbc:h2:mem:jpa-" + name + ";DB_CLOSE_DELAY=-1",
                 "synapse.data.stores." + name + ".username=sa", "synapse.data.stores." + name + ".password="};
+    }
+
+    /**
+     * Processed before Synapse's JPA auto-configuration, with a condition that looks beans up by an annotation that no
+     * bean has, so it never matches.
+     */
+    @AutoConfiguration(before = SynapseDataJpaAutoConfiguration.class)
+    @ConditionalOnBean(annotation = LookedUp.class)
+    static class LooksUpBeansByAnnotation {
+    }
+
+    /** An annotation that no bean has. */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.TYPE)
+    @interface LookedUp {
     }
 
     @Configuration(proxyBeanMethods = false)

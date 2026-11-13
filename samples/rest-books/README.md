@@ -1,9 +1,11 @@
-# Sample: a book catalog over REST
+# Sample: rest-books, the REST tour
 
-A small Synapse 2 service you can run and call: a catalog of books served over REST, and over gRPC with the same
-operations (see [gRPC](#grpc)). It uses only what Synapse has today (`synapse-core`, `synapse-api-rest`,
-`synapse-api-rest-openapi`, `synapse-api-grpc`, `synapse-logging-log4j2` and the test modules). The data lives in
-memory, starts with three books, and is lost when the service stops.
+A small Synapse 2 service you can run and call: a catalog of books served over REST. It tours what the REST plugin
+does, from paging and conditional requests to API versions, CORS and the OpenAPI document. It uses `synapse-api-rest`,
+`synapse-api-rest-openapi`, `synapse-logging-log4j2` and the Synapse test modules, and inherits `synapse-parent` as a
+real service does. The data lives in memory, starts with three books, and is lost when the service stops.
+
+For the smallest service, see [`hello-rest`](../hello-rest/README.md). For gRPC, see [gRPC](#grpc).
 
 ## What it shows
 
@@ -25,13 +27,13 @@ Code paths are under `src/main/java/io/americanexpress/synapse/samples/books/`.
 | Problem responses (RFC 9457 `application/problem+json`) with `code`, `correlationId` and `violations`; `detail` only when `include-detail` is on (local) | [Errors](#errors) |
 | The correlation id: read from `X-Correlation-Id` or generated, echoed on every response, written to the logs of the request | [Correlation id](#correlation-id) |
 | ECS JSON logs; a failing operation logs one line, a successful one logs nothing | [Logs](#what-to-look-for-in-the-logs) |
-| The same operations over gRPC: a `.proto` service compiled by the build, and one `GrpcBindings` bean with `.unary(...)`, `.notFound(...)`, a value from the request context (`x-channel` metadata) and `.bindAllByName()` for the rest; no change to the operations or models | `src/main/proto/books/v1/books.proto`, `api/grpc/BooksGrpcConfiguration.java`, [gRPC](#grpc) |
-| gRPC errors: the status code from the error category (`NOT_FOUND`, `ABORTED`, `INVALID_ARGUMENT`), and `google.rpc.ErrorInfo` with the code as `reason` and the `correlationId`; `BadRequest` for violations | [gRPC errors](#grpc-errors) |
-| Tests: the REST slice (`@SynapseRestTest`), the gRPC slice (`@SynapseGrpcTest`), the operation slice (`@SynapseOperationTest`), `SynapseOperations.invoke`, an end-to-end test on a real server, and the layering rules | `src/test/java` |
+| The environment: `spring.profiles.active: ${ENV}` in `application.yaml`, and one file per environment (`local` for local runs, `test` for the tests) | `src/main/resources/`, `src/test/resources/` |
+| The pom of a real service: `synapse-parent` as the parent, dependencies without versions | `pom.xml` |
+| Tests: the REST slice (`@SynapseRestTest`), the operation slice (`@SynapseOperationTest`), `SynapseOperations.invoke`, end-to-end tests on a real server, and the layering rules | [Tests](#tests) |
 
-The packages follow Synapse's layering (specs/v2/BUILD.md section 4.3): `api.rest` and `api.grpc` call `operation`;
-operations call `business` (only through `BusinessOperation.execute`) and `data`; business code calls `data`; nobody
-calls `api`. `ArchitectureTest` checks it with `SynapseArchitecture.forApplication(BooksApplication.class)`.
+The packages follow Synapse's layering (specs/v2/BUILD.md section 4.3): `api.rest` calls `operation`; operations call
+`business` (only through `BusinessOperation.execute`) and `data`; business code calls `data`; nobody calls `api`.
+`ArchitectureTest` checks it with `SynapseArchitecture.forApplication(BooksApplication.class)`.
 
 Two choices worth knowing when you read the code:
 
@@ -58,39 +60,39 @@ concurrent updates can't both win. Over REST the version is the book's `ETag`, a
 
 ## Run it
 
-You need JDK 25 to build (Synapse's build requires it; the service itself runs on Java 21 or later): point
-`JAVA_HOME` at a JDK 25 (`export JAVA_HOME=<path to a JDK 25>` and put `$JAVA_HOME/bin` first on `PATH`), so that
-`java -version` reports 25. Then, from the repository root, in Git Bash on Windows or any POSIX shell:
+You need JDK 25 to build (see [Before you start](../README.md#before-you-start)). Then, from the repository root,
+in Git Bash on Windows or any POSIX shell:
 
 ```bash
 ./mvnw -pl samples/rest-books -am package -DskipTests
-ENV=local java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar
+ENV=local java -jar samples/rest-books/target/rest-books-2.0.0-SNAPSHOT.jar
 ```
 
 The first command builds the sample and the Synapse modules it uses, without running the tests (`./mvnw verify` runs
-them). The second runs the `local` environment: `application.yaml` maps `spring.profiles.active: ${ENV}`, and
-`application-local.yaml` turns on `detail` in problem responses (`synapse.errors.include-detail: true`).
-`spring-boot:run` runs this module as `local` too: the pom sets `spring-boot.run.profiles` to `local`, and
-`-Dspring-boot.run.profiles=<env>` picks another. It runs the sample alone, so it takes the Synapse modules from your
-local Maven repository: install them first (again after you change them):
+them; see [Tests](#tests)). The second runs the `local` environment: `application.yaml` maps
+`spring.profiles.active: ${ENV}`, and `application-local.yaml` turns on `detail` in problem responses
+(`synapse.errors.include-detail: true`), CORS for a local front end and the OpenAPI document.
+
+You can also run it with `spring-boot:run`, which runs the `local` environment too (the pom sets
+`spring-boot.run.profiles`; `-Dspring-boot.run.profiles=<env>` picks another). It runs the sample alone, so it takes
+the Synapse modules from your local Maven repository: install them first (again after you change them):
 
 ```bash
 ./mvnw -pl samples/rest-books -am install -DskipTests
 ./mvnw -pl samples/rest-books spring-boot:run
 ```
 
-`-DskipTests` only saves time on the install step; it is not a test run.
+`install` puts the Synapse modules in `~/.m2`, replacing any Synapse snapshot you have there.
 
-The service listens on port 8080, and on 9090 for gRPC ([gRPC](#grpc)); stop it with Ctrl+C. At startup it logs
-which environment it runs and where its configuration comes from (see
-[What to look for in the logs](#what-to-look-for-in-the-logs)), and the REST plugin logs one line per route, for
-example:
+The service listens on port 8080; stop it with Ctrl+C. At startup it logs which environment it runs and where its
+configuration comes from (see [What to look for in the logs](#what-to-look-for-in-the-logs)), and the REST plugin logs
+one line per route, for example:
 
 ```text
-{"@timestamp":"2026-11-06T21:11:15.478127700Z","log":{"level":"INFO","logger":"io.americanexpress.synapse.api.rest"},"process":{"pid":34980,"thread":{"name":"main"}},"service":{"name":"rest-books","node":{}},"message":"Synapse REST exposes GET /books/{id} -> get-book on port 8080","ecs":{"version":"8.11"}}
+{"@timestamp":"2026-11-07T18:05:22.946134600Z","log":{"level":"INFO","logger":"io.americanexpress.synapse.api.rest"},"process":{"pid":29344,"thread":{"name":"main"}},"service":{"name":"rest-books","version":"2.0.0-SNAPSHOT","node":{}},"message":"Synapse REST exposes GET /books/{id} -> get-book on port 8080","ecs":{"version":"8.11"}}
 ```
 
-It also logs a WARN that `synapse.api.rest.paging.cursor.key` is not set (see [Safe defaults](#safe-defaults)).
+It also logs a WARN that `synapse.paging.cursor.key` is not set (see [Safe defaults](#safe-defaults)).
 
 The service needs an environment. Started without `ENV`, it stops before anything else runs:
 
@@ -205,16 +207,16 @@ curl -s -i "http://localhost:8080/books?sort=title&size=2"
 
 ```text
 HTTP/1.1 200 
-X-Correlation-Id: 7cb6bce0-8743-4043-92f9-8ec01242d02b
+X-Correlation-Id: 31d95fde-57af-439d-9dac-c06d5901d86d
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
-Link: </books?sort=title&size=2&cursor=AQTT4UQ6HZW_T7CzLvd85xaz-greOE6Pj-fsJR5GG0skYNfDtGrCA_nj>; rel="next"
+Link: </books?sort=title&size=2&cursor=AnK_zMM8l6T6v7MB1U6O8pmlQyLWN9tCq4VlbkHR4LYx-xlUOGW_KQOsPfU>; rel="next"
 Content-Type: application/json
-Content-Length: 428
-Date: Fri, 06 Nov 2026 21:11:22 GMT
+Content-Length: 431
+Date: Sat, 07 Nov 2026 18:05:50 GMT
 
-{"items":[{"id":"00000000-0000-0000-0000-000000000003","isbn":"978-0547773742","title":"A Wizard of Earthsea","author":"Ursula K. Le Guin","year":1968,"addedVia":null,"version":1},{"id":"00000000-0000-0000-0000-000000000001","isbn":"978-0441172719","title":"Dune","author":"Frank Herbert","year":1965,"addedVia":null,"version":1}],"nextCursor":"AQTT4UQ6HZW_T7CzLvd85xaz-greOE6Pj-fsJR5GG0skYNfDtGrCA_nj","hasNext":true,"total":3}
+{"items":[{"id":"00000000-0000-0000-0000-000000000003","isbn":"978-0547773742","title":"A Wizard of Earthsea","author":"Ursula K. Le Guin","year":1968,"addedVia":null,"version":1},{"id":"00000000-0000-0000-0000-000000000001","isbn":"978-0441172719","title":"Dune","author":"Frank Herbert","year":1965,"addedVia":null,"version":1}],"nextCursor":"AnK_zMM8l6T6v7MB1U6O8pmlQyLWN9tCq4VlbkHR4LYx-xlUOGW_KQOsPfU","hasNext":true,"total":3}
 ```
 
 Follow the token, either from `nextCursor` or from the `Link` target. The next page is the last one: no `nextCursor`,
@@ -229,8 +231,9 @@ curl -s "http://localhost:8080/books?sort=title&size=2&cursor=$NEXT"
 {"items":[{"id":"00000000-0000-0000-0000-000000000002","isbn":"978-0441478125","title":"The Left Hand of Darkness","author":"Ursula K. Le Guin","year":1969,"addedVia":null,"version":1}],"hasNext":false,"total":3}
 ```
 
-A page can also start at an offset, up to `synapse.api.rest.paging.max-offset` (1000); beyond that, callers page by
-cursor.
+A page can also start at an offset, up to `synapse.paging.max-offset` (1000); beyond that, callers page by
+cursor. An offset page that has a next page gets a `nextCursor` and a `Link` too, which carry on from that page. This
+one is the last:
 
 ```bash
 curl -s "http://localhost:8080/books?offset=2&size=2"
@@ -247,7 +250,7 @@ curl -s "http://localhost:8080/books?sort=price"
 ```
 
 ```json
-{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"a1c8990e-f3de-427a-9719-5b1c31a65c95","violations":[{"field":"sort","message":"has a key that is not allowed (allowed: title, year)"}]}
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"a43911b1-9550-40fe-9728-80f295fa9b5a","violations":[{"field":"sort","message":"has a key that is not allowed (allowed: title, year)"}]}
 ```
 
 A changed token (here its first character):
@@ -257,7 +260,7 @@ curl -s "http://localhost:8080/books?sort=title&size=2&cursor=$(echo "$NEXT" | s
 ```
 
 ```json
-{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"720768dd-9fb7-4c4a-8cd8-bec66b80f0e2","violations":[{"field":"cursor","message":"is not valid for this request"}]}
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"9667777e-05f3-48d3-85b6-56ac65ae9c59","violations":[{"field":"cursor","message":"is not valid for this request"}]}
 ```
 
 A token is bound to the operation, the sort and the other inputs (such as `author`), so the same token with another
@@ -268,7 +271,7 @@ curl -s "http://localhost:8080/books?sort=-year&size=2&cursor=$NEXT"
 ```
 
 ```json
-{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"fc0206f1-6972-4775-b3a8-3900f34495ba","violations":[{"field":"cursor","message":"is not valid for this request"}]}
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"8cb62fae-10b5-41e2-81ed-504afc9dba7c","violations":[{"field":"cursor","message":"is not valid for this request"}]}
 ```
 
 An offset over the cap:
@@ -278,7 +281,7 @@ curl -s "http://localhost:8080/books?offset=1001"
 ```
 
 ```json
-{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"a07c71b2-9972-41a4-a2ff-364dceccc0f9","violations":[{"field":"offset","message":"must be less than or equal to 1000"}]}
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"b4442baf-fe09-4170-b277-ada04122f6f2","violations":[{"field":"offset","message":"must be less than or equal to 1000"}]}
 ```
 
 ### An output header
@@ -292,14 +295,14 @@ curl -s -I http://localhost:8080/books/stats
 
 ```text
 HTTP/1.1 200 
-X-Correlation-Id: 8499765e-9569-4190-9439-af2da032db26
+X-Correlation-Id: 6b8d8d97-0da7-43b6-bc40-0863766044e0
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 X-Books-Total: 3
 Content-Type: application/json
 Content-Length: 23
-Date: Fri, 06 Nov 2026 21:11:22 GMT
+Date: Sat, 07 Nov 2026 18:05:50 GMT
 ```
 
 ### Add a book
@@ -316,17 +319,17 @@ curl -s -i -X POST http://localhost:8080/books \
 
 ```text
 HTTP/1.1 201 
-X-Correlation-Id: 1da929c7-ae83-4178-9d13-3f6819977e5c
+X-Correlation-Id: 7060f339-0d09-4811-8c9c-30f4b49ba6b5
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
-Location: /books/13fcb598-30a6-4093-a9d4-841b8219cd2f
+Location: /books/8306a1ef-99b8-4b69-b78a-2b052c74afe5
 ETag: "1"
 Content-Type: application/json
 Content-Length: 178
-Date: Fri, 06 Nov 2026 21:11:22 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 
-{"id":"13fcb598-30a6-4093-a9d4-841b8219cd2f","isbn":"978-0261103573","title":"The Fellowship of the Ring","author":"J. R. R. Tolkien","year":1954,"addedVia":"mobile","version":1}
+{"id":"8306a1ef-99b8-4b69-b78a-2b052c74afe5","isbn":"978-0261103573","title":"The Fellowship of the Ring","author":"J. R. R. Tolkien","year":1954,"addedVia":"mobile","version":1}
 ```
 
 ### Update a book
@@ -357,11 +360,11 @@ curl -s -i -X DELETE http://localhost:8080/books/00000000-0000-0000-0000-0000000
 
 ```text
 HTTP/1.1 204 
-X-Correlation-Id: c2e5c347-6a16-4916-bcad-3897ac8669b1
+X-Correlation-Id: 205b6a78-37e4-4bea-bbb3-8c87b16177c8
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
-Date: Sat, 07 Nov 2026 07:45:52 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 ```
 
 ### Errors
@@ -376,7 +379,7 @@ curl -s -X DELETE http://localhost:8080/books/00000000-0000-0000-0000-0000000000
 ```
 
 ```json
-{"type":"about:blank","title":"Not Found","status":404,"detail":"Book 00000000-0000-0000-0000-000000000003 was not found","code":"BOOK_NOT_FOUND","correlationId":"20b13978-9d0c-4b27-b33e-023e0321f8b8"}
+{"type":"about:blank","title":"Not Found","status":404,"detail":"Book 00000000-0000-0000-0000-000000000003 was not found","code":"BOOK_NOT_FOUND","correlationId":"8305d8a9-20dd-40ab-82a9-d81ebf9d637d"}
 ```
 
 Reading a book that doesn't exist: the operation returns an empty `Optional`, and `.notFound(BookErrors.BOOK_NOT_FOUND)`
@@ -387,7 +390,7 @@ curl -s http://localhost:8080/books/00000000-0000-0000-0000-000000000099
 ```
 
 ```json
-{"type":"about:blank","title":"Not Found","status":404,"detail":"Book 00000000-0000-0000-0000-000000000099 was not found","code":"BOOK_NOT_FOUND","correlationId":"bd0fa663-dfb1-47ce-afdb-c9dea8218198"}
+{"type":"about:blank","title":"Not Found","status":404,"detail":"Book 00000000-0000-0000-0000-000000000099 was not found","code":"BOOK_NOT_FOUND","correlationId":"30b654f3-7447-469f-afb9-7633bcc9dd21"}
 ```
 
 A validation error: the pipeline runs Jakarta Validation on the request record before the operation and reports
@@ -400,7 +403,7 @@ curl -s -X POST http://localhost:8080/books \
 ```
 
 ```json
-{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"a1f3694f-0dc6-4850-950f-ccee6bc46941","violations":[{"field":"isbn","message":"must not be blank"},{"field":"title","message":"must not be blank"},{"field":"year","message":"must be greater than 0"}]}
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"8695c669-b93a-4b42-9aeb-e4c948bcd51f","violations":[{"field":"isbn","message":"must not be blank"},{"field":"title","message":"must not be blank"},{"field":"year","message":"must be greater than 0"}]}
 ```
 
 A business rule: the ISBN of Dune is taken.
@@ -412,7 +415,7 @@ curl -s -X POST http://localhost:8080/books \
 ```
 
 ```json
-{"type":"about:blank","title":"Conflict","status":409,"detail":"A book with ISBN 978-0441172719 already exists","code":"DUPLICATE_ISBN","correlationId":"5f05b9fc-8948-438e-9c36-ef43d751f8fc"}
+{"type":"about:blank","title":"Conflict","status":409,"detail":"A book with ISBN 978-0441172719 already exists","code":"DUPLICATE_ISBN","correlationId":"f8d3b9c2-a93b-4075-a7ea-cf2e950eff40"}
 ```
 
 A method the path doesn't serve is 405 with `Allow`:
@@ -423,16 +426,16 @@ curl -s -i -X PATCH http://localhost:8080/books/00000000-0000-0000-0000-00000000
 
 ```text
 HTTP/1.1 405 
-X-Correlation-Id: 001fbc89-8efd-4962-9077-5cdeb98aff42
+X-Correlation-Id: f2afc87e-ac60-4495-a661-b32f078f884b
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 Allow: GET, HEAD, PUT, DELETE, OPTIONS
 Content-Type: application/problem+json;charset=UTF-8
 Transfer-Encoding: chunked
-Date: Fri, 06 Nov 2026 21:11:23 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 
-{"type":"about:blank","title":"Method Not Allowed","status":405,"detail":"The method is not allowed for this route","code":"METHOD_NOT_ALLOWED","correlationId":"001fbc89-8efd-4962-9077-5cdeb98aff42"}
+{"type":"about:blank","title":"Method Not Allowed","status":405,"detail":"The method is not allowed for this route","code":"METHOD_NOT_ALLOWED","correlationId":"f2afc87e-ac60-4495-a661-b32f078f884b"}
 ```
 
 A body over the limit is 413 before the body is read. `POST /books` allows 16 KB (`.maxRequestSize(...)`); this sends
@@ -445,16 +448,16 @@ head -c 20000 /dev/zero | tr '\0' x | curl -s -i -X POST http://localhost:8080/b
 
 ```text
 HTTP/1.1 413 
-X-Correlation-Id: fd4329d0-028b-401a-85b4-cb4fc41a274b
+X-Correlation-Id: 8612d44e-3968-4ba1-b43e-3b203884b594
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 Content-Type: application/problem+json;charset=UTF-8
 Transfer-Encoding: chunked
-Date: Fri, 06 Nov 2026 21:11:23 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 Connection: close
 
-{"type":"about:blank","title":"Content Too Large","status":413,"detail":"The request body is too large","code":"PAYLOAD_TOO_LARGE","correlationId":"fd4329d0-028b-401a-85b4-cb4fc41a274b"}
+{"type":"about:blank","title":"Content Too Large","status":413,"detail":"The request body is too large","code":"PAYLOAD_TOO_LARGE","correlationId":"8612d44e-3968-4ba1-b43e-3b203884b594"}
 ```
 
 ### Correlation id
@@ -475,7 +478,7 @@ Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 Content-Type: application/problem+json;charset=UTF-8
 Transfer-Encoding: chunked
-Date: Fri, 06 Nov 2026 21:11:23 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 
 {"type":"about:blank","title":"Conflict","status":409,"detail":"A book with ISBN 978-0441172719 already exists","code":"DUPLICATE_ISBN","correlationId":"demo-123"}
 ```
@@ -494,7 +497,7 @@ curl -s -i http://localhost:8080/books/00000000-0000-0000-0000-000000000001
 
 ```text
 HTTP/1.1 200 
-X-Correlation-Id: 3f1e072c-1f26-4016-b266-4f5b95652a13
+X-Correlation-Id: e4ce3482-8244-4dd2-8831-f7b9e90eba7f
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
@@ -503,7 +506,7 @@ Vary: Accept
 ETag: "1"
 Content-Type: application/json
 Content-Length: 149
-Date: Fri, 06 Nov 2026 21:11:23 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 
 {"id":"00000000-0000-0000-0000-000000000001","isbn":"978-0441172719","title":"Dune","author":"Frank Herbert","year":1965,"addedVia":null,"version":1}
 ```
@@ -516,14 +519,14 @@ curl -s -i http://localhost:8080/books/00000000-0000-0000-0000-000000000001 -H '
 
 ```text
 HTTP/1.1 304 
-X-Correlation-Id: 3d9db637-7b57-4f89-9360-11f3fb1f055f
+X-Correlation-Id: fc66bee8-b38a-4bca-88fc-38a6e333fc5b
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 ETag: "1"
 Cache-Control: no-cache
 Vary: Accept
-Date: Fri, 06 Nov 2026 21:11:23 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 ```
 
 `HEAD` answers the same way:
@@ -534,14 +537,14 @@ curl -s -I http://localhost:8080/books/00000000-0000-0000-0000-000000000001 -H '
 
 ```text
 HTTP/1.1 304 
-X-Correlation-Id: 28b3bd06-55cf-4b5b-9115-445b83329219
+X-Correlation-Id: 9ce1215d-7d0a-4676-9ec4-649784645c29
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 ETag: "1"
 Cache-Control: no-cache
 Vary: Accept
-Date: Fri, 06 Nov 2026 21:11:23 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 ```
 
 On `PUT`, `.header("If-Match", UpdateBookRequest::version)` binds the tag to the `version` component, a
@@ -572,7 +575,7 @@ curl -s -X PUT http://localhost:8080/books/00000000-0000-0000-0000-000000000001 
 ```
 
 ```json
-{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"A precondition failed","code":"PRECONDITION_FAILED","correlationId":"17fb75c7-19a7-484a-97e9-1f7d7d45530b"}
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"A precondition failed","code":"PRECONDITION_FAILED","correlationId":"c001795c-ef58-4bf0-bb3b-5f3614f17bf5"}
 ```
 
 A weak tag can never match a write's precondition, so the plugin answers 412 before the operation runs:
@@ -584,7 +587,7 @@ curl -s -X PUT http://localhost:8080/books/00000000-0000-0000-0000-000000000001 
 ```
 
 ```json
-{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"A precondition failed","code":"PRECONDITION_FAILED","correlationId":"b13f0705-de61-4000-afca-f5a96e4eb0a8"}
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"A precondition failed","code":"PRECONDITION_FAILED","correlationId":"e10c1ffd-0f3f-4566-8b2c-043c3f2fec06"}
 ```
 
 `If-Match` is optional on `PUT`. Without it, `ReviseBook` checks the version it has just read, so a concurrent change
@@ -612,15 +615,15 @@ curl -s -i -X DELETE http://localhost:8080/books/00000000-0000-0000-0000-0000000
 
 ```text
 HTTP/1.1 428 
-X-Correlation-Id: 0555413c-1549-44af-951d-6fd8096d7935
+X-Correlation-Id: e67fd8f2-fe8a-483d-8277-40124080d27e
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 Content-Type: application/problem+json;charset=UTF-8
 Transfer-Encoding: chunked
-Date: Sat, 07 Nov 2026 07:45:52 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 
-{"type":"about:blank","title":"Precondition Required","status":428,"detail":"The request must be conditional","code":"PRECONDITION_REQUIRED","correlationId":"0555413c-1549-44af-951d-6fd8096d7935","violations":[{"field":"If-Match","message":"is required; send the ETag from a GET of this resource"}]}
+{"type":"about:blank","title":"Precondition Required","status":428,"detail":"The request must be conditional","code":"PRECONDITION_REQUIRED","correlationId":"e67fd8f2-fe8a-483d-8277-40124080d27e","violations":[{"field":"If-Match","message":"is required; send the ETag from a GET of this resource"}]}
 ```
 
 With the current version (2, after the update above), the book is deleted:
@@ -631,11 +634,11 @@ curl -s -i -X DELETE http://localhost:8080/books/00000000-0000-0000-0000-0000000
 
 ```text
 HTTP/1.1 204 
-X-Correlation-Id: 291b03f7-26b8-44c9-b233-7d8bafee9c05
+X-Correlation-Id: c9c1f3bc-a0b3-4719-a273-7e8178567d15
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
-Date: Sat, 07 Nov 2026 07:45:52 GMT
+Date: Sat, 07 Nov 2026 18:05:51 GMT
 ```
 
 ### Versions
@@ -655,7 +658,7 @@ curl -s -i http://localhost:8080/v2/books/$ID
 
 ```text
 HTTP/1.1 200 
-X-Correlation-Id: 48338570-bedf-4d3f-a84a-db12ae6ce561
+X-Correlation-Id: 049db2d7-b168-4f9a-bdd9-2e917b77cae2
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
@@ -664,9 +667,9 @@ Vary: Accept
 ETag: "1"
 Content-Type: application/json
 Content-Length: 158
-Date: Fri, 06 Nov 2026 21:11:24 GMT
+Date: Sat, 07 Nov 2026 18:05:52 GMT
 
-{"id":"bcfbf3d7-2f13-4387-a211-f0cb548952dd","isbn":"978-0060853983","title":"Good Omens","authors":["Terry Pratchett","Neil Gaiman"],"year":1990,"version":1}
+{"id":"0e800962-549b-492f-9c61-2e6b0cbd09c8","isbn":"978-0060853983","title":"Good Omens","authors":["Terry Pratchett","Neil Gaiman"],"year":1990,"version":1}
 ```
 
 `/books/{id}` keeps serving version 1 unchanged, one author string:
@@ -676,7 +679,7 @@ curl -s http://localhost:8080/books/$ID
 ```
 
 ```json
-{"id":"bcfbf3d7-2f13-4387-a211-f0cb548952dd","isbn":"978-0060853983","title":"Good Omens","author":"Terry Pratchett, Neil Gaiman","year":1990,"addedVia":null,"version":1}
+{"id":"0e800962-549b-492f-9c61-2e6b0cbd09c8","isbn":"978-0060853983","title":"Good Omens","author":"Terry Pratchett, Neil Gaiman","year":1990,"addedVia":null,"version":1}
 ```
 
 A version that no route declares is no route at all:
@@ -686,7 +689,7 @@ curl -s http://localhost:8080/v3/books/$ID
 ```
 
 ```json
-{"type":"about:blank","title":"Not Found","status":404,"detail":"No route matches the request","code":"ROUTE_NOT_FOUND","correlationId":"5a0685ad-866e-44af-89e3-8a93cfef4e6e"}
+{"type":"about:blank","title":"Not Found","status":404,"detail":"No route matches the request","code":"ROUTE_NOT_FOUND","correlationId":"d1199394-4a92-4b36-941f-237389f81a59"}
 ```
 
 ### CORS
@@ -707,7 +710,7 @@ curl -s -i -X OPTIONS http://localhost:8080/books/00000000-0000-0000-0000-000000
 
 ```text
 HTTP/1.1 200 
-X-Correlation-Id: efda7bf7-7c93-4d0e-af97-d4117d598750
+X-Correlation-Id: 9556c9de-aec4-46cc-999a-144023b1847b
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
@@ -717,7 +720,7 @@ Access-Control-Allow-Headers: Content-Type, If-Match
 Access-Control-Expose-Headers: X-Correlation-Id, ETag, Link, Location, Retry-After, Deprecation, Sunset
 Access-Control-Max-Age: 1800
 Content-Length: 0
-Date: Fri, 06 Nov 2026 21:11:24 GMT
+Date: Sat, 07 Nov 2026 18:05:52 GMT
 ```
 
 The actual request gets `Access-Control-Allow-Origin`, and `Access-Control-Expose-Headers` lets the page read the
@@ -729,7 +732,7 @@ curl -s -i http://localhost:8080/books/00000000-0000-0000-0000-000000000002 -H '
 
 ```text
 HTTP/1.1 200 
-X-Correlation-Id: abfac255-db40-4197-8edb-308ea47ff946
+X-Correlation-Id: f27359f5-9608-41cb-bebb-9a8d6baa4eb3
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
@@ -740,7 +743,7 @@ Vary: Accept
 ETag: "2"
 Content-Type: application/json
 Content-Length: 201
-Date: Fri, 06 Nov 2026 21:11:24 GMT
+Date: Sat, 07 Nov 2026 18:05:52 GMT
 
 {"id":"00000000-0000-0000-0000-000000000002","isbn":"978-0441478125","title":"The Left Hand of Darkness (50th anniversary edition)","author":"Ursula K. Le Guin","year":2019,"addedVia":null,"version":2}
 ```
@@ -753,15 +756,15 @@ curl -s -i http://localhost:8080/books/00000000-0000-0000-0000-000000000002 -H '
 
 ```text
 HTTP/1.1 403 
-X-Correlation-Id: f2d1afd4-ddac-41fe-90c3-39079b0ce633
+X-Correlation-Id: 39e0d962-1a1c-47fc-8902-a5836372f05a
 Vary: Origin
 Vary: Access-Control-Request-Method
 Vary: Access-Control-Request-Headers
 Content-Type: application/problem+json;charset=UTF-8
 Transfer-Encoding: chunked
-Date: Fri, 06 Nov 2026 21:11:24 GMT
+Date: Sat, 07 Nov 2026 18:05:52 GMT
 
-{"type":"about:blank","title":"Forbidden","status":403,"detail":"The cross-origin request is not allowed","code":"CORS_REJECTED","correlationId":"f2d1afd4-ddac-41fe-90c3-39079b0ce633"}
+{"type":"about:blank","title":"Forbidden","status":403,"detail":"The cross-origin request is not allowed","code":"CORS_REJECTED","correlationId":"39e0d962-1a1c-47fc-8902-a5836372f05a"}
 ```
 
 ### OpenAPI
@@ -821,210 +824,15 @@ Rebuild and start the service, and open http://localhost:8080/swagger-ui.html, w
 
 ## gRPC
 
-The same operations also serve a gRPC API, `synapse.samples.books.v1.BookService`, on port 9090 (Spring Boot's gRPC
-server on Netty, next to Tomcat). The service is declared in `src/main/proto/books/v1/books.proto`; the build compiles
-it into messages and stubs in `api.grpc.proto` (generated, under `target/generated-sources/protobuf`, and left out of
-the coverage check). `api/grpc/BooksGrpcConfiguration.java` is a single `GrpcBindings` bean: Synapse maps each request
-message to the operation's input record field by field (`added_via` to `addedVia`, a string `id` to a `UUID`, wrapper
-types such as `google.protobuf.Int32Value year` to nullable components), runs the operation through the same pipeline
-as REST, and maps the output back. The operation and model classes are the ones REST uses, unchanged.
+This sample is REST only. Its operations and models have no protocol in them, so serving them over gRPC too changes
+none of them: the service adds `synapse-api-grpc`, a `.proto` service and one `GrpcBindings` bean. Two samples show
+it:
 
-| Method | Operation | Bound by | Errors |
-|---|---|---|---|
-| `GetBook(GetBookRequest) returns (Book)` | `get-book` | `.unary(...)` with `.notFound(BookErrors.BOOK_NOT_FOUND)` | `NOT_FOUND` `BOOK_NOT_FOUND`; `INVALID_ARGUMENT` for an id that isn't a UUID |
-| `CreateBook(CreateBookRequest) returns (Book)` | `create-book` | `.unary(...)` with `.context(CreateBookRequest::channel, ...)`: `channel` from the `x-channel` metadata | `INVALID_ARGUMENT` `VALIDATION_FAILED`; `ABORTED` `DUPLICATE_ISBN` |
-| `UpdateBook(UpdateBookRequest) returns (Book)` | `update-book` | `.bindAllByName()`; `version` is an `Int64Value`, unset for "the version the service reads" | `NOT_FOUND` `BOOK_NOT_FOUND`; `ABORTED` `DUPLICATE_ISBN` or `STALE_VERSION` |
-| `DeleteBook(DeleteBookRequest) returns (google.protobuf.Empty)` | `delete-book` | `.bindAllByName()`; `version` as on `UpdateBook` | `NOT_FOUND` `BOOK_NOT_FOUND`; `ABORTED` `STALE_VERSION` |
-| `GetCatalogStats(google.protobuf.Empty) returns (CatalogStats)` | `get-catalog-stats` | `.bindAllByName()` | |
-
-The status code comes from the error's category: `NOT_FOUND` for `NOT_FOUND`, `ABORTED` for `CONFLICT`,
-`INVALID_ARGUMENT` for `INVALID_INPUT`. `synapse.api.grpc.errors.status.[CODE]` changes it for a code. There is no
-`If-Match` over gRPC: the version is a field, and a stale one is `ABORTED`, where REST answers 412.
-
-At startup the gRPC plugin logs one line per method, after Boot's line for the server:
-
-```text
-{"@timestamp":"2026-11-06T21:52:03.760530100Z","log":{"level":"INFO","logger":"io.americanexpress.synapse.api.grpc"},"process":{"pid":22820,"thread":{"name":"main"}},"service":{"name":"rest-books","node":{}},"message":"Synapse gRPC exposes synapse.samples.books.v1.BookService/GetBook -> get-book on port 9090","ecs":{"version":"8.11"}}
-```
-
-### Call it with grpcurl
-
-The commands below are standard [grpcurl](https://github.com/fullstorydev/grpcurl) usage, quoted for Git Bash or any
-POSIX shell; they were not run with grpcurl here. Under `local`, server reflection is on
-(`spring.grpc.server.reflection.enabled: true` in `application-local.yaml`), so grpcurl needs no `.proto` file. Every
-other environment keeps Synapse's default, reflection off: pass the file instead, with
-`-import-path samples/rest-books/src/main/proto -proto books/v1/books.proto`.
-
-The outputs shown are real, recorded from the running service (`ENV=local`), but they come from a small grpc-java
-client, not from grpcurl: it called the same methods with the same metadata and printed the response message, or the
-error's code, message and `google.rpc.Status`, as protobuf JSON. grpcurl's own layout may differ.
-
-```bash
-grpcurl -plaintext localhost:9090 list
-```
-
-```text
-grpc.health.v1.Health
-synapse.samples.books.v1.BookService
-grpc.reflection.v1.ServerReflection
-```
-
-Read a seeded book:
-
-```bash
-grpcurl -plaintext -d '{"id": "00000000-0000-0000-0000-000000000001"}' \
-  localhost:9090 synapse.samples.books.v1.BookService/GetBook
-```
-
-```json
-{
-  "id": "00000000-0000-0000-0000-000000000001",
-  "isbn": "978-0441172719",
-  "title": "Dune",
-  "author": "Frank Herbert",
-  "year": 1965,
-  "version": "1"
-}
-```
-
-`added_via` is a `StringValue` and the book has none, so it is not in the output. `version` is an `int64`, which
-protobuf JSON writes as a string.
-
-Add a book, with the channel in the `x-channel` metadata (as `X-Channel` does over REST):
-
-```bash
-grpcurl -plaintext -H 'x-channel:grpc' \
-  -d '{"isbn": "978-0151006205", "title": "The Telling", "author": "Ursula K. Le Guin", "year": 2000}' \
-  localhost:9090 synapse.samples.books.v1.BookService/CreateBook
-```
-
-```json
-{
-  "id": "e0436518-3020-411a-ac5e-3f0a8f79e96f",
-  "isbn": "978-0151006205",
-  "title": "The Telling",
-  "author": "Ursula K. Le Guin",
-  "year": 2000,
-  "addedVia": "grpc",
-  "version": "1"
-}
-```
-
-The book is in the same store REST reads: `curl -s http://localhost:8080/books/<id>` returns it.
-
-### gRPC errors
-
-An error is a status code, a message, and a `google.rpc.Status` in the `grpc-status-details-bin` trailer. The details
-are an `ErrorInfo` whose `reason` is the error code and whose `domain` is `spring.application.name`, with the
-`correlationId` in its metadata, then a `BadRequest` when there are violations.
-The message is the formatted error message only when `synapse.errors.include-detail` is on (`local`); otherwise it is
-empty. No stack trace or exception name ever reaches the caller.
-
-A book that doesn't exist:
-
-```bash
-grpcurl -plaintext -H 'x-correlation-id:demo-123' -d '{"id": "00000000-0000-0000-0000-000000000099"}' \
-  localhost:9090 synapse.samples.books.v1.BookService/GetBook
-```
-
-```text
-Code: NOT_FOUND
-Message: The resource was not found
-google.rpc.Status: {
-  "code": 5,
-  "message": "The resource was not found",
-  "details": [{
-    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-    "reason": "BOOK_NOT_FOUND",
-    "domain": "rest-books",
-    "metadata": {
-      "correlationId": "demo-123"
-    }
-  }]
-}
-```
-
-The reason is the declared code, `BOOK_NOT_FOUND`, but the message is `NOT_FOUND`'s. Over gRPC a `.notFound(...)` code
-gets no message arguments, so when its template has placeholders (`Book {0} was not found`) the edge describes the error
-with `NOT_FOUND`'s message, localized like any other, instead of printing the template unfilled. A template without
-placeholders keeps its own text. (REST fills in the path variables, so its `detail` is
-`Book 00000000-0000-0000-0000-000000000099 was not found`.) An id that isn't a UUID is `INVALID_ARGUMENT` before the
-operation runs:
-
-```bash
-grpcurl -plaintext -H 'x-correlation-id:demo-125' -d '{"id": "not-a-uuid"}' \
-  localhost:9090 synapse.samples.books.v1.BookService/GetBook
-```
-
-```text
-Code: INVALID_ARGUMENT
-Message: The request is invalid
-google.rpc.Status: {
-  "code": 3,
-  "message": "The request is invalid",
-  "details": [{
-    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-    "reason": "VALIDATION_FAILED",
-    "domain": "rest-books",
-    "metadata": {
-      "correlationId": "demo-125"
-    }
-  }, {
-    "@type": "type.googleapis.com/google.rpc.BadRequest",
-    "fieldViolations": [{
-      "field": "id",
-      "description": "is not a valid value"
-    }]
-  }]
-}
-```
-
-The `BadRequest` field is the proto field's path. Like a request that doesn't bind over REST, this call is turned away
-before an operation runs, so it logs nothing.
-
-A duplicate ISBN is a `CONFLICT`, so `ABORTED`, and the operation logs its failure line as over REST:
-
-```bash
-grpcurl -plaintext -H 'x-correlation-id:demo-124' \
-  -d '{"isbn": "978-0441172719", "title": "The Telling", "author": "Ursula K. Le Guin", "year": 2000}' \
-  localhost:9090 synapse.samples.books.v1.BookService/CreateBook
-```
-
-```text
-Code: ABORTED
-Message: A book with ISBN 978-0441172719 already exists
-google.rpc.Status: {
-  "code": 10,
-  "message": "A book with ISBN 978-0441172719 already exists",
-  "details": [{
-    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-    "reason": "DUPLICATE_ISBN",
-    "domain": "rest-books",
-    "metadata": {
-      "correlationId": "demo-124"
-    }
-  }]
-}
-```
-
-```json
-{"@timestamp":"2026-11-06T21:53:41.091834300Z","log":{"level":"WARN","logger":"io.americanexpress.synapse.operation"},"process":{"pid":22820,"thread":{"name":"grpc-12"}},"service":{"name":"rest-books","node":{}},"message":"Operation create-book failed with DUPLICATE_ISBN (CONFLICT): A book with ISBN 978-0441172719 already exists","correlationId":"demo-124","error":{"category":"CONFLICT","code":"DUPLICATE_ISBN"},"operation":"create-book","spanId":"b380950ce6abfbef","traceId":"3ec84631f9d68f2388d79da88f791c8b","ecs":{"version":"8.11"}}
-```
-
-### x-correlation-id
-
-gRPC uses the correlation header's name in lower case, `x-correlation-id` (`synapse.correlation.header`), as metadata.
-An id the caller sends is echoed; without one, the service generates a UUID. A successful call echoes it in the
-response headers; an error carries it in the trailers, next to `grpc-status-details-bin`, and in
-`ErrorInfo.metadata.correlationId`. From the calls above:
-
-```text
-GetBook (x-correlation-id: demo-123, NOT_FOUND)  trailers: x-correlation-id=demo-123
-CreateBook (no x-correlation-id, OK)             headers:  x-correlation-id=dfd00e1e-d329-4585-addb-d566a91b5cfe
-```
-
-`SearchBooks` comes to gRPC with page tokens (plan 3b): its `PageQuery` input and `PageResult` output have no gRPC
-mapping yet, so `books.proto` leaves it out.
+* [`grpc-inventory`](../grpc-inventory/README.md): a gRPC-first service, with its `.proto` in a contract module, called
+  with grpcurl;
+* [`reference-bookstore`](../reference-bookstore/README.md): a bookstore over REST and gRPC on PostgreSQL, in the
+  archetype's multi-module layout, with one scenario suite that runs over both protocols: the same `ETag` token, error
+  codes and page tokens on each.
 
 ## What to look for in the logs
 
@@ -1041,8 +849,8 @@ The console shows one JSON object per line, in the Elastic Common Schema (from `
     2. Synapse baggage fields
     3. Java system properties
     4. environment variables
-    5. application-local.yaml  synapse-sample-rest-books-2.0.0-SNAPSHOT.jar
-    6. application.yaml        synapse-sample-rest-books-2.0.0-SNAPSHOT.jar
+    5. application-local.yaml  rest-books-2.0.0-SNAPSHOT.jar
+    6. application.yaml        rest-books-2.0.0-SNAPSHOT.jar
     7. logCorrelation
     8. applicationInfo
     9. defaults
@@ -1051,11 +859,11 @@ The console shows one JSON object per line, in the Elastic Common Schema (from `
 
 * Successful calls log nothing.
 * A failing operation logs one WARN line on `io.americanexpress.synapse.operation` (ERROR with the stack trace for an
-  internal error), with `operation`, `error.code`, `error.category`, `correlationId` and the trace and span ids, plus
+  internal error), with `operation`, `errorCode`, `errorCategory`, `correlationId` and the trace and span ids, plus
   the context attribute `channel` when the request sent `X-Channel`. The correlation id example above logs:
 
   ```json
-  {"@timestamp":"2026-11-06T21:11:23.524834100Z","log":{"level":"WARN","logger":"io.americanexpress.synapse.operation"},"process":{"pid":34980,"thread":{"name":"tomcat-handler-36"}},"service":{"name":"rest-books","node":{}},"message":"Operation create-book failed with DUPLICATE_ISBN (CONFLICT): A book with ISBN 978-0441172719 already exists","channel":"web","correlationId":"demo-123","error":{"category":"CONFLICT","code":"DUPLICATE_ISBN"},"operation":"create-book","spanId":"bd3affb3bdeb4a44","traceId":"cc5f4f56c0b84927a34859ebdfd3c1de","ecs":{"version":"8.11"}}
+  {"@timestamp":"2026-11-07T18:05:51.532239100Z","log":{"level":"WARN","logger":"io.americanexpress.synapse.operation"},"process":{"pid":29344,"thread":{"name":"tomcat-handler-36"}},"service":{"name":"rest-books","version":"2.0.0-SNAPSHOT","node":{}},"message":"Operation create-book failed with DUPLICATE_ISBN (CONFLICT): A book with ISBN 978-0441172719 already exists","channel":"web","correlationId":"demo-123","errorCategory":"CONFLICT","errorCode":"DUPLICATE_ISBN","operation":"create-book","spanId":"8600eb7c051ad355","traceId":"ba0885394f6ce24fd05849bdb3f11f6d","ecs":{"version":"8.11"}}
   ```
 
 * A stale `If-Match` logs the operation's failure as `STALE_VERSION`, although the client gets 412
@@ -1067,19 +875,19 @@ The console shows one JSON object per line, in the Elastic Common Schema (from `
 
 ## Safe defaults
 
-Synapse's defaults are the same in every environment; only `application-local.yaml` turns `detail` (and CORS and
-the OpenAPI document) on. Stop the service and start it with `detail` turned off again:
+Synapse's defaults are the same in every environment; only `application-local.yaml` turns `detail` (and CORS and the
+OpenAPI document) on. Stop the service and start it with `detail` turned off again:
 
 ```bash
-ENV=local java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar \
+ENV=local java -jar samples/rest-books/target/rest-books-2.0.0-SNAPSHOT.jar \
   --synapse.errors.include-detail=false
 ```
 
-No cursor key is set, so the plugin generates one at startup and warns, at every start, that tokens won't survive a
+No cursor key is set, so Synapse generates one at startup and warns, at every start, that tokens won't survive a
 restart or work on another instance:
 
 ```text
-{"@timestamp":"2026-11-06T21:11:53.773449800Z","log":{"level":"WARN","logger":"io.americanexpress.synapse.api.rest"},"process":{"pid":41036,"thread":{"name":"main"}},"service":{"name":"rest-books","node":{}},"message":"synapse.api.rest.paging.cursor.key is not set, so paging cursors are encrypted with a key generated at startup: a cursor fails with 400 after a restart or on another instance. Set the same base64 256-bit key on every instance (for example: openssl rand -base64 32).","ecs":{"version":"8.11"}}
+{"@timestamp":"2026-11-07T18:06:25.093767Z","log":{"level":"WARN","logger":"io.americanexpress.synapse.core"},"process":{"pid":8836,"thread":{"name":"main"}},"service":{"name":"rest-books","version":"2.0.0-SNAPSHOT","node":{}},"message":"synapse.paging.cursor.key is not set, so paging cursors are encrypted with a key generated at startup: a cursor is rejected after a restart or on another instance. Set the same base64 256-bit key on every instance (for example: openssl rand -base64 32).","ecs":{"version":"8.11"}}
 ```
 
 Problem responses leave out `detail`:
@@ -1089,7 +897,7 @@ curl -s http://localhost:8080/books/00000000-0000-0000-0000-000000000099
 ```
 
 ```json
-{"type":"about:blank","title":"Not Found","status":404,"code":"BOOK_NOT_FOUND","correlationId":"4040c3c9-094d-47b1-b35a-e5e0b46d84b3"}
+{"type":"about:blank","title":"Not Found","status":404,"code":"BOOK_NOT_FOUND","correlationId":"33770d24-57b0-4af1-abe5-c3640af32d85"}
 ```
 
 Deleting a book that doesn't exist (with `If-Match: *`, so the route's 428 doesn't answer first) fails in the business
@@ -1100,38 +908,45 @@ curl -s -X DELETE http://localhost:8080/books/00000000-0000-0000-0000-0000000000
 ```
 
 ```json
-{"type":"about:blank","title":"Not Found","status":404,"code":"BOOK_NOT_FOUND","correlationId":"6e65779e-8135-4281-a7a9-16331413fd69"}
+{"type":"about:blank","title":"Not Found","status":404,"code":"BOOK_NOT_FOUND","correlationId":"8024cde7-698a-4ced-8c02-75602bf7baa5"}
 ```
 
 The log line of the failure still carries the message (`Book 00000000-0000-0000-0000-000000000099 was not found`), so
 the `correlationId` a caller reports leads to it.
 
-To silence the WARN, give the service a key. Stop it and start it with one (a real deployment sets the same key on
-every instance, from the environment or a secret store; see `application.yaml`):
+To silence the WARN, give the service a key. Stop it, and start it again with the key in the environment variable
+`SYNAPSE_PAGING_CURSOR_KEY`, as `application-local.yaml` says. Boot binds that variable to `synapse.paging.cursor.key`
+(dots become underscores, letters upper case), so no file names the key. The variable is set for the `java` command
+only, so the rest of your shell is unchanged and the runs above still show the WARN. A real deployment sets the same
+key on every instance, from the environment or a secret store, never from a file in the repository:
 
 ```bash
-ENV=local java -jar samples/rest-books/target/synapse-sample-rest-books-2.0.0-SNAPSHOT.jar \
-  --synapse.api.rest.paging.cursor.key=$(openssl rand -base64 32)
+KEY=$(openssl rand -base64 32)
+SYNAPSE_PAGING_CURSOR_KEY=$KEY ENV=local java -jar samples/rest-books/target/rest-books-2.0.0-SNAPSHOT.jar
 ```
 
-The startup log then has no line about `synapse.api.rest.paging.cursor.key`, and no WARN at all.
+The startup log then has no line about `synapse.paging.cursor.key`, and no WARN at all. A cursor now survives a
+restart: stop the service, run the same `java` command again (with the same `$KEY`), and a `nextCursor` from before the
+restart still pages.
 
 ## Configuration
 
 `src/main/resources/application.yaml` lists the settings worth changing while you try the service, with comments: the
 correlation header, error detail, the context header mapping, the deadline (`Request-Timeout`), the body limit, the
-concurrency limit, and (commented out) the paging settings: `max-offset` and the cursor key, read from
-`BOOKS_CURSOR_KEY`. Boot's OTLP metrics export is turned off there, because no OpenTelemetry collector runs with the
-sample. `application-local.yaml` holds the local conveniences: error detail, the CORS origin of a local front end and
-the OpenAPI document.
+concurrency limit, and (commented out) core's paging settings under `synapse.paging`: `max-offset`, and the cursor
+key, which no file sets: it comes from the environment variable `SYNAPSE_PAGING_CURSOR_KEY` (see
+[Safe defaults](#safe-defaults)). Boot's OTLP metrics export is turned off there, because no OpenTelemetry collector
+runs with the sample. `application-local.yaml` holds the local conveniences: error detail, the CORS origin of a local
+front end and the OpenAPI document, and a comment on how to give local runs a cursor key.
 
-For gRPC it lists the server port (`spring.grpc.server.port: 9090`), the `x-channel` metadata mapping
-(`synapse.api.grpc.context.metadata.channel`), the deadline cap and default, and the concurrency limit
-(`synapse.api.grpc.max-concurrent-calls`). Reflection is off there (Synapse's default); `application-local.yaml` turns
-it on.
+The sample builds without Spring AOT processing, which `synapse-parent` runs only with `-Paot`, so it has no build
+environment file (`application-build.yaml`), and `java -jar` runs the configuration classes as usual. Under AOT, the
+OpenAPI document is a build-time switch: the [reference bookstore](../reference-bookstore/README.md#aot-mode) shows the
+opt-in, and a run in `local` that fails because `springdoc.api-docs.enabled: true` differs from the build.
 
-This module inherits the repository's build parent so it passes the same gates as the library. Your own service
-inherits `io.americanexpress.synapse:synapse-parent` and declares the same dependencies as this `pom.xml`.
+`pom.xml` is the pom of a real service: it inherits `io.americanexpress.synapse:synapse-parent`, and no dependency has
+a version. Only the four `maven.*.skip` properties, which keep the sample from being published, are not what your
+service would have.
 
 ## Tests
 
@@ -1140,10 +955,54 @@ inherits `io.americanexpress.synapse:synapse-parent` and declares the same depen
 | Test | Shows |
 |---|---|
 | `api/rest/BooksRestTest` | `@SynapseRestTest`: the bindings, edge filters and problem responses on MockMvc, with `@MockitoBean` operations: the page object and `Link`, 304, `If-Match` binding, 428, the version 2 route beside version 1 |
-| `api/grpc/BooksGrpcTest` | `@SynapseGrpcTest`: the gRPC bindings and edge on Boot's in-process transport, with `@MockitoBean` operations and a client from `@ImportGrpcClients`: field mapping and wrapper presence, `NOT_FOUND` with `BOOK_NOT_FOUND` and `NOT_FOUND`'s message, `x-channel` into the context, an unset version as `null`, `Empty` in and out, `ABORTED` for `STALE_VERSION` and `DUPLICATE_ISBN` |
 | `operation/BookOperationsTest` | `@SynapseOperationTest`: operations and business beans with the real pipeline (validation, error codes, versions, paging and sorting, the authors list of `BookV2`) |
 | `business/ReviseBookTest` | `SynapseOperations.invoke`: business operations through their pipeline, without Spring, including the races that end in `STALE_VERSION` |
 | `data/InMemoryBookStoreTest` | The store, as a plain unit test: the compare-and-set |
-| `BooksApplicationIT` | The whole service on a real port, as `test` with `synapse.errors.include-detail=false` (the safe defaults: no `detail`): cursors and `Link`, offsets, 304, 412, 409 with a `@MockitoSpyBean` store, 428, `/v2` beside `/books` and `/v3` as 404, `/v3/api-docs` off in `test`, CORS off in `test`; a book added over REST and read over gRPC (Netty on a free port; each nested context starts its own); nested classes with `/v3/api-docs` on (every route listed), with CORS on: Actuator's paths untouched, and under a context path, an Actuator request's error response without CORS headers however the path is spelled; tagged `smoke` |
-| `BooksLocalEnvironmentIT` | The whole service as `local`, with the real `application-local.yaml`: that file turns `/v3/api-docs` on; tagged `smoke` |
+| `BooksApplicationIT` | The whole service on a real port, as `test` with `synapse.errors.include-detail=false` (the safe defaults: no `detail`): cursors and `Link`, offsets, 304, 412 on `PUT` and `DELETE`, 409 with a `@MockitoSpyBean` store, 428, `/v2` beside `/books` and `/v3` as 404, `/v3/api-docs` off in `test`, CORS off in `test`; nested classes with `/v3/api-docs` on (every route listed), with CORS on: Actuator's paths untouched, and under a context path, an Actuator request's error response without CORS headers however the path is spelled; tagged `smoke` |
+| `BooksLocalEnvironmentIT` | The whole service as `local`, with the real `application-local.yaml` and no test property: that file turns `/v3/api-docs` on; tagged `smoke` |
 | `ArchitectureTest` | The layering rules |
+
+To run one unit test class, or one integration test class alone:
+
+```bash
+./mvnw -pl samples/rest-books -am test -Dtest=BookOperationsTest -Dsurefire.failIfNoSpecifiedTests=false
+./mvnw -pl samples/rest-books -am verify -Dit.test=BooksApplicationIT -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false \
+  -Dfailsafe.failIfNoSpecifiedTests=false -Djacoco.skip=true
+```
+
+`-Djacoco.skip=true` turns off the coverage gate, which needs the tests of every module the build includes.
+
+## Layout
+
+```
+samples/rest-books/
+  pom.xml                             parent synapse-parent; the REST plugin, the OpenAPI add-on, and the test modules
+  src/main/java/.../books/
+    BooksApplication.java             @SpringBootApplication
+    api/rest/BooksRestConfiguration   RestBindings: every route, its paging, ETags, versions and headers
+    operation/                        Get, Search, Create, Update and Delete book, GetBookV2, GetCatalogStats
+    business/                         AddBook, ReviseBook, RemoveBook: the ISBN and version rules
+    business/model/                   NewBook, BookRevision, BookRemoval, CatalogBook
+    contract/BookErrors               BOOK_NOT_FOUND, DUPLICATE_ISBN
+    model/                            the API's records: Book, BookV2, CatalogStats and the requests
+    data/                             InMemoryBookStore (a compare-and-set on the version), StoredBook
+  src/main/resources/
+    application.yaml                  spring.profiles.active: ${ENV}, the application name, the REST limits, OTLP
+                                      metrics push off
+    application-local.yaml            local conveniences: detail, CORS and the OpenAPI document
+  src/test/java/.../books/            the tests above
+  src/test/resources/
+    application-test.yaml             the test environment: detail on, so the tests can check it
+```
+
+## Make it yours
+
+rest-books is a tour, so a service of yours starts from [hello-rest](../hello-rest/README.md) or the quickstart
+archetype more often than from a copy of it. To copy it anyway, change these:
+
+* `pom.xml`: the `groupId`, `artifactId` and `description`; the parent's `relativePath` (drop it when the parent comes
+  from a repository); and remove the four `maven.*.skip` properties, which only keep this sample from being published.
+* The package `io.americanexpress.synapse.samples.books` and `BooksApplication`.
+* `spring.application.name` in `application.yaml`.
+* `data/InMemoryBookStore`, which stands in for a database: a data module on a store replaces it, as in
+  [multi-store](../multi-store/README.md) and the [reference bookstore](../reference-bookstore/README.md).

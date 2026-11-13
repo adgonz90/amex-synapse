@@ -19,6 +19,7 @@ import java.util.TreeSet;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConstructorArgumentValues.ValueHolder;
@@ -29,6 +30,7 @@ import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.context.ResourceLoaderAware;
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
+import org.springframework.core.ResolvableType;
 import org.springframework.core.annotation.MergedAnnotation;
 import org.springframework.core.env.Environment;
 import org.springframework.core.io.DefaultResourceLoader;
@@ -134,9 +136,27 @@ public final class StoreRegistrar implements ImportBeanDefinitionRegistrar, Envi
     /**
      * Registers one of a store's beans, unless the registry already has a bean with its name. The bean is made by
      * calling {@code factoryMethod(storeName)} on the bean {@code factoryBean}; it is qualified with the store name,
-     * primary when the store sets {@code primary}, and has {@code type} as its target type, so conditions can predict
-     * it before the factory bean exists. A bean that already has the name replaces Synapse's: it is marked as the
-     * store's, and gets the store's qualifier and primary flag once every store is registered.
+     * primary when the store sets {@code primary}, and has {@code type} as its target type. A bean that already has the
+     * name replaces Synapse's: it is marked as the store's, and gets the store's qualifier and primary flag once every
+     * store is registered.
+     *
+     * <p>
+     * The factory beans are defined by auto-configuration, after the stores, and what Spring can tell about a store
+     * bean before its factory bean exists depends on how it is asked:
+     * <ul>
+     * <li>{@code getType} and lookups by annotation ({@code @ConditionalOnBean(annotation = ...)}, as Boot's gRPC
+     * server configuration has) see the bean's type. When {@code type} is a {@code FactoryBean} (JPA's
+     * {@code LocalContainerEntityManagerFactoryBean}), Spring would resolve its object type from the factory bean's
+     * definition first, and fail while that bean isn't defined, so the definition also carries its object type
+     * ({@link FactoryBean#OBJECT_TYPE_ATTRIBUTE}, the {@code FactoryBean}'s generic as a {@code ResolvableType}), which
+     * Spring reads before anything else.</li>
+     * <li>Lookups by type without eager initialization, which Boot's type-based conditions use
+     * ({@code @ConditionalOnBean(DataSource.class)}, {@code @ConditionalOnMissingBean}), don't see the store's beans at
+     * all: Spring skips a definition whose factory bean isn't defined yet (an eager {@code getBeansOfType} sees them).
+     * A type-based condition on store beans belongs in an auto-configuration ordered after the access module's
+     * ({@code SynapseDataJpaAutoConfiguration} or {@code SynapseDataJdbcAutoConfiguration}), where every factory bean
+     * exists; data.adoc says so.</li>
+     * </ul>
      *
      * @param registry the registry
      * @param store the store
@@ -145,6 +165,8 @@ public final class StoreRegistrar implements ImportBeanDefinitionRegistrar, Envi
      * @param factoryBean the name of the factory bean
      * @param factoryMethod the factory method, which takes the store name
      * @return {@code true} when the bean was registered, {@code false} when the name was taken
+     * @throws IllegalArgumentException when {@code type} is a {@code FactoryBean} whose object type can't be resolved
+     *         from its declaration
      */
     public static boolean registerStoreBean(BeanDefinitionRegistry registry, StoreDefinition store, String suffix,
             Class<?> type, String factoryBean, String factoryMethod) {
@@ -160,6 +182,17 @@ public final class StoreRegistrar implements ImportBeanDefinitionRegistrar, Envi
         definition.setFactoryMethodName(factoryMethod);
         definition.getConstructorArgumentValues().addIndexedArgumentValue(0, store.name());
         definition.setTargetType(type);
+        if (FactoryBean.class.isAssignableFrom(type)) {
+            // The whole generic, as Spring resolves it from a factory method's return type, so FactoryBean<Foo<Bar>>
+            // keeps Bar.
+            ResolvableType objectType = ResolvableType.forClass(type).as(FactoryBean.class).getGeneric(0);
+            if (objectType.resolve() == null) {
+                throw new IllegalArgumentException(
+                        "The FactoryBean " + type.getName() + " declares no object type for the store bean "
+                                + beanName);
+            }
+            definition.setAttribute(FactoryBean.OBJECT_TYPE_ATTRIBUTE, objectType);
+        }
         definition.setPrimary(store.primary());
         definition.addQualifier(new AutowireCandidateQualifier(Qualifier.class, store.name()));
         definition.setAttribute(STORE_ATTRIBUTE, store.name());

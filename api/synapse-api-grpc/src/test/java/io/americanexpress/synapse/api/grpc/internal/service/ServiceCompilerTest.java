@@ -13,24 +13,38 @@
  */
 package io.americanexpress.synapse.api.grpc.internal.service;
 
+import java.security.SecureRandom;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;
 import io.grpc.ServiceDescriptor;
 import io.grpc.protobuf.ProtoUtils;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import io.americanexpress.synapse.api.grpc.GrpcBindings;
 import io.americanexpress.synapse.api.grpc.fixture.proto.CatalogServiceGrpc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.GetItemRequest;
+import io.americanexpress.synapse.api.grpc.fixture.proto.NoItemsServiceGrpc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBookServiceGrpc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.WatchServiceGrpc;
 import io.americanexpress.synapse.api.grpc.internal.binding.ServiceDeclaration;
 import io.americanexpress.synapse.api.grpc.internal.binding.fixture.BindingFixtures;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingException;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.internal.paging.AesGcmCursorCodec;
+import io.americanexpress.synapse.core.internal.paging.CursorKeys;
+import io.americanexpress.synapse.core.internal.paging.InputDigest;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.OperationName;
 import io.americanexpress.synapse.core.operation.QueryOperation;
@@ -47,7 +61,7 @@ class ServiceCompilerTest {
             .of(SERVICE + "/GetItem", SERVICE + "/CreateItem", SERVICE + "/DeleteItem", SERVICE + "/Ping",
                     SERVICE + "/ListTags", SERVICE + "/Fail");
 
-    private final ServiceCompiler compiler = new ServiceCompiler();
+    private final ServiceCompiler compiler = Compilers.compiler();
 
     /** The operations {@code .bindAllByName()} finds for every method but {@code GetItem}. */
     private static List<ServiceOperation<?, ?>> remainingOperations() {
@@ -105,7 +119,7 @@ class ServiceCompilerTest {
 
     @Test
     void unboundHintIsAppendedToTheAction() {
-        ServiceCompiler hinted = new ServiceCompiler("In @SynapseGrpcTest, declare a @MockitoBean for it.");
+        ServiceCompiler hinted = Compilers.compiler("In @SynapseGrpcTest, declare a @MockitoBean for it.");
         ServiceDeclaration declaration = GrpcBindingsAccess.declaration(getItemAndTheRestByName());
 
         assertThatExceptionOfType(SynapseConfigurationException.class)
@@ -170,7 +184,7 @@ class ServiceCompilerTest {
 
     @Test
     void methodsBoundByNameGetTheBindingChecks() {
-        // ListTags bound by name to an operation that returns a page: the paging check applies to it too.
+        // ListTags bound by name to an operation that returns a page in an Optional: the paging check applies to it.
         List<ServiceOperation<?, ?>> operations = remainingOperations()
                 .stream()
                 .filter(operation -> !(operation instanceof BindingFixtures.ListTagsOperation))
@@ -180,24 +194,92 @@ class ServiceCompilerTest {
         assertThatExceptionOfType(SynapseConfigurationException.class)
                 .isThrownBy(
                         () -> compiler.compile(GrpcBindingsAccess.declaration(getItemAndTheRestByName()), operations))
-                .withMessage("gRPC method " + SERVICE
-                        + "/ListTags (list-tags): PageResult is not supported over gRPC yet; gRPC page tokens come in"
-                        + " plan 3b");
+                .withMessage("gRPC method " + SERVICE + "/ListTags (list-tags): the output type Optional holds a "
+                        + "PageResult, but a PageResult must be the operation's direct output");
     }
 
     @Test
     void bindingChecksRunBeforeTheMessagesAreMapped() {
-        // A page output also can't be mapped to Item; the binding check's message is the one reported.
+        // A page in an Optional also can't be mapped to Item; the binding check's message is the one reported.
         ServiceDeclaration declaration = GrpcBindingsAccess
                 .declaration(GrpcBindings
                         .service(CatalogServiceGrpc.getServiceDescriptor())
-                        .unary(CatalogServiceGrpc.getGetItemMethod(), new BindingFixtures.PageItemsOperation())
+                        .unary(CatalogServiceGrpc.getGetItemMethod(), new BindingFixtures.OptionalPageOperation())
                         .bindAllByName()
                         .build());
 
         assertThatExceptionOfType(SynapseConfigurationException.class)
                 .isThrownBy(() -> compiler.compile(declaration, remainingOperations()))
-                .withMessageEndingWith("PageResult is not supported over gRPC yet; gRPC page tokens come in plan 3b");
+                .withMessageEndingWith("a PageResult must be the operation's direct output");
+    }
+
+    @Test
+    void generatedCursorKeyIsReportedOnceWhenAMethodReturnsAPage() {
+        PageCursors generated = generatedKeyCursors();
+        ServiceCompiler pagingCompiler = new ServiceCompiler(generated, Compilers.PAGING);
+
+        List<ILoggingEvent> first = warnings(() -> pagingCompiler.compile(pagedBooks(), List.of()));
+        List<ILoggingEvent> again = warnings(() -> pagingCompiler.compile(pagedBooks(), List.of()));
+
+        assertThat(first).singleElement().satisfies(event -> {
+            assertThat(event.getLoggerName()).isEqualTo("io.americanexpress.synapse.core");
+            assertThat(event.getFormattedMessage()).startsWith("synapse.paging.cursor.key is not set");
+        });
+        // Once per PageCursors bean, so once per context whichever plugins page.
+        assertThat(again).isEmpty();
+    }
+
+    @Test
+    void generatedCursorKeyIsReportedOnlyWithAPagedMethod() {
+        ServiceCompiler plain = new ServiceCompiler(generatedKeyCursors(), Compilers.PAGING);
+
+        assertThat(warnings(() -> plain
+                .compile(GrpcBindingsAccess.declaration(getItemAndTheRestByName()), remainingOperations())))
+                .isEmpty();
+    }
+
+    @Test
+    void generatedCursorKeyIsNotReportedWhenCompilingFails() {
+        ServiceCompiler failing = new ServiceCompiler(generatedKeyCursors(), Compilers.PAGING);
+        ServiceDeclaration noItems = GrpcBindingsAccess
+                .declaration(GrpcBindings
+                        .service(NoItemsServiceGrpc.getServiceDescriptor())
+                        .unary(NoItemsServiceGrpc.getListMethod(), new BindingFixtures.PagedBooksOperation())
+                        .build());
+
+        assertThat(warnings(() -> assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> failing.compile(noItems, List.of())))).isEmpty();
+    }
+
+    private static ServiceDeclaration pagedBooks() {
+        return GrpcBindingsAccess
+                .declaration(GrpcBindings
+                        .service(PagedBookServiceGrpc.getServiceDescriptor())
+                        .unary(PagedBookServiceGrpc.getListBooksMethod(), new BindingFixtures.PagedBooksOperation())
+                        .unary(PagedBookServiceGrpc.getListTitlesMethod(), new BindingFixtures.PagedBooksOperation())
+                        .unary(PagedBookServiceGrpc.getListAllMethod(), new BindingFixtures.ListAllBooksOperation())
+                        .build());
+    }
+
+    /** Page cursors whose key is generated, as without {@code synapse.paging.cursor.key}. */
+    private static PageCursors generatedKeyCursors() {
+        SecureRandom random = new SecureRandom();
+        CursorKeys keys = CursorKeys.from(new SynapsePagingProperties.Cursor(null, List.of(), null), random);
+        return new PageCursors(new AesGcmCursorCodec(keys, Clock.systemUTC(), null, random), new InputDigest());
+    }
+
+    /** Runs the action and returns the WARN lines it logged on Synapse's loggers (gRPC's and core's). */
+    private static List<ILoggingEvent> warnings(Runnable action) {
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse");
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            logger.detachAppender(appender);
+        }
+        return appender.list.stream().filter(event -> event.getLevel() == Level.WARN).toList();
     }
 
     @Test
@@ -332,9 +414,9 @@ class ServiceCompilerTest {
     static class OtherGetItemOperation extends BindingFixtures.GetItemOperation {
     }
 
-    /** Named {@code list-tags}; returns a page. */
+    /** Named {@code list-tags}; returns a page in an {@code Optional}. */
     @OperationName("list-tags")
-    static class ListTagsPageOperation extends BindingFixtures.PageItemsOperation {
+    static class ListTagsPageOperation extends BindingFixtures.OptionalPageOperation {
     }
 
     /** An output whose {@code sku} component is a oneof member, mapped without {@code .map}. */

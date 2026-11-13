@@ -61,7 +61,6 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import io.americanexpress.synapse.api.rest.RestErrors;
-import io.americanexpress.synapse.api.rest.internal.conditional.EntityTags;
 import io.americanexpress.synapse.api.rest.internal.conditional.Preconditions;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.api.rest.internal.paging.PageQueryReader;
@@ -74,6 +73,8 @@ import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.internal.conditional.EntityTags;
+import io.americanexpress.synapse.core.internal.conditional.VersionTokens;
 import io.americanexpress.synapse.core.paging.PageQuery;
 
 /**
@@ -167,8 +168,12 @@ public final class RequestBinder {
                 case InputSource.Query query -> checkConvertible(route, query.component(), target(query.component()));
                 case InputSource.QueryRecord query ->
                     query.components().forEach(c -> checkConvertible(route, c, target(c)));
-                case InputSource.Header header ->
-                    checkConvertible(route, header.component(), headerTarget(header.component()));
+                case InputSource.Header header -> {
+                    // A VersionCondition's version is read by core's VersionTokens; BindingValidator checks its type.
+                    if (!BindingValidator.isVersionCondition(header.component())) {
+                        checkConvertible(route, header.component(), target(header.component()));
+                    }
+                }
                 case InputSource.Cookie cookie ->
                     checkConvertible(route, cookie.component(), target(cookie.component()));
                 case InputSource.Body body -> {
@@ -192,9 +197,9 @@ public final class RequestBinder {
     }
 
     /**
-     * Fails when the conversion service can't convert request text to the component. Headers bound from
-     * {@code If-Match} or {@code If-None-Match} are checked the same way: the entity tag's value is converted to the
-     * component type, or to the version type of a {@code VersionCondition} component.
+     * Fails when the conversion service can't convert request text to the component. A plain component bound from
+     * {@code If-Match} or {@code If-None-Match} (on a read) is checked the same way: the entity tag's value is converted
+     * to the component type. A {@code VersionCondition}'s version is not: core's {@code VersionTokens} reads it.
      */
     private void checkConvertible(RouteDefinition route, ResolvedComponent component, TypeDescriptor target) {
         TypeDescriptor source = target.isCollection() || target.isArray() ? STRINGS : STRING;
@@ -212,17 +217,6 @@ public final class RequestBinder {
     /** Returns the type request text is converted to for a component: its own type. */
     private static TypeDescriptor target(ResolvedComponent component) {
         return new TypeDescriptor(ResolvableType.forType(component.genericType()), null, null);
-    }
-
-    /**
-     * Returns the type a header's text is converted to: for a {@code VersionCondition} component (which binds only
-     * from {@code If-Match} or {@code If-None-Match}), its version type, which the startup checks ensure it declares;
-     * otherwise the component's own type.
-     */
-    private static TypeDescriptor headerTarget(ResolvedComponent component) {
-        return BindingValidator.isVersionCondition(component)
-                ? new TypeDescriptor(Objects.requireNonNull(BindingValidator.versionType(component)), null, null)
-                : target(component);
     }
 
     private void checkBodyBindable(RouteDefinition route) {
@@ -739,24 +733,27 @@ public final class RequestBinder {
                 return FAILED;
             }
             boolean condition = BindingValidator.isVersionCondition(component);
-            if (parsed.wildcard()) {
+            if (!(parsed instanceof EntityTags.Parsed.Tags list)) {
                 return condition ? VersionCondition.any() : null;
             }
-            if (parsed.tags().size() > 1) {
+            if (list.tags().size() > 1) {
                 violations.add(new Violation(component.name(), NOT_A_SINGLE_TAG));
                 return FAILED;
             }
-            List<String> tag = List.of(parsed.tags().getFirst().tag());
+            String opaque = list.tags().getFirst().opaque();
             if (!condition) {
-                return convert(component, tag);
+                return convert(component, List.of(opaque));
             }
-            Object version = convert(component, headerTarget(component), tag);
-            if (version == null) {
-                // A tag that converts to no value, such as "" for a number, names no version.
+            // The version token codec every protocol shares, never MVC's formatters: a token gRPC wrote reads the same.
+            Class<?> versionType = Objects.requireNonNull(BindingValidator.versionType(component)).toClass();
+            try {
+                return VersionCondition.of(VersionTokens.parse(opaque, versionType));
+            } catch (IllegalArgumentException e) {
+                // A tag that names no version, such as "" or "abc" for a number; the message never repeats it.
+                LOG.debug("The version of {} could not be read", component.name(), e);
                 violations.add(new Violation(component.name(), INVALID));
                 return FAILED;
             }
-            return version == FAILED ? FAILED : VersionCondition.of(version);
         }
 
         private MultiValueMap<String, String> query() {

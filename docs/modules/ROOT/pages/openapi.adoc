@@ -42,8 +42,9 @@ One operation per declared route, at its served path (`+/v2/books/{id}+` for a r
 ** `If-Match` and `If-None-Match` are strings described as `An entity tag ("5"), or *.`, required when their
    `VersionCondition` component is not nullable, as the edge requires them. `If-None-Match` is also documented on an
    `.etag` read.
-** Paging routes get `cursor`, `offset` (0 to `max-offset`), `size` (1 to `synapse.paging.max-size`, with the default
-   size) and, with `.sortable`, `sort`: an array of the allowed keys and their `-` forms, sent comma-separated.
+** Paging routes get `cursor`, `offset` (0 to `synapse.paging.max-offset`), `size` (1 to `synapse.paging.max-size`,
+   with the default size) and, with `.sortable`, `sort`: an array of the allowed keys and their `-` forms, sent
+   comma-separated.
 ** Every operation takes the correlation header and the deadline header, both optional.
 ** Components from `.context(...)` and `.from(...)` are not documented: the server derives them.
 * *Request body* (`application/json`): the input record when every component comes from the body, otherwise an object
@@ -221,17 +222,21 @@ had it on:
 * An AOT build that turns it on serves it in every environment that runs those artifacts.
 
 To serve the document from AOT artifacts, set the value for the build, either with the environment of the AOT run
-(the `profiles` of the `spring-boot-maven-plugin` `process-aot` execution, whose `application-<env>.yaml` turns it on)
-or with a system property of the AOT JVM:
+(`application-build.yaml`, the file of the build environment that `synapse-parent` gives `process-aot` in its opt-in
+`aot` profile; see xref:parent.adoc#_build_environment[Build environment]) or with a system property of the AOT JVM:
 
 [source,bash]
 ----
-./mvnw -Pnative package -Dspring-boot.aot.jvmArguments=-Dspringdoc.api-docs.enabled=true
+./mvnw -Paot package -Dspring-boot.aot.jvmArguments=-Dspringdoc.api-docs.enabled=true
 ----
 
 Build separate artifacts for environments that differ, or keep one artifact with the document on and protect the path
-(see <<exposure>>). A later Synapse version (plan 5) adds a startup check that fails when the runtime value differs
-from the build's, so the mismatch can't go unnoticed.
+(see <<exposure>>).
+
+A mismatch can't go unnoticed: the property is a build-time switch (see
+xref:environments.adoc#aot-switches[AOT and native images] for the rule and its message). The build's value is
+whether springdoc's `SpringDocWebMvcConfiguration` bean exists, and the value now is read as springdoc reads it: off
+for `false`, on when unset or any other value.
 
 [#swagger-ui]
 == Swagger UI

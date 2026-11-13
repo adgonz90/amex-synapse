@@ -1,0 +1,15 @@
+# The ${serviceName} store's settings for every environment. They ship in this module's jar, so a service that depends
+# on the module gets them without referencing anything; the service's own application*.yaml files win over them. Where
+# to connect is not here: it differs per environment (config-<env>.yaml), and the tests connect to a container.
+synapse:
+  data:
+    stores:
+      ${serviceName}:
+        hikari:
+          # At most 10 connections per instance, Hikari's default, set here so the budget is a decision of this
+          # module: the database's connection limit has to cover it for every instance. Startup logs the budget.
+          maximum-pool-size: 10
+        health:
+          # The store joins the readiness group: while it is down, the service reports itself not ready (503 on
+          # /health), so the platform stops sending it traffic. Every operation of the service needs it.
+          readiness: true

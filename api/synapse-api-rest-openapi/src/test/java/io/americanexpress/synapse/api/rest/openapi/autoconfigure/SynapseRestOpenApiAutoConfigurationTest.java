@@ -32,6 +32,9 @@ import org.mockito.MockedStatic;
 import org.springdoc.core.configuration.SpringDocConfiguration;
 import org.springdoc.core.customizers.OpenApiCustomizer;
 import org.springdoc.core.properties.SpringDocConfigProperties;
+import org.springdoc.webmvc.api.OpenApiActuatorResource;
+import org.springdoc.webmvc.api.OpenApiResource;
+import org.springdoc.webmvc.api.OpenApiWebMvcResource;
 import org.springdoc.webmvc.core.configuration.SpringDocWebMvcConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
@@ -48,18 +51,23 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration;
 import org.springframework.boot.webmvc.autoconfigure.WebMvcAutoConfiguration;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.mock.env.MockEnvironment;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestAutoConfiguration;
 import io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestErrorAutoConfiguration;
 import io.americanexpress.synapse.api.rest.openapi.internal.SynapseOpenApiCustomizer;
+import io.americanexpress.synapse.api.rest.openapi.internal.aot.OpenApiAotCheck;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
+import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch;
+import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch.Mismatch;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -361,5 +369,89 @@ class SynapseRestOpenApiAutoConfigurationTest {
         OpenApiCustomizer synapseRestOpenApiCustomizer() {
             return CUSTOMIZER;
         }
+    }
+
+    @Test
+    void aotSwitchIsDefinedWithSpringdocAndBacksOffToAUserBean() {
+        String aotCheck = "synapseOpenApiAotCheck";
+        runner
+                .run(context -> assertThat(context)
+                        .hasNotFailed()
+                        .getBean(aotCheck)
+                        .isInstanceOf(OpenApiAotCheck.class));
+        // Defined with the document off too: it is the one place that compares the switch with the build.
+        runner
+                .withPropertyValues("springdoc.api-docs.enabled=false")
+                .run(context -> assertThat(context).hasNotFailed().hasBean(aotCheck));
+        BuildTimeSwitch user = () -> null;
+        runner.withBean(aotCheck, BuildTimeSwitch.class, () -> user).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(aotCheck)).isSameAs(user);
+        });
+        runner
+                .withClassLoader(new FilteredClassLoader(OpenApiCustomizer.class))
+                .run(context -> assertThat(context).hasNotFailed().doesNotHaveBean(aotCheck));
+    }
+    /**
+     * The switch as an AOT run sees it: the bean definitions are the build's (the context), and the property is the
+     * run's.
+     */
+    private static BuildTimeSwitch switchAtRun(ConfigurableApplicationContext build, String apiDocsEnabled) {
+        MockEnvironment run = new MockEnvironment().withProperty("springdoc.api-docs.enabled", apiDocsEnabled);
+        return new OpenApiAotCheck(run, build.getBeanFactory());
+    }
+
+    /**
+     * springdoc serves the document on the management port: its actuator endpoint, not its default one. The actuator
+     * endpoint needs springdoc's package-private server-ports auto-configuration, loaded by name as its
+     * {@code AutoConfiguration.imports} lists it.
+     */
+    private WebApplicationContextRunner onTheManagementPort() throws ClassNotFoundException {
+        Class<?> serverPorts = Class
+                .forName(
+                        "org.springdoc.core.configuration.SpringDocWebServerConfiguration$EmbeddedWebServerConfiguration");
+        return runner
+                .withConfiguration(AutoConfigurations.of(serverPorts))
+                .withPropertyValues("springdoc.use-management-port=true", "management.server.port=9090");
+    }
+
+    @Test
+    void aotSwitchSeesNoMismatchWithTheDocumentOnTheManagementPortInBuildAndRun() throws Exception {
+        onTheManagementPort().withPropertyValues("springdoc.api-docs.enabled=true").run(build -> {
+            assertThat(build)
+                    .hasNotFailed()
+                    .hasSingleBean(OpenApiActuatorResource.class)
+                    .doesNotHaveBean(OpenApiWebMvcResource.class);
+            assertThat(switchAtRun(build, "true").mismatch()).isNull();
+        });
+    }
+
+    @Test
+    void aotSwitchReportsTheDocumentOnInTheBuildAndOffInTheRunOnTheManagementPort() throws Exception {
+        onTheManagementPort().withPropertyValues("springdoc.api-docs.enabled=true").run(build -> {
+            assertThat(build).hasNotFailed().hasSingleBean(OpenApiActuatorResource.class);
+            assertThat(switchAtRun(build, "false").mismatch())
+                    .isEqualTo(new Mismatch("springdoc.api-docs.enabled", "false", "true"));
+        });
+    }
+
+    @Test
+    void aotSwitchReportsTheDocumentOffInTheBuildAndOnInTheRunOnTheManagementPort() throws Exception {
+        onTheManagementPort().withPropertyValues("springdoc.api-docs.enabled=false").run(build -> {
+            assertThat(build).hasNotFailed().doesNotHaveBean(OpenApiResource.class);
+            assertThat(switchAtRun(build, "true").mismatch())
+                    .isEqualTo(new Mismatch("springdoc.api-docs.enabled", "true", "false"));
+        });
+    }
+
+    @Test
+    void aotSwitchSeesNoMismatchWithTheDefaultEndpointOffInBuildAndRun() {
+        // springdoc.enable-default-api-docs=false drops springdoc's default endpoint, not the document's switch.
+        runner
+                .withPropertyValues("springdoc.api-docs.enabled=true", "springdoc.enable-default-api-docs=false")
+                .run(build -> {
+                    assertThat(build).hasNotFailed().doesNotHaveBean(OpenApiWebMvcResource.class);
+                    assertThat(switchAtRun(build, "true").mismatch()).isNull();
+                });
     }
 }

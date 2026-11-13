@@ -57,7 +57,7 @@ import io.americanexpress.synapse.core.internal.context.CorrelationIdPolicy;
 @ConditionalOnClass({GrpcServerFactory.class, BindableService.class})
 @ConditionalOnBooleanProperty(name = "spring.grpc.server.enabled", matchIfMissing = true)
 @EnableConfigurationProperties(SynapseGrpcProperties.class)
-public class SynapseGrpcErrorAutoConfiguration {
+public final class SynapseGrpcErrorAutoConfiguration {
 
     static final String GRPC_SECURITY = "org.springframework.boot.grpc.server.autoconfigure.security"
             + ".GrpcServerSecurityAutoConfiguration";

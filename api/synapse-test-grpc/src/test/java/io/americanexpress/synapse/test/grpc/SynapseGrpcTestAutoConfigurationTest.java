@@ -33,13 +33,18 @@ import io.americanexpress.synapse.api.grpc.internal.service.ServiceCompiler;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.error.ErrorMessages;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.test.grpc.fixture.proto.InventoryServiceGrpc;
+import io.americanexpress.synapse.test.slice.BoundOperationMocksCheck;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 class SynapseGrpcTestAutoConfigurationTest {
+
+    private static final BoundOperationMocksCheck USER_CHECK = new BoundOperationMocksCheck(Object.class, "user");
 
     private static final String UNBOUND_ACTION = "Bind it with .unary(...), or add .bindAllByName() and an operation"
             + " named get-stock.";
@@ -63,12 +68,12 @@ class SynapseGrpcTestAutoConfigurationTest {
     }
 
     @Test
-    void registersTheCheckAndTheCompilerWithTheSliceHint() {
+    void grpcSliceRegistersItsCheck() {
         runner.run(context -> {
             assertThat(context)
                     .hasNotFailed()
-                    .hasSingleBean(BoundGrpcOperationMocksCheck.class)
-                    .hasBean("boundGrpcOperationMocksCheck")
+                    .hasSingleBean(BoundOperationMocksCheck.class)
+                    .hasBean("synapseGrpcBoundOperationMocksCheck")
                     .hasSingleBean(ServiceCompiler.class);
             assertThat(unboundAction(context.getBean(ServiceCompiler.class)))
                     .isEqualTo(UNBOUND_ACTION + " In @SynapseGrpcTest, declare a @MockitoBean for it.");
@@ -76,13 +81,14 @@ class SynapseGrpcTestAutoConfigurationTest {
     }
 
     @Test
-    void backsOffToAUserCheck() {
+    void aUserBeanWithTheSameNameReplacesTheCheck() {
         runner
                 .withUserConfiguration(UserCheckConfiguration.class)
                 .run(context -> assertThat(context)
-                        .hasSingleBean(BoundGrpcOperationMocksCheck.class)
-                        .hasBean("userCheck")
-                        .doesNotHaveBean("boundGrpcOperationMocksCheck"));
+                        .hasSingleBean(BoundOperationMocksCheck.class)
+                        .hasBean("synapseGrpcBoundOperationMocksCheck")
+                        .getBean("synapseGrpcBoundOperationMocksCheck")
+                        .isSameAs(USER_CHECK));
     }
 
     @Test
@@ -99,7 +105,7 @@ class SynapseGrpcTestAutoConfigurationTest {
                 .withPropertyValues("spring.grpc.server.enabled=false")
                 .run(context -> assertThat(context)
                         .hasNotFailed()
-                        .doesNotHaveBean(BoundGrpcOperationMocksCheck.class)
+                        .doesNotHaveBean(BoundOperationMocksCheck.class)
                         .doesNotHaveBean(ServiceCompiler.class));
     }
 
@@ -109,13 +115,13 @@ class SynapseGrpcTestAutoConfigurationTest {
                 .withClassLoader(new FilteredClassLoader(GrpcServerFactory.class))
                 .run(context -> assertThat(context)
                         .hasNotFailed()
-                        .doesNotHaveBean(BoundGrpcOperationMocksCheck.class)
+                        .doesNotHaveBean(BoundOperationMocksCheck.class)
                         .doesNotHaveBean(ServiceCompiler.class));
         runner
                 .withClassLoader(new FilteredClassLoader(BindableService.class))
                 .run(context -> assertThat(context)
                         .hasNotFailed()
-                        .doesNotHaveBean(BoundGrpcOperationMocksCheck.class)
+                        .doesNotHaveBean(BoundOperationMocksCheck.class)
                         .doesNotHaveBean(ServiceCompiler.class));
     }
 
@@ -123,8 +129,8 @@ class SynapseGrpcTestAutoConfigurationTest {
     static class UserCheckConfiguration {
 
         @Bean
-        static BoundGrpcOperationMocksCheck userCheck() {
-            return new BoundGrpcOperationMocksCheck();
+        static BoundOperationMocksCheck synapseGrpcBoundOperationMocksCheck() {
+            return USER_CHECK;
         }
     }
 
@@ -132,8 +138,8 @@ class SynapseGrpcTestAutoConfigurationTest {
     static class UserCompilerConfiguration {
 
         @Bean
-        ServiceCompiler userCompiler() {
-            return new ServiceCompiler();
+        ServiceCompiler userCompiler(PageCursors cursors, SynapsePagingProperties paging) {
+            return new ServiceCompiler(cursors, paging);
         }
     }
 }

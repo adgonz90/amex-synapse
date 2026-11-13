@@ -41,7 +41,6 @@ import org.springframework.data.mapping.callback.EntityCallbacks;
 import org.springframework.data.relational.RelationalManagedTypes;
 import org.springframework.data.relational.core.mapping.NamingStrategy;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcOperations;
-import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.util.ClassUtils;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
@@ -52,6 +51,7 @@ import io.americanexpress.synapse.data.internal.store.StoreBeans;
 import io.americanexpress.synapse.data.internal.store.StoreDefinition;
 import io.americanexpress.synapse.data.internal.store.StoreFactory;
 import io.americanexpress.synapse.data.internal.store.StoreNames;
+import io.americanexpress.synapse.data.jdbc.SynapseJdbcTransactionManager;
 import io.americanexpress.synapse.data.vendor.DataStoreVendor;
 
 /**
@@ -121,14 +121,14 @@ public final class JdbcStoreFactory {
     }
 
     /**
-     * Builds a store's {@link JdbcTransactionManager} on its {@code <prefix>DataSource}, customized by Boot's
+     * Builds a store's {@link SynapseJdbcTransactionManager} on its {@code <prefix>DataSource}, customized by Boot's
      * {@link TransactionManagerCustomizers} when there are any (such as {@code spring.transaction.default-timeout}).
      *
      * @param store the store name
      * @return the transaction manager
      */
-    public JdbcTransactionManager transactionManager(String store) {
-        JdbcTransactionManager transactionManager = new JdbcTransactionManager(
+    public SynapseJdbcTransactionManager transactionManager(String store) {
+        SynapseJdbcTransactionManager transactionManager = new SynapseJdbcTransactionManager(
                 StoreBeans
                         .dependency(beanFactory, store, DATA_SOURCE_SUFFIX, DataSource.class,
                                 TRANSACTION_MANAGER_SUFFIX));

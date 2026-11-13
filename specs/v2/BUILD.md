@@ -62,7 +62,7 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-scheduling` | P4 | Scheduled and batch jobs: locks, per-run context, CronJob runner, Spring Batch conventions. |
 | `synapse-data-mysql`, `-oracle`, `-sqlserver`, `-mongodb`, `-redis` | P5 | Vendor/technology modules. |
 | `synapse-utilities` | P6 | Validators (`@OneOf`, `@AnyOf`, `@RequireIfPresent`, date-format check). |
-| Archetypes | P6 | Generated from the reference app (set decided in the P6 plan). |
+| Archetypes | P1 (plan 5; set revisited in P6) | `synapse-archetype-quickstart` (one service module, shaped like `samples/hello-rest`) and `synapse-archetype-service` (contract, service and data modules, shaped like `samples/reference-bookstore`). |
 
 Not published: `tests/synapse-build-rules-tests` (build-rule tests) and `samples/*`.
 
@@ -125,7 +125,8 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   components referenced by bindings, method-reference lambdas, beans built from bindings), asserted with
   `RuntimeHintsPredicates`. No runtime classpath scanning. Bindings are resolved during Boot's AOT processing where
   possible so startup checks still run.
-- **Native image:** officially supported and tested (nightly) for core, REST, gRPC and AWS functions; best effort for
+- **Native image:** officially supported and tested (nightly) for core, REST, gRPC and AWS functions; the nightly
+  native test starts in P4, with the reference app and the functions sample. Best effort for
   other modules until each gets its own native test. Properties that decide which beans exist are fixed at AOT build
   time; the property reference marks them *build-time*.
 - **Environments under AOT:** the environment is never used in a `@Conditional`, and environment files change values
@@ -133,7 +134,13 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   files that don't depend on the environment (`config.yaml`, `application.yaml`). In AOT mode, startup fails when an
   environment file adds such a name. Synapse ships resource hints for `META-INF/synapse/config*.yaml` and
   `config*.properties`. AOT processing (`process-aot`) and the AOT-cache training run of `build-image` prepare the
-  environment too, so they need an environment as well; the archetype and parent pass one (plan 5).
+  environment too, so they need an environment as well; the parent passes one (plan 5): the build
+  environment, `build` by default (see *Consumer parent*), as the default profile for `process-aot`, so it is never
+  active at run time.
+- **Spring AOT processing is opt-in in P1** (decided 2026-11-08, maintainer): the parent runs `process-aot` only with
+  its `aot` profile (`-Paot`), and a build without it generates no AOT code. The rules above hold for every module
+  either way and stay tested in the framework modules. In P4, with the native image, AOT becomes full (DESIGN.md,
+  *Spring AOT opt-in in P1*).
 
 ### 3.4 Dependency management
 - Versions live in the root `pom.xml`. Overriding a Boot-managed version is allowed only as a CVE pin with the
@@ -157,11 +164,19 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   `io.americanexpress.synapse..internal..`.
 
 ### 3.6 Environments and module configuration
-- **The environment is the one active Spring profile.** Each service's `application.yaml` maps the platform's
-  variable: `spring.profiles.active: ${ENV}`. Synapse code never reads `ENV`. `SPRING_PROFILES_ACTIVE`,
-  `--spring.profiles.active` and `@ActiveProfiles` work as usual, and the highest source wins. The environment is the
-  value of `spring.profiles.active` plus any profile added with `SpringApplication.setAdditionalProfiles`. Feature
-  profiles go in `spring.profiles.include` or profile groups, which don't count.
+- **The environment is the one active Spring profile.** Each service's `application.yaml` maps the platform's variable:
+  `spring.profiles.active: ${ENV}`. Synapse code never reads `ENV`. `SPRING_PROFILES_ACTIVE`, `--spring.profiles.active`
+  and `@ActiveProfiles` work as usual, and the highest source wins. The environment is the value of
+  `spring.profiles.active` plus any profile added with `SpringApplication.setAdditionalProfiles`. Feature profiles go in
+  the environment's profile group, `spring.profiles.group.<env>` (including the build environment's,
+  `spring.profiles.group.build`), not in `spring.profiles.include` (decided 2026-11-08: an included profile is active,
+  and during AOT processing Boot then ignores the default profile). Groups and includes don't count, and profiles that
+  libraries add at run time (`kubernetes`, `cloud`) are allowed. **One exception, AOT processing** (decided 2026-11-08):
+  while Spring's AOT processor runs (the system property `spring.aot.processing` is set, outside a run of AOT-generated
+  artifacts), a single `spring.profiles.default` is the environment when `spring.profiles.active` is empty, and no
+  profile may be active. That is how the parent passes the build environment to `process-aot` (with `-Paot`; opt-in in
+  P1, 3.3), because Spring's AOT code generation activates at run time every profile that was active during processing,
+  and no default profile.
 - **No default and no fallback.** Local runs use `local` (`spring-boot.run.profiles=local` for the Maven plugin, or the
   IDE run configuration). Tests use `test`: the Synapse slices activate it, and every module whose tests start a
   Spring Boot context has `src/test/resources/application-test.yaml`, which may be empty.
@@ -172,10 +187,15 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   `config-<env>` files are optional and never make a name valid.
 - **Startup fails** when:
   - there is no environment: `ENV` unset (Synapse explains Boot's raw "Profile '${ENV}' must contain a letter..."
-    error), a blank value, or only `spring.profiles.default`;
+    error), a blank value, or only `spring.profiles.default` (except during AOT processing, above);
   - the value of `spring.profiles.active` in the source that sets it falls back to a default, such as `${ENV:local}`
     (even when `ENV` is set);
   - there is more than one;
+  - in AOT mode, the AOT-generated code activates a profile (the generated `<Main>__EnvironmentPostProcessor`, which
+    Boot writes only when a profile was active during processing); a profile that a library adds at run time is not
+    checked;
+  - during AOT processing with the environment from `spring.profiles.default`, any profile is active (this fails the
+    build);
   - the environment is not valid. This is treated exactly like no environment. The message names the files looked for
     and says that names are case-sensitive;
   - any config document sets `spring.config.activate.on-profile`. The message says to use `application-<env>.yaml`
@@ -468,7 +488,11 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   state only by default.** Each data store and client can opt in: `synapse.data.stores.<name>.health.readiness=true`,
   `synapse.client.<name>.health.readiness=true`. A store's readiness check uses its own short timeout so a busy pool
   doesn't flip it.
-- Load-balancer paths use Boot's health-group `additional-path` (e.g. `/health`); Synapse adds no alias.
+- Load-balancer paths use Boot's health-group `additional-path` (e.g. `/health`); Synapse adds no alias. Setting a
+  key of the `readiness` group defines the group, and Boot then keeps it instead of its own probe group, whose only
+  member is `readinessState`; a group without `include` has every indicator. So the readiness setup is
+  `management.endpoint.health.group.readiness.include=readinessState` with its `additional-path` (stores that opt in
+  are added to it).
 - Actuator exposure stays at Boot's default (health only).
 
 ---
@@ -557,16 +581,16 @@ types. Values are converted with Spring's `ConversionService`; validation runs o
 
 **Paging safety:** sort keys must be allow-listed per route (`.sortable(SearchBooksRequest.SortKey.class)` or a set of
 names). The syntax is `sort=title,-published` (a comma list; `-` means descending). An unknown key, or `sort` on a
-route without `.sortable`, is `INVALID_INPUT`. Offsets are capped (`synapse.api.rest.paging.max-offset`, default
+route without `.sortable`, is `INVALID_INPUT`. Offsets are capped (`synapse.paging.max-offset`, default
 1000). Page size defaults to `synapse.paging.default-size` (20) and is capped by `synapse.paging.max-size` (100). The
 plugin checks size and offset before the pipeline and reports violations under the parameter names.
 
-Cursors are opaque. The edge wraps an operation's cursor with a `CursorCodec` bean, which an app can replace. By
-default it is AES-256-GCM authenticated encryption, bound to the route's operation, the sort and a digest of the other
-inputs (not the size), with a key id and an issue time. A tampered, foreign, mismatched or expired cursor is
-`INVALID_INPUT` on `cursor`.
+Cursors are opaque. The edge wraps an operation's cursor with core's `CursorCodec` bean, which every API plugin shares
+and an app can replace. By default it is AES-256-GCM authenticated encryption, bound to the operation, the sort and a
+digest of the other inputs (not the size, and not a `VersionCondition`), with a key id and an issue time. A tampered,
+foreign, mismatched or expired cursor is `INVALID_INPUT` on `cursor`.
 
-The key comes from `synapse.api.rest.paging.cursor.key` (base64, 256 bits). `cursor.previous-keys` are accepted for
+The key comes from `synapse.paging.cursor.key` (base64, 256 bits). `cursor.previous-keys` are accepted for
 decryption during rotation. `cursor.max-age` is unset by default (no expiry). When no key is set, one is generated per
 start, with a startup WARN (in every environment) that cursors then fail across restarts and instances. An operation's
 raw cursor never reaches the client.
@@ -657,7 +681,8 @@ docs to off and their version to OpenAPI 3.1, at lowest precedence. An environme
 (`springdoc.api-docs.enabled: true`), as for every exposure (3.6). Under AOT that toggle is build-time: springdoc
 3.2.0's configuration is `@ConditionalOnProperty(springdoc.api-docs.enabled, matchIfMissing = true)`, so the value at
 `process-aot` decides whether AOT artifacts serve the document in every environment, and `openapi.adoc` says how to
-set it for the build (`process-aot` profiles, or `-Dspring-boot.aot.jvmArguments=-Dspringdoc.api-docs.enabled=true`).
+set it for the build (the build environment's `application-build.yaml`, or
+`-Dspring-boot.aot.jvmArguments=-Dspringdoc.api-docs.enabled=true`).
 Plan 5 adds a startup check (below). While the document is off, the startup pass still honours springdoc's path
 filters, read from the environment. Escape-hatch controllers are documented by springdoc
 itself (with its own, Jackson 2 based, schemas).
@@ -698,9 +723,16 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   `GrpcBindings.service(BookServiceGrpc.getServiceDescriptor())` lists `.unary(BookServiceGrpc.getGetBookMethod(), getBook)`
   entries; `.bindAllByName()` binds every remaining method to the operation with the matching name (`GetBook` →
   `get-book`). Startup fails if a method is unbound, bound twice, or its types can't be mapped. Unary only in 2.0.
-  Per method: `.map("field.path", Record::component)`, `.context(Record::component, ctx -> …)` and
-  `.notFound(code)`, as in REST. A `PageQuery` or `PageResult` in a bound type fails startup until gRPC page tokens
-  are built (plan 3b, proposed).
+  Per method: `.map("field.path", Record::component)`, `.context(Record::component, ctx -> …)`,
+  `.notFound(code)`, `.etag(Record::component)` and `.sortable(SortKey.class)`, as in REST. `PageQuery` and
+  `PageResult` bind to AIP-158's fields: `int32 page_size` (unset is the default size), `string page_token`, an optional
+  `int32 skip` capped by `synapse.paging.max-offset`, and `string order_by` (AIP-132; sort keys are the lower-case
+  constant names, `@JsonProperty` is not read); the response's one repeated message field holds the items,
+  `string next_page_token` the next page's token (by REST's `Link: next` rule: a cursor, or a next offset for a page
+  without one; empty on the last page), `bool has_next` REST's `hasNext` (provisional, beyond AIP-158) and, when
+  declared, an `optional int32` or `int64 total_size` the total. A missing field or a wrong type fails startup. Page
+  tokens use core's cursor codec, so a token issued over REST pages over gRPC for the same operation, filters and
+  sort, and the reverse; paging errors are REST's codes, with the gRPC field named (plan 5).
 - **Message mapping:** request and response messages map to records **by name at runtime using protobuf descriptors**
   (`snake_case` → `camelCase`), verified at startup. Synapse reads and writes `DynamicMessage`s over the generated
   descriptors and never instantiates generated message classes. Built in: `Timestamp`↔`Instant`, `Duration`, wrapper
@@ -709,6 +741,23 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   with presence (a wrapper, a message or proto3 `optional`). `oneof` fields and renamed fields use an explicit
   override in the binding (`.map(...)`). Request fields without a component are ignored; a record component without a
   field fails startup.
+- **Versions** (AIP-154, with REST's tokens and rules): a `VersionCondition<V>` component of the input record binds
+  from one of two fixed request fields, each with its REST header's semantics: `string etag` (If-Match; the default)
+  or `string if_none_match` (If-None-Match; `.map("if_none_match", ...)`, as REST's `.header("If-None-Match", ...)`).
+  Startup fails if the field is missing, not a singular string or in a real `oneof`, if two components share a field,
+  if one is nested or supplied by `.context`, if a plain component maps to a token field, or if a non-null one is on a
+  `QueryOperation`. The value is the REST header value verbatim (`"5"` with its quotes, or `*`), parsed by core's
+  shared entity tag grammar (`core.internal.conditional.EntityTags`), and the tag's value is read by core's version
+  token codec (`VersionTokens`: plain decimal, ISO-8601 or the string, locale-independent), which REST uses for
+  `ETag`, `If-Match` and `If-None-Match` too; one set of version types on both protocols. Empty is no condition. On a
+  write (a `CommandOperation`), as REST: a non-null component without a value is `PRECONDITION_REQUIRED` (by category
+  `FAILED_PRECONDITION`) with the header's own advice, a weak `etag` is `PRECONDITION_FAILED` (a weak
+  `if_none_match` binds its value), and a non-empty token field no component binds is `PRECONDITION_FAILED`, all
+  before the operation runs. `STALE_VERSION` from a request that sent an `etag` becomes `PRECONDITION_FAILED` (REST's
+  412); without one it stays `STALE_VERSION` (`ABORTED`, REST's 409). A read binds a weak tag's value and ignores an
+  unbound token, and gets no 304. `.etag(Record::component)` writes the strong tag to the response's `string etag`
+  field, on a `QueryOperation` or a `CommandOperation` whose input has no `VersionCondition` only (REST sends no `ETag`
+  on `PUT`/`DELETE`).
 - Errors: status per the table; the Synapse code travels as `google.rpc.ErrorInfo` (`reason` = code, `domain` =
   `spring.application.name`, or `synapse` when it is unset, `metadata.correlationId`; AIP-193) in the status details, plus `google.rpc.BadRequest`
   for violations (field paths in proto names). The status description is the detail, only when
@@ -1012,13 +1061,41 @@ go there.
   `spring-boot.run.profiles=local`, and generates `application-local.yaml` (local conveniences turned on, such as
   `synapse.errors.include-detail: true`), `src/test/resources/application-test.yaml` in every module with Spring Boot
   tests, and `META-INF/synapse/config.yaml` in each library module (see *Environments and module configuration*).
-- **Version pins:** because a parent's inherited dependency management (Boot's) wins over an imported BOM, the parent
-  declares Synapse's runtime pins directly in its own `dependencyManagement` (kept identical to `synapse-bom` by the
-  CI sync check, proven by an invoker test with an effective-POM assertion). BOM-only users import `synapse-bom` before
+- **Version pins:** because an explicit managed entry wins over every imported BOM, including a consumer's own import
+  (such as `guava-bom`), which Maven processes before the inherited `synapse-bom` import, the parent declares Synapse's
+  runtime pins directly in its own `dependencyManagement` (kept identical to `synapse-bom` by the CI sync check, proven
+  by an invoker test whose project imports an older `guava-bom`). BOM-only users import `synapse-bom` before
   `spring-boot-dependencies` (documented).
 - **Images:** configures `spring-boot:build-image` with a Java 25 runtime and AOT-cache training
-  (`BP_JVM_AOTCACHE_ENABLED=true`); Java 21 runtimes get CDS only. The archetype adds `spring.main.keep-alive=true`
-  where needed, `spring.threads.virtual.enabled=true`, a sample Dockerfile and docs on heap sizing for small pods.
+  (`BP_JVM_AOTCACHE_ENABLED=true`); Java 21 runtimes get CDS only. The image's garbage collector is not decided yet
+  (maintainer question, plan 5 Task 20 Q2, for the Task 22 review; DESIGN.md *Open questions*). Until then the
+  parent and the Dockerfiles pin G1 for the training run and every run of the image (plan 5, D47): left to the
+  JVM, a 512 MB, one-CPU pod gets the Serial collector, whose default 8 MB initial heap can't hold the cache's archived
+  heap objects, so the JVM stops at start (measured; `parent.adoc`, *The garbage collector*). The alternative is no pin
+  and an initial heap that holds them (`-Xms10m` or more for the reference bookstore). The archetype adds
+  `spring.main.keep-alive=true` where needed, `spring.threads.virtual.enabled=true`, and the service archetype a
+  Dockerfile with the same training run; `parent.adoc` documents heap sizing for small pods.
+- **AOT profile (plan 5, decided 2026-11-08):** the `process-aot` execution is in the parent's Maven profile `aot`, off
+  by default, in that profile's `pluginManagement`, as Boot's `native` profile declares it. Without `-Paot` no
+  `process-aot` runs. The image settings stay in the default `pluginManagement`. Invoker projects prove both.
+- **Build environment (plan 5):** the Maven property `synapse.build.environment` (default `build`) names the environment
+  that `process-aot` and the image's training run use (`TRAINING_RUN_JAVA_TOOL_OPTIONS`). `process-aot` gets it as
+  the default profile (`--spring.profiles.active=` and `--spring.profiles.default=…`), never as an active profile, so
+  the AOT-generated code activates no profile at run time (3.6; DESIGN 2026-11-08). A service that builds with
+  `-Paot`, or builds an image (the training run starts in the build environment with or without Spring AOT), ships
+  `application-build.yaml` with the values that are fixed at build time under AOT, equal to every deployed
+  environment's, and its library modules' placeholder `config-build.yaml` where a store needs one; a service that does
+  neither ships none. The training run exits on refresh, so no database is reached. Without the file the training run
+  fails to start, so `synapse-parent`'s `image` profile (`-Pimage package`, which binds `build-image-no-fork` in each
+  module that declares `spring-boot-maven-plugin`) checks for it with the Enforcer and fails the build early, in
+  `validate`. Only `spring-boot:build-image` invoked on the command line skips that check, and then Paketo's Spring Boot
+  buildpack (5.40.5) keeps the partial cache and the image build succeeds, with Synapse's message in its log; a
+  Dockerfile's training `RUN` fails `docker build` (`parent.adoc`, *Images*). A `local` environment that turns a
+  build-time switch on (gRPC reflection, the API docs) is for JVM runs only.
+- **Tests (plan 5):** surefire and failsafe get the Mockito agent (`-javaagent`) when `mockito-core` is on the test
+  classpath, as the root build does.
+- **Samples and archetypes (plan 5):** every sample inherits `synapse-parent`, as a consumer's project does. The
+  archetypes generate projects shaped like `samples/hello-rest` and `samples/reference-bookstore`.
 - Parent plugins that serve Synapse's own build are `<inherited>false</inherited>`. The release and snapshot profiles
   (`synapse-release`, `synapse-snapshot`) live in the root build, not in the parent, so consumers never inherit them.
 
@@ -1028,7 +1105,9 @@ go there.
 All must pass for a phase to be done; enforced in CI on every pull request unless noted.
 
 1. **Build and tests:** PRs run all unit and integration tests on JDK 25, and unit tests plus one smoke integration
-   test per module on JDK 21 (`-Djvm=<jdk21>/bin/java`). The full JDK 21 run is nightly. Testcontainers ITs for
+   test per module on JDK 21 (`-Djvm=<jdk21>/bin/java`). The samples, which inherit `synapse-parent` and don't read the
+   smoke filter, run no ITs on the JDK 21 pull request leg (`.config/jdk21-pr-excluded-its.txt`); their ITs run on JDK
+   25 on every pull request. The full JDK 21 run is nightly. Testcontainers ITs for
    open-source stores and Kafka run on PRs; Oracle and SQL Server ITs run nightly, in the release workflow, and on PRs
    that change those modules. Vendor modules stay thin (dependencies, defaults, context-runner tests) so they meet
    coverage without their database.
@@ -1051,9 +1130,18 @@ All must pass for a phase to be done; enforced in CI on every pull request unles
    reason and an `ignoreUntil` date: 3 months default, 1 year max); CodeQL; secret scanning; actionlint and zizmor
    (auditor persona) on workflow changes; OpenSSF Scorecard; Maven dependency graph submitted for dependency review;
    Maven wrapper pinned by checksum.
-9. **Native:** the reference app and the functions sample are built and tested as native images nightly and in the
+   - **Known gap (open, logged 2026-11-08; the maintainer chose to fix it later):** the OSV-Scanner PR gate scans less
+     than it claims. About 25 poms that depend on reactor `2.0.0-SNAPSHOT` artifacts (every published api, data,
+     logging and test module, the archetypes and the tests modules) fail transitive resolution, so the PR scan skips
+     them, and the reusable workflow only checks that a results file exists, so the job goes green. `synapse-bom` and
+     `synapse-parent` contribute 0 packages, so a CVE pin that regresses in the BOM wouldn't show in the scan either;
+     the `bom-guava-pin` invoker test still guards the guava pin. Dependabot still covers the full tree after merge.
+     Proposed fix: scan the reactor's CycloneDX SBOM on base and head, and fail closed on an exit code other than 0 or
+     1 and on resolution failures. Found in plan 5's Task 20a review, finding I2 (`task-20a-review.md`); DESIGN.md
+     *Open questions*.
+9. **Native (from P4):** the reference app and the functions sample are built and tested as native images nightly and in the
    release workflow.
-10. **Samples and archetypes** build and pass their ITs; archetypes generate a building project (from P6).
+10. **Samples and archetypes** build and pass their ITs; archetypes generate a building project (from P1 plan 5).
 11. **API stability** (from GA): japicmp, `@Incubating`, metadata diff, internal-import rule (section 3.5).
 
 **Release and snapshots.**
@@ -1126,7 +1214,11 @@ actionlint, zizmor, and the Central publish and snapshot check script tests. Def
 (JSON; everything in 6.1–6.2 except XML and `BinaryContent`), `synapse-api-grpc` (6.3), `synapse-data-jpa`,
 `synapse-data-jdbc`, `synapse-data-postgres` (8.1–8.2), `synapse-parent` conventions (section 13), and
 `samples/reference-bookstore` (first cut): `CreateBookOperation`, `GetBookOperation`, `SearchBooksOperation` (paged), `UpdateBookOperation`, `DeleteBookOperation`
-over REST and gRPC on Postgres with Flyway.
+over REST and gRPC on Postgres with Flyway. The samples `hello-rest`, `rest-books`, `grpc-inventory` and
+`multi-store`, and the two archetypes (plan 5). **Spring AOT is opt-in in P1** (decided 2026-11-08, maintainer):
+`synapse-parent` runs `process-aot` only with its `aot` Maven profile, and only the reference bookstore uses it (its
+AOT ITs run nightly). Every module stays AOT-ready (3.3: hints, build-time switch checks, the environment rules under
+AOT, and their tests). Full AOT and the native image are in P4.
 
 **Acceptance (each backed by a test):**
 1. An app with `synapse-api-rest`, one operation bean and one `RestBindings` bean serves the endpoint with no other
@@ -1176,8 +1268,8 @@ over REST and gRPC on Postgres with Flyway.
 16. Protocol-level failures (unknown route, wrong method with `Allow`, unsupported media type, malformed JSON, body
     over the limit, gRPC unimplemented method) return the documented codes in the standard error shape.
 17. The app starts with `-Dspring.context.exit=onRefresh` and no database reachable (no remote I/O in bean creation).
-18. The reference app's ITs pass on JDK 21 and 25 against Testcontainers Postgres; the reference app builds and passes
-    its ITs as a native image (nightly).
+18. The reference app's ITs pass on JDK 21 and 25 against Testcontainers Postgres. (Its native-image build and ITs are
+    in P4's acceptance.)
 19. The reference app's tests use `SynapseOperations.invoke`, `@SynapseOperationTest`, `@SynapseRestTest`,
     `@SynapseGrpcTest`, `@SynapseDataTest` and `SynapseArchitecture.forApplication(…)`.
 20. With a fixed test `Clock`, auditing timestamps, deadlines and UUIDv7 ids follow it; an operation invoked from
@@ -1216,11 +1308,13 @@ service file for it, no `on-profile` documents, Synapse's explanation of an unse
 `META-INF/synapse/config*.yaml` and `.properties` files with their precedence and checks, the AOT check on client and
 store names, and the startup report are built in `synapse-core`. The production concept is gone: `include-detail` is
 off by default, the generated cursor key logs a WARN in every environment, and `SynapseEnvironment` and
-`synapse.environment.non-production-profiles` are removed. Every test in this repository runs as `test`, and
-`samples/rest-books` runs as `local`. Documented in `environments.adoc`, with `core.adoc`, `rest.adoc` and
+`synapse.environment.non-production-profiles` are removed. Every test in this repository runs as `test`, except a
+test that proves an environment's own file (rest-books' `BooksLocalEnvironmentIT` runs as `local`, and plan 5's tests
+that start the reference bookstore's jar set `ENV` to `dev`, `build` or `local`), and `samples/rest-books` runs as
+`local`. Documented in `environments.adoc`, with `core.adoc`, `rest.adoc` and
 `testing.adoc` updated. They cover acceptance items 21 and 3 (the environment part: no `detail` unless
 `include-detail=true`). The module files and source names in a native image are not verified yet (DESIGN.md *Open
-questions*; plan 5).
+questions*; P4).
 
 **Done (plan 2c, REST versioning, CORS and OpenAPI):** `VersionCondition` on writes (`If-Match` and `If-None-Match`
 bind `Version(v)`, `AnyVersion` for `*` and `null` without the header; a plain type on a write fails startup; a
@@ -1235,7 +1329,7 @@ with Synapse's own schema generator on Jackson 3, off by default and turned on b
 end, the document). They cover acceptance items 7 (`/v3/api-docs` with every route, its schemas, statuses and problem
 responses) and 10 (REST and OpenAPI modules: the new beans' context-runner tests and AOT tests). Spring Security's use
 of the `corsConfigurationSource` bean is verified by `synapse-security` (P4); springdoc, the schema generator and the
-CORS filter in a native image by the native build (plan 5).
+CORS filter in a native image by the native build (P4).
 
 **Done (plan 3, gRPC edge):** `synapse-api-grpc` and `synapse-test-grpc` are built and documented (`grpc.adoc`, the
 `@SynapseGrpcTest` section of `testing.adoc`, and `core.adoc` and `environments.adoc` updated), and
@@ -1247,10 +1341,12 @@ needs `.map(...)`), 3 (gRPC: `NOT_FOUND` with `ErrorInfo.reason`, a per-operatio
 modules), 11 (an expired gRPC deadline fails with `DEADLINE_EXCEEDED` before `execute`), 13 (gRPC), 14 (gRPC:
 `UNAVAILABLE` with `RetryInfo` at the limit; in-flight calls complete and new ones are refused on shutdown), 16
 (gRPC: `UNIMPLEMENTED` with `METHOD_NOT_FOUND`), 17 (gRPC) and 19 (`@SynapseGrpcTest` is provided; the reference app
-uses it in plan 5). Open: gRPC page tokens (plan 3b, proposed), so `PageQuery` and `PageResult` fail startup in a gRPC
-binding; the servlet transport together with `synapse-api-rest`, which fails startup until the REST edge skips gRPC
-requests; the native image (`grpc-netty`, protobuf runtime reflection, record and enum reflection, `writeReplace` on
-component-reference lambdas) and `inbound.trusted=false` under the OpenTelemetry Java agent (plan 5).
+uses it in plan 5). gRPC page tokens (plan 3b, proposed), for which `PageQuery` and `PageResult` failed startup in a
+gRPC binding, were built in plan 5 (see 6.3). Open: the servlet transport together with `synapse-api-rest`, which fails
+startup until the REST edge skips gRPC requests; the native image (`grpc-netty`, protobuf runtime reflection, record
+and enum reflection, `writeReplace` on component-reference lambdas; P4); and `inbound.trusted=false` under the
+OpenTelemetry Java agent (plan 5 documents that it doesn't restart the trace there; the agent extension's own plan
+builds it).
 
 **Done (plan 4, data):** `synapse-data-core`, `synapse-data-jpa`, `synapse-data-jdbc`, `synapse-data-postgres` and
 `synapse-test-data` are built and documented (`data.adoc`, the `@SynapseDataTest` section of `testing.adoc`, and
@@ -1264,7 +1360,53 @@ store only when it opts in), 17 (stores: no connection while beans are created),
 the reference app uses it in plan 5) and 20 (auditing timestamps and UUIDv7 ids follow the test `Clock`). Under AOT,
 a store's name and `primary` are fixed at build time, and a run-time change fails startup. Liquibase waits for the
 maintainer's licence decision (DESIGN.md *Open questions*); native verification of per-store Flyway scanning is in
-plan 5.
+P4.
+
+**Done (plan 5, samples, archetypes, parent and the reference app):** on the integration base of plans 2c, 3 and 4, REST
+and gRPC have one contract (maintainer decision, 2026-11-07): `VersionCondition` over gRPC binds the string `etag` field
+with REST's ETag token, responses carry an `etag` on reads and creates, and a stale version the request sent is
+`PRECONDITION_FAILED` on both protocols; `CursorCodec` and its keys are in core (`synapse.paging.cursor.*`,
+`synapse.paging.max-offset`), so one next-page token, by REST's `Link: next` rule, fills REST's `nextCursor` and gRPC's
+`next_page_token`; gRPC pages with AIP-158 fields, `optional` page fields following REST's rules, and `has_next`. The
+bound-operation mocks check is shared in `synapse-test`; core's build-time switch check fails an AOT run in one failure
+for every switch that differs from the build (`springdoc.api-docs.enabled`, `spring.grpc.server.reflection.enabled`).
+`synapse-parent` (section 13) has the pins and their invoker checks, the build environment, Spring AOT opt-in with
+`-Paot`, the `image` profile with its build-file check, G1 pinned for the training run and every run of an image
+(provisional, maintainer question Q2), and the Mockito agent. The samples found and fixed these in the framework: the
+failure line's keys `errorCode` and `errorCategory`, with `correlationId` from the MDC or as a key-value, never both;
+context attribute names that collide with Boot's ECS fields or the reserved log fields, or nest under each other, fail
+startup; `COMMIT_OUTCOME_UNKNOWN` for a commit that lost its connection; the public store transaction managers, with a
+WARN when one is replaced; `SpringDataPages.from(Page)` tells the next page from the offset; and a store's `FactoryBean`
+definitions carry their object type, so a JPA store starts beside gRPC. The samples `hello-rest`, `rest-books`,
+`grpc-inventory`, `multi-store` and `reference-bookstore` each have a README run against the app; the archetypes
+`synapse-archetype-quickstart` and `synapse-archetype-service` each have an IT that generates a project and builds it,
+and the service archetype rejects an invalid `serviceName`; the reference bookstore and the service archetype carry the
+OpenTelemetry Java agent recipe, with the agent's checksum enforced and an AOT-mode start under the agent failing fast.
+Documented in `parent.adoc`, `samples.adoc`, `archetypes.adoc`, `opentelemetry-agent.adoc`, `testing.adoc` (the shared
+mocks check, the scenario suite), `core.adoc`, `grpc.adoc`, `rest.adoc`, `data.adoc` and `environments.adoc`. They cover
+acceptance items 15 (`/health` through Boot's `additional-path`, with the opted-in store in readiness, and 503 with the
+store down: `BookstoreOperationalIT`), 17 (the reference app: the packaged jar starts in `build` with
+`-Dspring.context.exit=onRefresh` and no database reachable, as an image's training run does:
+`BookstoreExitOnRefreshIT`), 18 (the JVM part: the reference app's ITs pass against Testcontainers PostgreSQL on JDK 25
+on every pull request and on JDK 21 nightly (and passed on JDK 21.0.12.1 when this note was written); its native-image
+build and ITs are in P4), 19 (the reference app's tests use `SynapseOperations` (`BookRepositoryIT`),
+`@SynapseOperationTest` (`BookOperationsTest`), `@SynapseRestTest`, `@SynapseGrpcTest`, `@SynapseDataTest` and
+`SynapseArchitecture.forApplication(…)`), 7 (the reference app's document on the JVM: every operation, `If-Match`
+required on `PUT` and `DELETE`, 428 documented, and 404 without the setting, `BookstoreOperationalIT`, saved to
+`target/api-docs-jvm.json`; the native document's parity with it is in P4), and the parity decision: one scenario suite
+(`BookstoreScenarios`) runs every case over REST and gRPC and expects the same outcome, with an `ETag` and a page token
+carried from one protocol to the other, against the test context (`BookstoreJvmIT`, every build) and, with `-Paot`,
+against the packaged jar in AOT mode (`BookstoreAotIT`, nightly). Open: the native image (P4); the agent extension, with
+`inbound.trusted=false` and outbound baggage stripping under the agent (its own plan); the provisional decisions in the
+plan's review table and the maintainer questions of its Task 20, for the Task 22 review; the OSV-Scanner PR gate's
+known gap (section 14, gate 8); the reference bookstore README's Paketo image; and two DESIGN.md *Open questions*
+that are past their due point, for the maintainer to decide or move to a named later phase: Liquibase (due "Before P1
+ends"; plan 4 builds Flyway only), and part (c) of "Required preconditions beyond REST" (due in plan 3; parts (a) and
+(b) were answered in plan 5): the pipeline doesn't check a non-null `VersionCondition`, so a caller other than an API
+plugin can pass `null`. Task 21 re-ran every sample README
+against the app and fixed the one drift it found (the agent's JDBC span), but the README's Paketo log lines and its
+`image-smoke.sh` run of the Paketo image are unverified: the buildpack's download of the Liberica JRE from github.com
+returned HTTP 504 in Task 21 and again in the pre-review cleanup (2026-11-08). The Dockerfile image was verified.
 
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
@@ -1305,24 +1447,51 @@ plan 5.
   Done (see the *Done (plan 3)* note above).
 - Plan 3b (gRPC page tokens), proposed by plan 3 and needed by plan 5's `SearchBooks` over gRPC: `PageQuery` and
   `PageResult` over gRPC with AIP-158 fields, and whether `CursorCodec` moves to core for them (plan 2b left this to
-  plan 3).
+  plan 3). Not a plan of its own: plan 5 built both on its integration base (see the *Done (plan 5)* note above).
 - Plan 4 (data) ([plans/2026-11-05-p1-data-postgres.md](plans/2026-11-05-p1-data-postgres.md)): `synapse-data-core`,
   `-jpa`, `-jdbc`, `-postgres` and `synapse-test-data` (8.1–8.2, the store part of 5.10, `@SynapseDataTest`).
   It covers acceptance 8, 10 (data modules), 15 (stores), 17 (stores), 19 (`@SynapseDataTest` is provided; the
   reference app uses it in plan 5) and 20 (auditing and ids). Liquibase waits for a maintainer decision. Done (see
   the *Done (plan 4)* note above).
-- Plan 5 (archetype, parent, reference app):
+- Plan 5 (archetypes, parent, samples, reference app)
+  ([plans/2026-11-07-p1-reference-app.md](plans/2026-11-07-p1-reference-app.md)). It runs on a local integration
+  base that merges plans 2c, 3 and 4 (its Task 1), because they are not on `main` yet. Its *Decisions taken for the
+  maintainer's review* table records every call it made provisionally.
+  - On the integration base, for REST and gRPC parity (maintainer decision, 2026-11-07): `VersionCondition` over gRPC
+    as a string `etag` field carrying REST's ETag token (AIP-154), and responses' `etag` on reads and creates, where
+    REST sends an `ETag`; a stale version the request sent is `PRECONDITION_FAILED` on both protocols, as REST already
+    answers; `CursorCodec` moved to core behind a protocol-neutral API, with its keys and the offset cap under
+    `synapse.paging.*`, so both protocols share one cursor; gRPC page tokens (AIP-158), which plan 3 left to a plan 3b.
+  - The bound-operation mocks check of `@SynapseRestTest` and `@SynapseGrpcTest`, shared in `synapse-test`.
+  - `synapse-parent` (section 13): the runtime pins repeated from `synapse-bom` (the guava pin is already in the BOM,
+    from plan 3), plan 3's invoker check extended so the root, the BOM and the parent agree on every pin, and the
+    effective-POM invoker test; the build environment for `process-aot` and the training run; `build-image` on Java
+    25 with the AOT cache; the Mockito agent for tests.
+  - Spring AOT opt-in (maintainer, 2026-11-08): `process-aot` only in the parent's `aot` profile; only the reference
+    bookstore keeps the build environment's files and shows the opt-in, and its AOT ITs run in a nightly job with
+    `-Paot` (JDK 25 and 21), not on pull requests. The other samples and the quickstart archetype have no build
+    environment file. The service archetype generates them for its Dockerfile's AOT-cache training run, each with a
+    comment that it exists only for that (maintainer, 2026-11-08). Both archetypes' READMEs say how to opt in.
+  - Under AOT, `springdoc.api-docs.enabled` decides whether beans exist: in AOT mode startup fails when it differs
+    from the build's value, as gRPC reflection does, and one failure names every such switch that differs.
+  - Samples, each with a README verified against the running app, tests and a place in CI: `hello-rest` (quick
+    start), `rest-books` (the REST tour, in memory; its gRPC part moves out), `grpc-inventory` (gRPC first, proto in a
+    contract module), `multi-store` (two named stores, JPA and JDBC), and `reference-bookstore` (contract, service
+    and data modules; one scenario suite over REST and gRPC; Postgres with Flyway, `compose.yaml`); a
+    `samples/README.md` index.
+  - The archetypes `synapse-archetype-quickstart` and `synapse-archetype-service`, each with an IT that generates a
+    project and builds it.
+  - The image (`build-image` with the AOT cache, a sample Dockerfile, heap sizing docs), nightly.
   - The OpenTelemetry Java agent recipe: `management.opentelemetry.map-environment-variables` and `-Dotel.*`
-    guidance, an archetype profile that defines the `GlobalOpenTelemetry` `OpenTelemetry` bean, and an agent IT.
-  - Later, a Synapse agent extension (`synapse-opentelemetry-agent-extension`). Whether the `OTEL_*` mapping is on by
-    default and a JVM-wide baggage propagator in that extension are open questions (DESIGN.md *Open questions*).
-  - `inbound.trusted=false` (trace restart, baggage dropped) and outbound baggage stripping under the OpenTelemetry
-    Java agent, in the Synapse agent extension.
-  - The archetype's environment files (section 13, *Environments*), and an environment for `process-aot` and the
-    AOT-cache training run (3.3), verified with the first native and image builds.
-  - The first native test checks, in a native image, that `ClassLoader.getResources` returns one URL per jar for
-    `META-INF/synapse/config*.yaml`, that Boot's `Config resource` source names are unchanged, and that the service's
-    `application-<env>.yaml` is found (DESIGN.md *Open questions*).
+    guidance, a Maven profile that attaches the agent, the `GlobalOpenTelemetry` `OpenTelemetry` bean, and an agent
+    IT.
+  - Not in plan 5: the Synapse agent extension (`synapse-opentelemetry-agent-extension`), with `inbound.trusted=false`
+    (trace restart, baggage dropped) and outbound baggage stripping under the agent; its open questions are in
+    DESIGN.md *Open questions*.
+  - Not in plan 5 either: the reference app's native image (its Task 16), moved to P4 by the maintainer on
+    2026-11-08.
+
+  Done (see the *Done (plan 5)* note above).
 - Later phase, own branch: a rate-limited failure-log policy (a one-line WARN on every occurrence, the stack once per
   window, the translator WARN included, and a "dropped N" summary for the burst limit).
 
@@ -1379,6 +1548,16 @@ section 9. Sample `event-driven-kafka`.
 model), `synapse-security` (section 11), `synapse-scheduling` (section 10), REST XML codec and `BinaryContent`
 (6.2), `@SynapseGraphQlTest`. Samples `public-rest-api` (JWT, problem+json, OpenAPI), `graphql-bff`,
 `serverless-functions` (AWS), `scheduled-and-batch`.
+- One native plan, with the functions sample (moved from P1 plan 5 by the maintainer on 2026-11-08, so the GraalVM CI
+  and the nightly workflow are built once for both):
+  - The reference app's native image (nightly and in the release workflow) and its checks: `grpc-netty`, protobuf,
+    springdoc and swagger-models, the schema generator, the CORS filter, Hibernate entity bases, per-store Flyway
+    scanning, and, for `META-INF/synapse/config*.yaml`, one URL per jar from `ClassLoader.getResources` (a native
+    image's `resource:` URLs count as local there, with the origin `native image`), Boot's `Config resource` source
+    names and the service's `application-<env>.yaml` (DESIGN.md *Open questions*).
+  - Full Spring AOT (opt-in in P1, decided 2026-11-08): the plan decides how far `process-aot` goes beyond the
+    parent's `aot` profile (for example on by default, or with the native profile, which today gets the build
+    environment's arguments only together with `aot`), and where the build environment's files are then required.
 
 **Acceptance:**
 - A shared operation contract test suite runs the P1 `BookErrors` operations through GraphQL and the function adapter.
@@ -1386,6 +1565,9 @@ model), `synapse-security` (section 11), `synapse-scheduling` (section 10), REST
   operation call per response; a `CommandOperation` under `Query` fails at startup.
 - Functions: only bound operations are exposed; routing by header/expression is impossible (negative test); local
   invoker tests pass; the functions sample builds and passes as a native image (nightly).
+- Native: the reference app builds and passes its ITs as a native image (nightly and in the release workflow); with
+  the `resource:` URL rule (module configuration is read from a native image, origin `native image`) and Flyway's
+  native resource scanning.
 - Security: 401 without a token (with `WWW-Authenticate`), 403 on scope mismatch, Actuator locked down, browser
   headers on success and error responses, `trusted-header` mode reads a sidecar header and rejects requests without it.
 - Scheduling: only one instance runs a locked job; a run-once job exits with the documented code; a Spring Batch job

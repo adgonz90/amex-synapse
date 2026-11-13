@@ -161,7 +161,8 @@ class BindingValidatorTest {
 
     @Test
     void pathVariableNamingAComponentBoundByAConventionSaysSo() {
-        List<RouteDefinition> routes = RestBindings.builder().put("/books/{id}/{options}", updateBook).build().routes();
+        List<RouteDefinition> routes = RestBindingsAccess
+                .routes(RestBindings.builder().put("/books/{id}/{options}", updateBook).build());
         List<RestConventions> conventions = List.of(RestConventions.builder().query(WriteOptions.class).build());
 
         assertThatExceptionOfType(SynapseConfigurationException.class)
@@ -281,21 +282,23 @@ class BindingValidatorTest {
                 .build(), "GET /books/{bookId} (get-plain-book)", "same method and path", "get-book");
 
         List<RouteDefinition> routes = validator
-                .validate(RestBindings
-                        .builder()
-                        .get("/books/{id}", getBook)
-                        .delete("/books/{id}", new GetPlainBookOperation())
-                        .build()
-                        .routes(), List.of());
+                .validate(RestBindingsAccess
+                        .routes(RestBindings
+                                .builder()
+                                .get("/books/{id}", getBook)
+                                .delete("/books/{id}", new GetPlainBookOperation())
+                                .build()),
+                        List.of());
         assertThat(routes).extracting(RouteDefinition::method).containsExactly(HttpMethod.GET, HttpMethod.DELETE);
 
         List<RouteDefinition> files = validator
-                .validate(RestBindings
-                        .builder()
-                        .get("/files/{name}.{ext}", new GetFileOperation())
-                        .get("/files/{id}", new GetPlainBookOperation())
-                        .build()
-                        .routes(), List.of());
+                .validate(RestBindingsAccess
+                        .routes(RestBindings
+                                .builder()
+                                .get("/files/{name}.{ext}", new GetFileOperation())
+                                .get("/files/{id}", new GetPlainBookOperation())
+                                .build()),
+                        List.of());
         assertThat(files).extracting(RouteDefinition::path).containsExactly("/files/{name}.{ext}", "/files/{id}");
     }
 
@@ -318,11 +321,14 @@ class BindingValidatorTest {
     void conventionBindsComponentsByType() {
         RestBindings bindings = RestBindings.builder().put("/books/{id}", updateBook).build();
 
-        RouteDefinition withoutConvention = validator.validate(bindings.routes(), List.of()).getFirst();
+        RouteDefinition withoutConvention = validator
+                .validate(RestBindingsAccess.routes(bindings), List.of())
+                .getFirst();
         assertThat(source(withoutConvention, "options")).isInstanceOf(InputSource.Body.class);
 
         RouteDefinition route = validator
-                .validate(bindings.routes(), List.of(RestConventions.builder().query(WriteOptions.class).build()))
+                .validate(RestBindingsAccess.routes(bindings),
+                        List.of(RestConventions.builder().query(WriteOptions.class).build()))
                 .getFirst();
         assertThat(route.sources())
                 .extracting(source -> source.component().name())
@@ -516,14 +522,15 @@ class BindingValidatorTest {
                 .responseHeader("X-Other", OtherRecord.class, OtherRecord::value)
                 .build();
         List<RouteDefinition> routes = validator
-                .validate(RestBindings
-                        .builder()
-                        .get("/books/{id}", getBook)
-                        .header("X-Name", BookResult::title)
-                        .get("/books", searchBooks)
-                        .get("/ping", new PingOperation())
-                        .build()
-                        .routes(), List.of(conventions));
+                .validate(RestBindingsAccess
+                        .routes(RestBindings
+                                .builder()
+                                .get("/books/{id}", getBook)
+                                .header("X-Name", BookResult::title)
+                                .get("/books", searchBooks)
+                                .get("/ping", new PingOperation())
+                                .build()),
+                        List.of(conventions));
 
         assertThat(routes.get(0).response().outputHeaders())
                 .extracting(OutputHeader::name)
@@ -736,7 +743,7 @@ class BindingValidatorTest {
     void failuresCarryAnAction() {
         assertThatExceptionOfType(SynapseConfigurationException.class)
                 .isThrownBy(() -> validator
-                        .validate(RestBindings.builder().get("/books", createBook).build().routes(),
+                        .validate(RestBindingsAccess.routes(RestBindings.builder().get("/books", createBook).build()),
                                 List.of()))
                 .satisfies(e -> assertThat(e.action()).contains("POST"));
     }
@@ -763,13 +770,14 @@ class BindingValidatorTest {
     void pageQueryComponentBindsFromPagingParametersOnGetAndPost() {
         PagedBooksOperation pagedBooks = new PagedBooksOperation();
         List<RouteDefinition> routes = validator
-                .validate(RestBindings
-                        .builder()
-                        .get("/books", pagedBooks)
-                        .sortable(SortKey.class)
-                        .post("/books", pagedBooks)
-                        .build()
-                        .routes(), List.of());
+                .validate(RestBindingsAccess
+                        .routes(RestBindings
+                                .builder()
+                                .get("/books", pagedBooks)
+                                .sortable(SortKey.class)
+                                .post("/books", pagedBooks)
+                                .build()),
+                        List.of());
 
         RouteDefinition get = routes.get(0);
         assertThat(source(get, "page")).isInstanceOf(InputSource.Page.class);
@@ -884,12 +892,12 @@ class BindingValidatorTest {
         PagingSettings defaults = PagingSettings.defaults();
         BindingValidator renamed = new BindingValidator(new PagingSettings(defaults.cursor(), defaults.offset(),
                 "page_size", defaults.sort(), defaults.maxOffset(), defaults.defaultSize(), defaults.maxSize()));
-        List<RouteDefinition> routes = RestBindings
-                .builder()
-                .get("/books", new PageSizeOperation())
-                .query("page_size", PageSizeRequest::pageSize)
-                .build()
-                .routes();
+        List<RouteDefinition> routes = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books", new PageSizeOperation())
+                        .query("page_size", PageSizeRequest::pageSize)
+                        .build());
 
         assertThatExceptionOfType(SynapseConfigurationException.class)
                 .isThrownBy(() -> renamed.validate(routes, List.of()))
@@ -1065,7 +1073,10 @@ class BindingValidatorTest {
     void routesWithoutConditionalDeclarationsHaveNoRules() {
         assertThat(single(RestBindings.builder().get("/books/{id}", getBook).build()).conditional())
                 .isEqualTo(ConditionalRules.NONE);
-        assertThat(RestBindings.builder().get("/books/{id}", getBook).build().routes().getFirst().conditional())
+        assertThat(RestBindingsAccess
+                .routes(RestBindings.builder().get("/books/{id}", getBook).build())
+                .getFirst()
+                .conditional())
                 .isEqualTo(ConditionalRules.NONE);
     }
 
@@ -1117,16 +1128,17 @@ class BindingValidatorTest {
     }
 
     @Test
-    void etagNeedsSimpleType() {
+    void etagNeedsAVersionType() {
+        // The version types of core's version token codec, the same for gRPC's .etag.
         assertFails(
                 RestBindings.builder().get("/books/{id}", getVersionedBook).etag(VersionedBook::author).build(),
-                "REST route GET /books/{id} (get-versioned-book): ", "VersionedBook.author", "simple type");
-        // UUID is not in the output-header simple set (R21/R34), and an ETag carries one value.
+                "REST route GET /books/{id} (get-versioned-book): ", "VersionedBook.author", "needs a version type");
+        // UUID is not a version type, and an ETag carries one value.
         assertFails(RestBindings.builder().get("/books/{id}", getVersionedBook).etag(VersionedBook::id).build(),
-                "VersionedBook.id", "simple type");
+                "VersionedBook.id", "needs a version type");
         assertFails(
                 RestBindings.builder().get("/books/{id}", getVersionedBook).etag(VersionedBook::edition).build(),
-                "VersionedBook.edition", "simple type");
+                "VersionedBook.edition", "needs a version type");
         assertThat(single(RestBindings
                 .builder()
                 .get("/books/{id}", getVersionedBook)
@@ -1380,7 +1392,7 @@ class BindingValidatorTest {
                                 .delete("/books/{id}", operation)
                                 .header("If-Match", SupertypeConditionRequest::string)
                                 .build())) {
-            assertThat(validator.validate(bindings.routes(), List.of())).hasSize(1);
+            assertThat(validator.validate(RestBindingsAccess.routes(bindings), List.of())).hasSize(1);
         }
     }
 
@@ -1527,7 +1539,7 @@ class BindingValidatorTest {
     }
 
     private RouteDefinition single(RestBindings bindings, RestConventions... conventions) {
-        List<RouteDefinition> routes = validator.validate(bindings.routes(), List.of(conventions));
+        List<RouteDefinition> routes = validator.validate(RestBindingsAccess.routes(bindings), List.of(conventions));
         assertThat(routes).hasSize(1);
         return routes.getFirst();
     }
@@ -1543,16 +1555,17 @@ class BindingValidatorTest {
                     action);
         }
         List<RouteDefinition> routes = validator
-                .validate(RestBindings
-                        .builder()
-                        .get("/books/{id}", getBook)
-                        .version("1")
-                        .get("/books/{id}", getBook)
-                        .version("1.2")
-                        .get("/books/{id}", getBook)
-                        .version("1.2.3")
-                        .build()
-                        .routes(), List.of());
+                .validate(RestBindingsAccess
+                        .routes(RestBindings
+                                .builder()
+                                .get("/books/{id}", getBook)
+                                .version("1")
+                                .get("/books/{id}", getBook)
+                                .version("1.2")
+                                .get("/books/{id}", getBook)
+                                .version("1.2.3")
+                                .build()),
+                        List.of());
         assertThat(routes)
                 .extracting(RouteDefinition::path)
                 .containsExactly("/v1/books/{id}", "/v1.2/books/{id}", "/v1.2.3/books/{id}");
@@ -1570,19 +1583,20 @@ class BindingValidatorTest {
     @Test
     void sameRouteInTwoVersionsIsAllowed() {
         List<RouteDefinition> routes = validator
-                .validate(RestBindings
-                        .builder()
-                        .get("/books", searchBooks)
-                        .version("1")
-                        .get("/books", searchBooks)
-                        .version("2")
-                        .get("/books", searchBooks)
-                        .get("/books/{id}", getBook)
-                        .version("2")
-                        .delete("/books/{id}", new GetPlainBookOperation())
-                        .version("2.0")
-                        .build()
-                        .routes(), List.of());
+                .validate(RestBindingsAccess
+                        .routes(RestBindings
+                                .builder()
+                                .get("/books", searchBooks)
+                                .version("1")
+                                .get("/books", searchBooks)
+                                .version("2")
+                                .get("/books", searchBooks)
+                                .get("/books/{id}", getBook)
+                                .version("2")
+                                .delete("/books/{id}", new GetPlainBookOperation())
+                                .version("2.0")
+                                .build()),
+                        List.of());
 
         // Equal versions are allowed on different methods: GET and DELETE /books/{id} in 2 and 2.0.
         assertThat(routes)
@@ -1685,7 +1699,7 @@ class BindingValidatorTest {
     /** Asserts a failure with exactly this description and action. */
     private void assertFailsExactly(RestBindings bindings, String description, String action) {
         assertThatExceptionOfType(SynapseConfigurationException.class)
-                .isThrownBy(() -> validator.validate(bindings.routes(), List.of()))
+                .isThrownBy(() -> validator.validate(RestBindingsAccess.routes(bindings), List.of()))
                 .satisfies(e -> {
                     assertThat(e.description()).isEqualTo(description);
                     assertThat(e.action()).isEqualTo(action);
@@ -1697,7 +1711,7 @@ class BindingValidatorTest {
     }
 
     private void assertFails(RestBindings bindings, List<RestConventions> conventions, String... fragments) {
-        ThrowingCallable call = () -> validator.validate(bindings.routes(), conventions);
+        ThrowingCallable call = () -> validator.validate(RestBindingsAccess.routes(bindings), conventions);
         Consumer<SynapseConfigurationException> check = e -> {
             assertThat(e.description()).contains(fragments);
             assertThat(e.action()).isNotBlank();
@@ -1709,7 +1723,7 @@ class BindingValidatorTest {
     private void assertFailsWith(RestBindings bindings, List<RestConventions> conventions, String problem,
             String action) {
         assertThatExceptionOfType(SynapseConfigurationException.class)
-                .isThrownBy(() -> validator.validate(bindings.routes(), conventions))
+                .isThrownBy(() -> validator.validate(RestBindingsAccess.routes(bindings), conventions))
                 .satisfies(e -> {
                     assertThat(e.description()).contains(problem);
                     assertThat(e.action()).isEqualTo(action);

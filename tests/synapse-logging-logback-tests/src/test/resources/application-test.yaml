@@ -1,0 +1,1 @@
+# The test environment: Synapse requires a file for the active environment; this module's tests need no settings of their own.

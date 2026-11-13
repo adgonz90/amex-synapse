@@ -46,14 +46,15 @@ import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules.OutputHeader;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
-import io.americanexpress.synapse.api.rest.internal.conditional.EntityTags;
 import io.americanexpress.synapse.api.rest.internal.paging.PageBody;
-import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.api.rest.internal.paging.PageLinks;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.internal.conditional.EntityTags;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.PageResult;
 
@@ -99,6 +100,8 @@ public final class ResponseWriter {
 
     private final PageCursors cursors;
 
+    private final PagingSettings paging;
+
     private final ETagValues etags;
 
     /** For each output type, the JSON property name of each component the mapper writes. */
@@ -112,16 +115,18 @@ public final class ResponseWriter {
      * @param conversionService formats output header values (in an application, Spring MVC's conversion service
      *        bean)
      * @param cursors wraps the next cursor of a {@code PageResult}
+     * @param paging the paging settings, for the parameter names and the offset cap of the {@code Link} header
      * @param etags computes the {@code ETag} of a route with {@code .etag}
      */
     public ResponseWriter(JsonMapper mapper, ConversionService conversionService, PageCursors cursors,
-            ETagValues etags) {
+            PagingSettings paging, ETagValues etags) {
         this.conversionService = conversionService;
         this.mapper = mapper
                 .rebuild()
                 .addModule(new SimpleModule("synapse-page-guard").addSerializer(new PageResultGuard()))
                 .build();
         this.cursors = cursors;
+        this.paging = paging;
         this.etags = etags;
     }
 
@@ -132,6 +137,8 @@ public final class ResponseWriter {
      * @param result the operation's output, exactly as {@code execute} returned it
      * @param request the request
      * @param input the input the operation was called with, which a {@code PageResult}'s next cursor is bound to
+     * @param cursorExtras the route's entries in the cursor scope ({@code CursorExtras.of(route)}), which the handler
+     *        computes once per route
      * @return the response
      * @throws SynapseException for an empty {@code Optional} without {@code .emptyAs}
      * @throws IllegalStateException when a header value computed from the output (a location, an output header or the
@@ -140,7 +147,7 @@ public final class ResponseWriter {
      *         the cursor codec returns a token that is empty or not URL-safe
      */
     public ServerResponse write(RouteDefinition route, @Nullable Object result, ServerRequest request,
-            @Nullable Object input) {
+            @Nullable Object input, Map<String, String> cursorExtras) {
         ResponseRules rules = route.response();
         Object value = result;
         if (result instanceof Optional<?> || route.outputType() == Optional.class) {
@@ -160,10 +167,14 @@ public final class ResponseWriter {
         ResolvedComponent bodyComponent = rules.bodyComponent();
         Object bodyValue;
         if (output instanceof PageResult<?> page) {
-            // The PageResult itself is never written: its next cursor is the operation's raw cursor.
-            String token = cursors.wrap(route, input, page.nextCursor());
+            // The PageResult itself is never written: its next cursor is the operation's raw cursor. The body's
+            // token is the one gRPC writes to next_page_token (PageCursors.next, REST's Link: next rule): none without
+            // a next page, the wrapped cursor, or the next offset of an offset page, also on POST, which has no Link.
+            String token = cursors
+                    .next(route.operationName(), input, cursorExtras, page, paging.maxOffset());
             bodyValue = new PageBody(page.items(), token, page.hasNext(), page.total());
-            addNextLink(headers, request, input, page, token);
+            // The Link is unchanged: it carries the cursor token, or for an offset page offset=N.
+            addNextLink(headers, request, input, page, page.nextCursor() == null ? null : token);
         } else {
             bodyValue = bodyComponent != null
                     ? componentValue(bodyComponent, output)
@@ -233,7 +244,10 @@ public final class ResponseWriter {
         } catch (IllegalArgumentException e) {
             return false;
         }
-        return parsed.wildcard() || parsed.tags().stream().anyMatch(candidate -> candidate.compare(tag, false));
+        return !(parsed instanceof EntityTags.Parsed.Tags list) || list
+                .tags()
+                .stream()
+                .anyMatch(candidate -> new ETag(candidate.opaque(), candidate.weak()).compare(tag, false));
     }
 
     /**
@@ -260,11 +274,11 @@ public final class ResponseWriter {
      */
     private void addNextLink(HttpHeaders headers, ServerRequest request, @Nullable Object input, PageResult<?> page,
             @Nullable String token) {
-        PageQuery query = cursors.query(input);
+        PageQuery query = PageCursors.query(input);
         if (query == null || !(HttpMethod.GET.equals(request.method()) || HttpMethod.HEAD.equals(request.method()))) {
             return;
         }
-        String link = PageLinks.next(request.servletRequest(), cursors.settings(), query, page, token);
+        String link = PageLinks.next(request.servletRequest(), paging, query, page, token);
         if (link != null) {
             headers.add(HttpHeaders.LINK, checked(HttpHeaders.LINK, link));
         }

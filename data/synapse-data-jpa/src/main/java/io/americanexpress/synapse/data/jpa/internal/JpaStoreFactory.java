@@ -44,7 +44,6 @@ import org.springframework.boot.transaction.autoconfigure.TransactionManagerCust
 import org.springframework.core.env.Environment;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.jdbc.support.SQLExceptionTranslator;
-import org.springframework.orm.jpa.JpaTransactionManager;
 import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
 import org.springframework.orm.jpa.persistenceunit.PersistenceManagedTypes;
 import org.springframework.orm.jpa.persistenceunit.PersistenceManagedTypesScanner;
@@ -60,6 +59,7 @@ import io.americanexpress.synapse.data.internal.store.StoreFactory;
 import io.americanexpress.synapse.data.internal.store.StoreKeyOverride;
 import io.americanexpress.synapse.data.internal.store.StoreNames;
 import io.americanexpress.synapse.data.internal.store.StoreSettings;
+import io.americanexpress.synapse.data.jpa.SynapseJpaTransactionManager;
 import io.americanexpress.synapse.data.vendor.DataStoreVendor;
 
 /**
@@ -265,14 +265,14 @@ public final class JpaStoreFactory {
     }
 
     /**
-     * Builds a store's {@link JpaTransactionManager} on its {@code <prefix>EntityManagerFactory}, customized by Boot's
+     * Builds a store's {@link SynapseJpaTransactionManager} on its {@code <prefix>EntityManagerFactory}, customized by Boot's
      * {@link TransactionManagerCustomizers} when there are any (such as {@code spring.transaction.default-timeout}).
      *
      * @param store the store name
      * @return the transaction manager
      */
-    public JpaTransactionManager transactionManager(String store) {
-        JpaTransactionManager transactionManager = new JpaTransactionManager(StoreBeans
+    public SynapseJpaTransactionManager transactionManager(String store) {
+        SynapseJpaTransactionManager transactionManager = new SynapseJpaTransactionManager(StoreBeans
                 .dependency(beanFactory, store,
                         ENTITY_MANAGER_FACTORY_SUFFIX, EntityManagerFactory.class, TRANSACTION_MANAGER_SUFFIX));
         beanFactory

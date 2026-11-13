@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.americanexpress.synapse.api.rest.internal.binding.ConventionRules;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.core.binding.ComponentRef;
 
 /**
@@ -36,6 +37,11 @@ import io.americanexpress.synapse.core.binding.ComponentRef;
  */
 public final class RestConventions {
 
+    static {
+        // Synapse reads the rules through an internal class, so that they are not public API.
+        RestBindingsAccess.registerRules(conventions -> conventions.rules);
+    }
+
     private final ConventionRules rules;
 
     private RestConventions(ConventionRules rules) {
@@ -49,16 +55,6 @@ public final class RestConventions {
      */
     public static Builder builder() {
         return new Builder();
-    }
-
-    /**
-     * Returns the rules as declared. This is Synapse's internal view of the conventions: application code never
-     * calls it.
-     *
-     * @return the rules
-     */
-    public ConventionRules rules() {
-        return rules;
     }
 
     /**

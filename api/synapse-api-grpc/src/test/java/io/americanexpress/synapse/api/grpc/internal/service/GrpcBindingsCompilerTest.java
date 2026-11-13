@@ -24,6 +24,8 @@ import io.americanexpress.synapse.api.grpc.GrpcBindings;
 import io.americanexpress.synapse.api.grpc.fixture.proto.CatalogServiceGrpc;
 import io.americanexpress.synapse.api.grpc.internal.binding.fixture.BindingFixtures;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,6 +42,16 @@ class GrpcBindingsCompilerTest {
         return new StaticListableBeanFactory(Map.of("compiler", compiler)).getBeanProvider(ServiceCompiler.class);
     }
 
+    private static ObjectProvider<PageCursors> cursors() {
+        return new StaticListableBeanFactory(Map.of("cursors", Compilers.cursors()))
+                .getBeanProvider(PageCursors.class);
+    }
+
+    private static ObjectProvider<SynapsePagingProperties> paging() {
+        return new StaticListableBeanFactory(Map.of("paging", Compilers.PAGING))
+                .getBeanProvider(SynapsePagingProperties.class);
+    }
+
     @SuppressWarnings("unchecked")
     private static ObjectProvider<ServiceOperation<?, ?>> operations(ServiceOperation<?, ?>... operations) {
         Map<String, Object> beans = new LinkedHashMap<>();
@@ -48,6 +60,11 @@ class GrpcBindingsCompilerTest {
         }
         return (ObjectProvider<ServiceOperation<?, ?>>) (ObjectProvider<?>) new StaticListableBeanFactory(beans)
                 .getBeanProvider(ServiceOperation.class);
+    }
+
+    private static ObjectProvider<ServiceOperation<?, ?>> remainingOperations() {
+        return operations(new BindingFixtures.DeleteItemOperation(), new BindingFixtures.PingOperation(),
+                new BindingFixtures.ListTagsOperation(), new BindingFixtures.FailOperation());
     }
 
     private static GrpcBindings byName() {
@@ -63,9 +80,8 @@ class GrpcBindingsCompilerTest {
     @Test
     void compilesEachGrpcBindingsBean() {
         GrpcBindings bindings = byName();
-        GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(new ServiceCompiler()),
-                operations(new BindingFixtures.DeleteItemOperation(), new BindingFixtures.PingOperation(),
-                        new BindingFixtures.ListTagsOperation(), new BindingFixtures.FailOperation()));
+        GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(Compilers.compiler()),
+                remainingOperations(), cursors(), paging());
 
         assertThat(postProcessor.postProcessAfterInitialization(bindings, "catalog")).isSameAs(bindings);
 
@@ -74,12 +90,11 @@ class GrpcBindingsCompilerTest {
     }
 
     @Test
-    void usesADefaultCompilerWhenThereIsNone() {
+    void usesADefaultCompilerOnCoresCursorsWhenThereIsNone() {
         GrpcBindings bindings = byName();
         GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(
-                new StaticListableBeanFactory().getBeanProvider(ServiceCompiler.class),
-                operations(new BindingFixtures.DeleteItemOperation(), new BindingFixtures.PingOperation(),
-                        new BindingFixtures.ListTagsOperation(), new BindingFixtures.FailOperation()));
+                new StaticListableBeanFactory().getBeanProvider(ServiceCompiler.class), remainingOperations(),
+                cursors(), paging());
 
         postProcessor.postProcessAfterInitialization(bindings, "catalog");
 
@@ -91,15 +106,15 @@ class GrpcBindingsCompilerTest {
         // Checked before anything is attached: the bean is left uncompiled, so it can't be served.
         GrpcBindings bindings = GrpcBindings
                 .service(CatalogServiceGrpc.getServiceDescriptor())
-                .unary(CatalogServiceGrpc.getGetItemMethod(), new BindingFixtures.PageItemsOperation())
+                .unary(CatalogServiceGrpc.getGetItemMethod(), new BindingFixtures.OptionalPageOperation())
                 .bindAllByName()
                 .build();
-        GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(new ServiceCompiler()),
-                operations());
+        GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations(),
+                cursors(), paging());
 
         assertThatExceptionOfType(SynapseConfigurationException.class)
                 .isThrownBy(() -> postProcessor.postProcessAfterInitialization(bindings, "catalog"))
-                .withMessageContaining("PageResult is not supported over gRPC yet");
+                .withMessageContaining("a PageResult must be the operation's direct output");
         assertThatIllegalStateException()
                 .isThrownBy(bindings::bindService)
                 .withMessage("GrpcBindings for " + SERVICE
@@ -120,18 +135,20 @@ class GrpcBindingsCompilerTest {
                 .unary(CatalogServiceGrpc.getFailMethod(), new BindingFixtures.FailOperation())
                 .build();
         ObjectProvider<ServiceOperation<?, ?>> operations = mock(ObjectProvider.class);
+        ObjectProvider<PageCursors> cursors = mock(ObjectProvider.class);
 
-        new GrpcBindingsCompiler(compiler(new ServiceCompiler()), operations)
+        new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations, cursors, paging())
                 .postProcessAfterInitialization(bindings, "catalog");
 
         assertThat(bindings.bindService().getMethods()).hasSize(6);
-        verifyNoInteractions(operations);
+        // With a compiler bean, core's cursors are not looked up either.
+        verifyNoInteractions(operations, cursors);
     }
 
     @Test
     void otherBeansPassThrough() {
-        ObjectProvider<ServiceCompiler> compiler = compiler(new ServiceCompiler());
-        GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler, operations());
+        GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations(),
+                cursors(), paging());
         Object bean = new Object();
 
         assertThat(postProcessor.postProcessAfterInitialization(bean, "other")).isSameAs(bean);

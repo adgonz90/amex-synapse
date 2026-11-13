@@ -30,18 +30,26 @@ public final class SpringDataPages {
     }
 
     /**
-     * Converts a Spring Data page, keeping its total.
+     * Converts a Spring Data page, keeping its total. A next page follows when the elements before and on this page
+     * are fewer than the total: {@code offset + elements < total}. Spring Data's {@code Page.hasNext()} compares page
+     * numbers instead, which is right only for an offset that is a multiple of the size: at offset 3 of size 2 it says
+     * a page follows the last two of 5 elements. For an aligned offset both rules agree, so this one is used for every
+     * paged page; an unpaged page has no next.
      *
      * @param <T> the item type
      * @param page the page
      * @return the result
      */
     public static <T> PageResult<T> from(Page<T> page) {
-        return PageResult.of(page.getContent(), page.hasNext()).withTotal(page.getTotalElements());
+        Pageable pageable = page.getPageable();
+        boolean hasNext = pageable.isPaged()
+                && pageable.getOffset() + page.getNumberOfElements() < page.getTotalElements();
+        return PageResult.of(page.getContent(), hasNext).withTotal(page.getTotalElements());
     }
 
     /**
-     * Converts a Spring Data slice, which has no total.
+     * Converts a Spring Data slice, which has no total. Its {@code hasNext()} is whatever the query found, not a page
+     * number: Spring Data JPA fetches one element more than the size from the exact offset, so it holds at any offset.
      *
      * @param <T> the item type
      * @param slice the slice
@@ -53,6 +61,9 @@ public final class SpringDataPages {
 
     /**
      * Returns an offset-based {@link Pageable} for the query. The offset is exact, not rounded to a page boundary.
+     * Each {@link SortOrder#property()} is passed to Spring Data unchanged, as an entity property. For keys declared
+     * with {@code .sortable(SortKey.class)} that is the enum constant's name, so name the constants after the
+     * entity's properties, or map the keys to them before calling this method.
      *
      * @param query the query
      * @return the pageable

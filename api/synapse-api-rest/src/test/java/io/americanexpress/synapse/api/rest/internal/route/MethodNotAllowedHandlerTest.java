@@ -25,6 +25,7 @@ import org.springframework.web.servlet.function.ServerResponse;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestErrors;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.error.RestProtocolException;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.CreateBookOperation;
@@ -39,28 +40,28 @@ class MethodNotAllowedHandlerTest {
 
     @Test
     void listsDeclaredMethodsInAllow() {
-        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindings
-                .builder()
-                .get("/books/{id}", new GetBookOperation())
-                .put("/books/{id}", new CreateBookOperation())
-                .build()
-                .routes());
+        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books/{id}", new GetBookOperation())
+                        .put("/books/{id}", new CreateBookOperation())
+                        .build()));
 
         assertThat(allow(handler, "DELETE", "/books/1")).isEqualTo("GET, HEAD, PUT, OPTIONS");
     }
 
     @Test
     void allowFollowsTheFixedMethodOrderAcrossMatchingTemplates() {
-        List<RouteDefinition> routes = RestBindings
-                .builder()
-                .delete("/books/{id}", new DeleteBookOperation())
-                .put("/books/{id}", new CreateBookOperation())
-                .post("/books/{id}", new CreateBookOperation())
-                .head("/books/{id}", new GetBookOperation())
-                .get("/books/latest", new GetBookOperation())
-                .get("/books", new ListBooksOperation())
-                .build()
-                .routes();
+        List<RouteDefinition> routes = RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .delete("/books/{id}", new DeleteBookOperation())
+                        .put("/books/{id}", new CreateBookOperation())
+                        .post("/books/{id}", new CreateBookOperation())
+                        .head("/books/{id}", new GetBookOperation())
+                        .get("/books/latest", new GetBookOperation())
+                        .get("/books", new ListBooksOperation())
+                        .build());
         MethodNotAllowedHandler handler = new MethodNotAllowedHandler(routes);
 
         assertThat(allow(handler, "PATCH", "/books/latest")).isEqualTo("GET, HEAD, POST, PUT, DELETE, OPTIONS");
@@ -70,12 +71,12 @@ class MethodNotAllowedHandlerTest {
 
     @Test
     void matchesOnlyPathsOfSynapseTemplates() {
-        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindings
-                .builder()
-                .get("/books/{id}", new GetBookOperation())
-                .get("/files/{*path}", new GetBookOperation())
-                .build()
-                .routes());
+        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books/{id}", new GetBookOperation())
+                        .get("/files/{*path}", new GetBookOperation())
+                        .build()));
 
         assertThat(handler.test(request("DELETE", "/books/1"))).isTrue();
         assertThat(handler.test(request("DELETE", "/files/a/b"))).isTrue();
@@ -87,12 +88,12 @@ class MethodNotAllowedHandlerTest {
 
     @Test
     void versionedRoutesUseTheirServedPaths() {
-        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindings
-                .builder()
-                .get("/books/{id}", new GetBookOperation())
-                .version("2")
-                .build()
-                .routes());
+        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books/{id}", new GetBookOperation())
+                        .version("2")
+                        .build()));
 
         assertThat(allow(handler, "DELETE", "/v2/books/1")).isEqualTo("GET, HEAD, OPTIONS");
         assertThat(handler.test(request("DELETE", "/books/1"))).isFalse();
@@ -102,7 +103,7 @@ class MethodNotAllowedHandlerTest {
     @Test
     void neverMatchesTheErrorDispatch() {
         MethodNotAllowedHandler handler = new MethodNotAllowedHandler(
-                RestBindings.builder().get("/{id}", new GetBookOperation()).build().routes());
+                RestBindingsAccess.routes(RestBindings.builder().get("/{id}", new GetBookOperation()).build()));
 
         assertThat(handler.test(request("DELETE", "/error"))).isTrue();
         for (String method : List.of("GET", "DELETE", "OPTIONS")) {
@@ -131,13 +132,13 @@ class MethodNotAllowedHandlerTest {
 
     @Test
     void optionsAnswersAllowWithoutABody() throws Exception {
-        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindings
-                .builder()
-                .get("/books/{id}", new GetBookOperation())
-                .put("/books/{id}", new CreateBookOperation())
-                .delete("/books/{id}", new DeleteBookOperation())
-                .build()
-                .routes());
+        MethodNotAllowedHandler handler = new MethodNotAllowedHandler(RestBindingsAccess
+                .routes(RestBindings
+                        .builder()
+                        .get("/books/{id}", new GetBookOperation())
+                        .put("/books/{id}", new CreateBookOperation())
+                        .delete("/books/{id}", new DeleteBookOperation())
+                        .build()));
         MockHttpServletRequest servletRequest = new MockHttpServletRequest("OPTIONS", "/books/1");
 
         ServerResponse response = handler.handle(ServerRequest.create(servletRequest, List.of()));
@@ -152,7 +153,7 @@ class MethodNotAllowedHandlerTest {
     @Test
     void rejectsWithoutCallingAnything() {
         MethodNotAllowedHandler handler = new MethodNotAllowedHandler(
-                RestBindings.builder().get("/books/{id}", new GetBookOperation()).build().routes());
+                RestBindingsAccess.routes(RestBindings.builder().get("/books/{id}", new GetBookOperation()).build()));
 
         assertThatExceptionOfType(RestProtocolException.class)
                 .isThrownBy(() -> handler.handle(request("POST", "/books/2")))

@@ -21,21 +21,16 @@ import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
-import io.grpc.Grpc;
-import io.grpc.InsecureChannelCredentials;
-import io.grpc.ManagedChannel;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.logging.LogLevel;
 import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTestClient;
@@ -56,9 +51,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import io.americanexpress.synapse.samples.books.api.grpc.proto.Book;
-import io.americanexpress.synapse.samples.books.api.grpc.proto.BookServiceGrpc;
-import io.americanexpress.synapse.samples.books.api.grpc.proto.GetBookRequest;
 import io.americanexpress.synapse.samples.books.data.InMemoryBookStore;
 import io.americanexpress.synapse.samples.books.data.StoredBook;
 
@@ -76,13 +68,8 @@ import static org.mockito.BDDMockito.willAnswer;
  * The tests share the catalog (one Spring context). The searches expect the three seeded books, so every test that
  * adds a book deletes it, and no test changes a seeded book. The nested classes, which turn the OpenAPI document on,
  * turn CORS on and set a context path, run their own contexts.
- *
- * <p>
- * The gRPC server runs too, on Netty at a free port ({@code spring.grpc.server.port=0}); each nested context starts its
- * own.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "synapse.errors.include-detail=false")
-@TestPropertySource(properties = "spring.grpc.server.port=0")
 @AutoConfigureRestTestClient
 @Tag("smoke")
 @ActiveProfiles("test")
@@ -101,9 +88,6 @@ class BooksApplicationIT {
     /** The real store, spied on so that one test can simulate a concurrent write. */
     @MockitoSpyBean
     InMemoryBookStore store;
-
-    @LocalGrpcServerPort
-    int grpcPort;
 
     /** A response: its status, headers and body. */
     record Result(int status, HttpHeaders headers, String body) {
@@ -388,6 +372,13 @@ class BooksApplicationIT {
         assertThat(required.json().get("code").asString()).isEqualTo("PRECONDITION_REQUIRED");
         assertViolation(required, "If-Match", "is required; send the ETag from a GET of this resource");
 
+        // The book is at version 1, so "2" is stale: 412, and the book is still there.
+        Result stale = call(client.delete().uri(location).header("If-Match", "\"2\""));
+
+        assertThat(stale.status()).isEqualTo(412);
+        assertThat(stale.json().get("code").asString()).isEqualTo("PRECONDITION_FAILED");
+        assertThat(stale.json().has("detail")).isFalse();
+
         Result deleted = call(client.delete().uri(location).header("If-Match", "\"1\""));
 
         assertThat(deleted.status()).isEqualTo(204);
@@ -631,31 +622,6 @@ class BooksApplicationIT {
                 .expectBody()
                 .jsonPath("$.status")
                 .isEqualTo("UP");
-    }
-
-    /** Acceptance 2: one operation behind both protocols. A book added over REST is read back over gRPC. */
-    @Test
-    void sameOperationOverRestAndGrpc() throws InterruptedException {
-        Result created = create("isbn-it-grpc", "The Telling");
-        String location = Objects.requireNonNull(created.headers().getLocation()).toString();
-        String id = location.substring(location.lastIndexOf('/') + 1);
-        ManagedChannel channel = Grpc
-                .newChannelBuilderForAddress("localhost", grpcPort, InsecureChannelCredentials.create())
-                .build();
-        try {
-            Book book = BookServiceGrpc
-                    .newBlockingStub(channel)
-                    .withDeadlineAfter(10, TimeUnit.SECONDS)
-                    .getBook(GetBookRequest.newBuilder().setId(id).build());
-
-            assertThat(book.getId()).isEqualTo(id);
-            assertThat(book.getTitle()).isEqualTo(created.json().get("title").asString()).isEqualTo("The Telling");
-            assertThat(book.getVersion()).isEqualTo(created.json().get("version").asLong()).isEqualTo(1);
-        } finally {
-            channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
-        }
-
-        deleteAt(created, "\"1\"");
     }
 
     /** CORS on for the local front end, as application-local.yaml turns it on. */

@@ -1,0 +1,16 @@
+# The database of the local environment: docker compose up -d. Local compose only: the database, user name and
+# password below are for this throwaway container, and data-${serviceName}'s config-local.yaml repeats them. Every
+# other environment gives the store its own credentials through environment variables.
+#
+# The image is the tag with its digest, the one Synapse's SynapseContainers.POSTGRES_IMAGE pins for the tests, so local
+# runs and the tests use one image, and a re-pushed tag can't change it. When you upgrade Synapse, check its
+# SynapseContainers.POSTGRES_IMAGE and update this digest to match.
+services:
+  ${serviceName}-db:
+    image: postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    environment:
+      POSTGRES_DB: ${serviceName}
+      POSTGRES_USER: ${serviceName}
+      POSTGRES_PASSWORD: ${serviceName}
+    ports:
+      - "5432:5432"

@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.slf4j.MDC;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
@@ -459,7 +460,7 @@ class OperationInterceptorTest {
                 .orElseThrow();
         assertThat(line)
                 .contains(" WARN ", "Operation get-book failed with BOOK_NOT_FOUND (NOT_FOUND): Book 42 was not found",
-                        "operation=\"get-book\"", "error.code=\"BOOK_NOT_FOUND\"", "error.category=\"NOT_FOUND\"",
+                        "operation=\"get-book\"", "errorCode=\"BOOK_NOT_FOUND\"", "errorCategory=\"NOT_FOUND\"",
                         "correlationId=\"c-7\"");
         assertThat(output).doesNotContain("\tat ", "Exception:");
     }
@@ -474,9 +475,24 @@ class OperationInterceptorTest {
 
         assertThat(output.getOut())
                 .contains(" ERROR ", "Operation get-book failed with INTERNAL (INTERNAL): An internal error occurred",
-                        "correlationId=\"c-8\"", "Caused by: java.lang.IllegalStateException: db password=x",
+                        "correlationId=\"c-8\"", "errorCode=\"INTERNAL\"", "errorCategory=\"INTERNAL\"",
+                        "Caused by: java.lang.IllegalStateException: db password=x",
                         "\tat io.americanexpress.synapse.core.internal.pipeline.");
         assertThat(output.getOut()).doesNotContain(" WARN ");
+    }
+
+    @Test
+    void leavesTheCorrelationIdToTheMdcWhenItHoldsIt(CapturedOutput output) {
+        GetBookOperation op = pipeline().build().wrapOperation(failing(bookNotFound()));
+
+        // As Boot's correlation fields do with tracing on: a key-value of the same name would make Boot's Logback
+        // structured formats drop the line.
+        try (ContextScope scope = open("c-11"); MDC.MDCCloseable mdc = MDC.putCloseable("correlationId", "c-11")) {
+            assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
+        }
+
+        assertThat(output.getOut()).contains("Operation get-book failed with BOOK_NOT_FOUND", "operation=\"get-book\"");
+        assertThat(output.getOut()).doesNotContain("correlationId=");
     }
 
     @Test

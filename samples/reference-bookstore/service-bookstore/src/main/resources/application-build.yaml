@@ -1,0 +1,9 @@
+# The build environment: spring-boot:process-aot (with -Paot, the opt-in this sample shows) and the image's training
+# run start the service in this environment (synapse.build.environment, default "build"; process-aot gets it as the
+# default profile, so it is never active at run time) to fix its bean definitions at build time. Put here the
+# values that bean definitions are fixed by and that every deployed environment shares. This service sets none, so the
+# build keeps Synapse's defaults, among them the OpenAPI document (springdoc.api-docs.enabled) and gRPC server
+# reflection (spring.grpc.server.reflection.enabled) off: a run of AOT-generated artifacts that turns either on, as
+# application-local.yaml does, fails at startup (docs/modules/ROOT/pages/environments.adoc, AOT). The books store's
+# build settings are in data-books' config-build.yaml: a url on a closed port, since AOT processing creates some of the
+# store's beans but never connects.

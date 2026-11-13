@@ -13,7 +13,6 @@
  */
 package io.americanexpress.synapse.api.rest.autoconfigure;
 
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -60,17 +59,12 @@ import io.americanexpress.synapse.api.rest.internal.edge.RequestSizeLimitFilter;
 import io.americanexpress.synapse.api.rest.internal.edge.SynapseRestContextFilter;
 import io.americanexpress.synapse.api.rest.internal.error.ClientErrorFilter;
 import io.americanexpress.synapse.api.rest.internal.error.ProblemWriter;
-import io.americanexpress.synapse.api.rest.internal.paging.AesGcmCursorCodec;
-import io.americanexpress.synapse.api.rest.internal.paging.CursorKeys;
-import io.americanexpress.synapse.api.rest.internal.paging.InputDigest;
-import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.ExposureInventory;
 import io.americanexpress.synapse.api.rest.internal.route.MethodNotAllowedMapping;
 import io.americanexpress.synapse.api.rest.internal.route.ResponseWriter;
 import io.americanexpress.synapse.api.rest.internal.route.RouteCompiler;
 import io.americanexpress.synapse.api.rest.internal.version.SynapseApiVersioning;
-import io.americanexpress.synapse.api.rest.paging.CursorCodec;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationProperties;
@@ -78,6 +72,7 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfigu
 import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.SynapseBaggageFields;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 
 /**
  * Auto-configuration for the REST API plugin: its properties, the edge filters, the CORS configuration, and the routes
@@ -90,7 +85,7 @@ import io.americanexpress.synapse.core.internal.context.SynapseBaggageFields;
 @ConditionalOnClass(RouterFunction.class)
 @EnableConfigurationProperties({SynapseRestProperties.class, SynapseContextProperties.class,
         SynapseCorrelationProperties.class})
-public class SynapseRestAutoConfiguration {
+public final class SynapseRestAutoConfiguration {
 
     private static final String REMOTE_FIELDS = "management.tracing.baggage.remote-fields";
 
@@ -326,15 +321,16 @@ public class SynapseRestAutoConfiguration {
      * @param validator resolves and checks the routes
      * @param binder binds the inputs
      * @param writer writes the responses
-     * @param cursors unwraps the cursor tokens, and reports a cursor key generated at startup
+     * @param cursors core's page cursors: they unwrap the cursor tokens, and report a cursor key generated at startup
+     * @param paging the paging settings, for the cursor parameter name
      * @return the compiler
      */
     @Bean
     @ConditionalOnBean(RestBindings.class)
     @ConditionalOnMissingBean
     RouteCompiler routeCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer,
-            PageCursors cursors) {
-        return new RouteCompiler(validator, binder, writer, cursors);
+            PageCursors cursors, PagingSettings paging) {
+        return new RouteCompiler(validator, binder, writer, cursors, paging);
     }
 
     /**
@@ -351,66 +347,18 @@ public class SynapseRestAutoConfiguration {
     }
 
     /**
-     * The paging settings of the routes: the parameter names and offset cap from {@code synapse.api.rest.paging}, and
-     * the page sizes from {@code synapse.paging}.
+     * The paging settings of the routes: the parameter names from {@code synapse.api.rest.paging}, and the offset cap
+     * and the page sizes from {@code synapse.paging}.
      *
      * @param properties the REST properties
-     * @param sizes core's paging properties
+     * @param core core's paging properties
      * @return the settings
      */
     @Bean
     @ConditionalOnBean(RestBindings.class)
     @ConditionalOnMissingBean
-    PagingSettings synapseRestPagingSettings(SynapseRestProperties properties, SynapsePagingProperties sizes) {
-        return PagingSettings.of(properties.paging(), sizes);
-    }
-
-    /**
-     * The codec of the opaque paging cursors: AES-256-GCM with the keys and maximum age of
-     * {@code synapse.api.rest.paging.cursor}. Without {@code cursor.key}, the key is generated at startup. An invalid
-     * key fails startup. Define a {@link CursorCodec} bean to replace it.
-     *
-     * @param properties the REST properties, for the cursor settings
-     * @param clock the application clock, for the issue time and the expiry check
-     * @return the codec
-     */
-    @Bean
-    @ConditionalOnBean(RestBindings.class)
-    @ConditionalOnMissingBean(CursorCodec.class)
-    CursorCodec synapseCursorCodec(SynapseRestProperties properties, Clock clock) {
-        // Never SecureRandom.getInstanceStrong(), which can block.
-        SecureRandom random = new SecureRandom();
-        SynapseRestProperties.Paging.Cursor cursor = properties.paging().cursor();
-        return new AesGcmCursorCodec(CursorKeys.from(cursor, random), clock, cursor.maxAge(), random);
-    }
-
-    /**
-     * Digests the filters of a request, which its cursor tokens are bound to. It writes them with its own canonical
-     * mapper, never the application's, so the application's Jackson configuration can't make two requests' filters
-     * look alike.
-     *
-     * @return the digest
-     */
-    @Bean
-    @ConditionalOnBean(RestBindings.class)
-    @ConditionalOnMissingBean
-    InputDigest synapseInputDigest() {
-        return new InputDigest();
-    }
-
-    /**
-     * Converts between the operations' raw cursors and the tokens clients see.
-     *
-     * @param codec the cursor codec
-     * @param digest digests the request filters
-     * @param paging the paging settings, for the cursor parameter name
-     * @return the cursors
-     */
-    @Bean
-    @ConditionalOnBean(RestBindings.class)
-    @ConditionalOnMissingBean
-    PageCursors synapsePageCursors(CursorCodec codec, InputDigest digest, PagingSettings paging) {
-        return new PageCursors(codec, digest, paging);
+    PagingSettings synapseRestPagingSettings(SynapseRestProperties properties, SynapsePagingProperties core) {
+        return PagingSettings.of(properties.paging(), core);
     }
 
     /**
@@ -435,7 +383,8 @@ public class SynapseRestAutoConfiguration {
      *
      * @param jsonMapper Boot's mapper, if there is one; otherwise a default mapper is used
      * @param conversionService Spring MVC's conversion service, which formats output header values
-     * @param cursors wraps the next cursor of a page
+     * @param cursors core's page cursors, which wrap the next cursor of a page
+     * @param paging the paging settings, for the next page's link
      * @param etags computes the {@code ETag} of a route with {@code .etag}
      * @return the writer
      */
@@ -444,23 +393,22 @@ public class SynapseRestAutoConfiguration {
     @ConditionalOnMissingBean
     ResponseWriter responseWriter(ObjectProvider<JsonMapper> jsonMapper,
             @Qualifier("mvcConversionService") ConversionService conversionService, PageCursors cursors,
-            ETagValues etags) {
+            PagingSettings paging, ETagValues etags) {
         return new ResponseWriter(jsonMapper.getIfAvailable(() -> JsonMapper.builder().build()), conversionService,
-                cursors, etags);
+                cursors, paging, etags);
     }
 
     /**
-     * Computes the {@code ETag} of a route with {@code .etag} from its output component, formatted with Spring MVC's
-     * conversion service like the output headers.
+     * Computes the {@code ETag} of a route with {@code .etag} from its output component, formatted by core's version
+     * token codec (not Spring MVC's conversion service), so REST and gRPC send the same token.
      *
-     * @param conversionService Spring MVC's conversion service
      * @return the entity tag values
      */
     @Bean
     @ConditionalOnBean(RestBindings.class)
     @ConditionalOnMissingBean
-    ETagValues synapseETagValues(@Qualifier("mvcConversionService") ConversionService conversionService) {
-        return new ETagValues(conversionService);
+    ETagValues synapseETagValues() {
+        return new ETagValues();
     }
 
     /**

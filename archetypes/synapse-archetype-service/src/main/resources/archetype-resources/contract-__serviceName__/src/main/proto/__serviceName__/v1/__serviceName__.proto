@@ -1,0 +1,69 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// The gRPC API of the ${serviceName} service. Each method is bound to the same operation as the REST route of the same
+// name, so the two APIs take the same requests and give the same answers and error codes; the comments name each
+// method's route and each field's REST counterpart. Synapse maps each message field to the record component with the
+// same name. A nullable component needs a field with presence, hence the wrapper type of description. A version travels
+// as REST's entity tag token, "0" with its double quotes, in a string field named etag, so a client can copy it between
+// the two protocols.
+syntax = "proto3";
+
+package ${package}.v1;
+
+import "google/protobuf/wrappers.proto";
+// Unused by any message: grpcurl needs it, so that reflection serves the ErrorInfo and BadRequest it decodes.
+import "google/rpc/error_details.proto";
+
+option java_package = "${package}.contract.proto";
+option java_multiple_files = true;
+
+// The items. Every failure carries a google.rpc.ErrorInfo whose reason is the error code, as REST's problem code
+// (ITEM_NOT_FOUND, ALREADY_EXISTS, ...); an invalid request also carries a google.rpc.BadRequest with a violation per
+// field, as REST's problem violations.
+service ItemService {
+  // POST /items (create-item). A name another item has is ALREADY_EXISTS (REST 409). The response carries the new
+  // item's etag, as REST's 201 carries its ETag header.
+  rpc CreateItem(CreateItemRequest) returns (Item);
+  // GET /items/{id} (get-item). An unknown id is NOT_FOUND with the reason ITEM_NOT_FOUND. The response carries the
+  // item's etag, as REST's ETag header. gRPC has no 304: REST alone answers If-None-Match.
+  rpc GetItem(GetItemRequest) returns (Item);
+}
+
+// The REST body of an item, plus its etag, which REST sends as a header.
+message Item {
+  // id: a UUID.
+  string id = 1;
+  // name.
+  string name = 2;
+  // description: unset when it has none, as REST's null.
+  google.protobuf.StringValue description = 3;
+  // version: 0 when the item is added, plus 1 on every change.
+  int64 version = 4;
+  // REST's ETag header: the version as a strong entity tag, "0" with its double quotes. Set by GetItem and CreateItem,
+  // as REST sends ETag on GET and on the POST's 201.
+  string etag = 5;
+}
+
+message CreateItemRequest {
+  // name: not blank, at most 255 characters.
+  string name = 1;
+  // description: at most 1000 characters; unset for none, as REST's null or a missing property.
+  google.protobuf.StringValue description = 2;
+}
+
+message GetItemRequest {
+  // The path's {id}: a UUID.
+  string id = 1;
+}

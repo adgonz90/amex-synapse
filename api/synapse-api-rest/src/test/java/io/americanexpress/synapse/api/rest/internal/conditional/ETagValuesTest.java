@@ -14,31 +14,33 @@
 package io.americanexpress.synapse.api.rest.internal.conditional;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Objects;
+import java.util.Locale;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
-import org.springframework.format.support.DefaultFormattingConversionService;
 import org.springframework.http.ETag;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
+import io.americanexpress.synapse.core.internal.conditional.EntityTags;
+import io.americanexpress.synapse.core.internal.conditional.VersionTokens;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 class ETagValuesTest {
 
-    private final DefaultFormattingConversionService conversions = new DefaultFormattingConversionService();
-
-    private final ETagValues etags = new ETagValues(conversions);
+    private final ETagValues etags = new ETagValues();
 
     @Test
-    void formatsSimpleComponents() {
+    void formatsVersionComponentsWithTheSharedCodec() {
         RouteDefinition versioned = route(
                 RestBindings.builder().get("/books/{id}", new GetVersioned()).etag(Versioned::version).build());
         assertThat(etags.of(versioned, new Versioned("b", 7))).isEqualTo(new ETag("7", false));
@@ -46,9 +48,9 @@ class ETagValuesTest {
         Instant modified = Instant.parse("2026-11-04T10:15:30Z");
         RouteDefinition dated = route(
                 RestBindings.builder().get("/books/{id}", new GetDated()).etag(Dated::modified).build());
-        String text = Objects.requireNonNull(conversions.convert(modified, String.class));
-        assertThat(text).isNotEmpty();
-        assertThat(etags.of(dated, new Dated("b", modified))).isEqualTo(new ETag(text, false));
+        assertThat(etags.of(dated, new Dated("b", modified))).isEqualTo(new ETag("2026-11-04T10:15:30Z", false));
+        assertThat(etags.of(dated, new Dated("b", modified)))
+                .isEqualTo(new ETag(VersionTokens.format(modified), false));
 
         RouteDefinition labeled = route(
                 RestBindings.builder().get("/books/{id}", new GetLabeled()).etag(Labeled::label).build());
@@ -61,13 +63,21 @@ class ETagValuesTest {
     }
 
     @Test
-    void formatsWithTheConversionService() {
-        DefaultFormattingConversionService custom = new DefaultFormattingConversionService();
-        custom.addConverter(Long.class, String.class, version -> "v" + version);
-        RouteDefinition versioned = route(
-                RestBindings.builder().get("/books/{id}", new GetVersioned()).etag(Versioned::version).build());
-
-        assertThat(new ETagValues(custom).of(versioned, new Versioned("b", 7))).isEqualTo(new ETag("v7", false));
+    void localDateTimeIsIsoInEveryLocale() {
+        // The review's probe: MVC's default formatting writes "11/7/26, 3:04 PM" (a U+202F space), a 500.
+        RouteDefinition stamped = route(
+                RestBindings.builder().get("/books/{id}", new GetStamped()).etag(Stamped::modified).build());
+        Locale saved = Locale.getDefault();
+        try {
+            for (Locale locale : List.of(Locale.US, Locale.GERMANY, Locale.forLanguageTag("ar-EG"))) {
+                Locale.setDefault(locale);
+                assertThat(etags.of(stamped, new Stamped("b", LocalDateTime.of(2026, 11, 7, 15, 4, 5))))
+                        .as(locale.toLanguageTag())
+                        .isEqualTo(new ETag("2026-11-07T15:04:05", false));
+            }
+        } finally {
+            Locale.setDefault(saved);
+        }
     }
 
     @Test
@@ -113,11 +123,16 @@ class ETagValuesTest {
     @Test
     void headerQuotesTheTag() {
         assertThat(ETagValues.header(new ETag("7", false))).isEqualTo("\"7\"");
-        assertThat(ETagValues.header(new ETag("", false))).isEqualTo("\"\"");
+        // The token every protocol shares: what a gRPC response carries in its etag field for the same value.
+        assertThat(ETagValues.header(new ETag("3", false))).isEqualTo(EntityTags.strong("3"));
+        // of() never returns an empty tag (Spring's ETag.compare never matches one), so header() refuses it too.
+        assertThatIllegalArgumentException().isThrownBy(() -> ETagValues.header(new ETag("", false)));
     }
 
     private static RouteDefinition route(RestBindings bindings) {
-        return new BindingValidator(PagingSettings.defaults()).validate(bindings.routes(), List.of()).getFirst();
+        return new BindingValidator(PagingSettings.defaults())
+                .validate(RestBindingsAccess.routes(bindings), List.of())
+                .getFirst();
     }
 
     record Id(String id) {
@@ -130,6 +145,16 @@ class ETagValuesTest {
     }
 
     record Labeled(String id, @Nullable String label) {
+    }
+
+    record Stamped(String id, LocalDateTime modified) {
+    }
+
+    static class GetStamped implements QueryOperation<Id, Stamped> {
+        @Override
+        public Stamped execute(Id input) {
+            return new Stamped(input.id(), LocalDateTime.MIN);
+        }
     }
 
     static class GetVersioned implements QueryOperation<Id, Versioned> {

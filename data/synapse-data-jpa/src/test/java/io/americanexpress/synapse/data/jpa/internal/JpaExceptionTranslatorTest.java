@@ -14,6 +14,8 @@
 package io.americanexpress.synapse.data.jpa.internal;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
 import jakarta.persistence.LockTimeoutException;
@@ -32,11 +34,15 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.orm.jpa.JpaSystemException;
 
+import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.data.CommitOutcomeUnknownException;
+import io.americanexpress.synapse.data.internal.error.DataExceptionTranslator;
 
 import static io.americanexpress.synapse.test.assertj.SynapseAssertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -171,6 +177,30 @@ class JpaExceptionTranslatorTest {
         return new ConstraintViolationException("could not execute statement",
                 new SQLException("Unique index or primary key violation: '978-0-00-000000-1'", "23505"), SQL, kind,
                 "book_isbn_key");
+    }
+
+    /**
+     * An unknown commit outcome is never decided by the failure Spring attached to it (after a failure the transaction
+     * doesn't roll back for): this translator leaves it to the data translator, which reports it.
+     */
+    @Test
+    void anUnknownCommitOutcomeIsNotDecidedByTheFailureBeforeIt() {
+        CommitOutcomeUnknownException commit = new CommitOutcomeUnknownException(new RuntimeException("I/O error"));
+        commit.initApplicationException(new StaleStateException("Row was updated by another transaction"));
+
+        assertThat(translation(commit)).isEmpty();
+    }
+
+    /** The data translator runs first, then this one; both before translators that declare no order. */
+    @Test
+    void theTranslatorsAreOrdered() {
+        DataExceptionTranslator data = new DataExceptionTranslator();
+        ExceptionTranslator application = exception -> null;
+        List<ExceptionTranslator> translators = new ArrayList<>(List.of(application, translator, data));
+
+        AnnotationAwareOrderComparator.sort(translators);
+
+        assertThat(translators).containsExactly(data, translator, application);
     }
 
     private static QueryTimeoutException hibernateQueryTimeout() {

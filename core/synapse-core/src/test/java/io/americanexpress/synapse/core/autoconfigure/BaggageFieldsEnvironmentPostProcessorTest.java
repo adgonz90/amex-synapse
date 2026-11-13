@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.boot.EnvironmentPostProcessor;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.context.properties.bind.Bindable;
@@ -143,6 +145,147 @@ class BaggageFieldsEnvironmentPostProcessorTest {
     void rejectsReservedNameInAnyCase() {
         userProperties(Map.of("synapse.api.rest.context.headers.correlationid", "X-Corr"));
         assertThatThrownBy(this::process).isInstanceOf(SynapseConfigurationException.class);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"synapse.api.rest.context.headers, error", "synapse.api.rest.context.headers, error.source",
+            "synapse.api.rest.context.headers, '[error.source]'", "synapse.api.grpc.context.metadata, error",
+            "synapse.api.grpc.context.metadata, error.source"})
+    void rejectsAttributeNamedErrorOrUnderError(String attributes, String key) {
+        String name = key.replace("[", "").replace("]", "");
+        userProperties(Map.of(attributes + (key.startsWith("[") ? "" : ".") + key, "x-error"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description()).contains("'" + name + "'", attributes, "ECS", "'error'");
+                    assertThat(ex.action()).contains("error.");
+                });
+    }
+
+    @ParameterizedTest
+    @CsvSource({"synapse.api.rest.context.headers, '[@timestamp]', @timestamp",
+            "synapse.api.rest.context.headers, log, log", "synapse.api.rest.context.headers, log.level, log",
+            "synapse.api.grpc.context.metadata, process, process",
+            "synapse.api.grpc.context.metadata, process.thread.name, process",
+            "synapse.api.rest.context.headers, service, service",
+            "synapse.api.rest.context.headers, service.name, service",
+            "synapse.api.grpc.context.metadata, message, message", "synapse.api.rest.context.headers, tags, tags",
+            "synapse.api.grpc.context.metadata, ecs, ecs", "synapse.api.grpc.context.metadata, ecs.version, ecs"})
+    void rejectsAttributeNamedAfterAnEcsMember(String attributes, String key, String reserved) {
+        String name = key.replace("[", "").replace("]", "");
+        userProperties(Map.of(attributes + (key.startsWith("[") ? "" : ".") + key, "x-value"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description()).contains("'" + name + "'", "'" + reserved + "'", attributes, "ECS");
+                    assertThat(ex.action())
+                            .contains("'" + reserved + "'", "'" + reserved + ".'",
+                                    "@timestamp, log, process, service, message, error, tags and ecs");
+                });
+    }
+
+    @Test
+    void acceptsAttributeNamesThatOnlyLookLikeEcsMembers() {
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put("synapse.api.rest.context.headers.errorSource", "X-Error-Source");
+        user.put("synapse.api.rest.context.headers.errors", "X-Errors");
+        user.put("synapse.api.grpc.context.metadata.Error", "x-error");
+        user.put("synapse.api.grpc.context.metadata.Log", "x-log");
+        user.put("synapse.api.rest.context.headers.timestamp", "X-Timestamp");
+        user.put("synapse.api.rest.context.headers.messages", "X-Messages");
+        user.put("synapse.api.rest.context.headers.serviceName", "X-Service-Name");
+        user.put("synapse.api.grpc.context.metadata.ecsVersion", "x-ecs-version");
+        userProperties(user);
+        process();
+        assertThat(list(CORRELATION_FIELDS))
+                .containsExactlyInAnyOrder("correlationId", "errorSource", "errors", "timestamp", "messages",
+                        "serviceName", "Error", "Log", "ecsVersion");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"synapse.api.rest.context.headers, correlationId.source, correlationId",
+            "synapse.api.grpc.context.metadata, traceId, traceId",
+            "synapse.api.rest.context.headers, traceId.x, traceId", "synapse.api.rest.context.headers, spanId, spanId",
+            "synapse.api.grpc.context.metadata, spanId.x, spanId",
+            "synapse.api.rest.context.headers, operation, operation",
+            "synapse.api.grpc.context.metadata, operation.name, operation",
+            "synapse.api.rest.context.headers, errorCode, errorCode",
+            "synapse.api.grpc.context.metadata, errorCategory.x, errorCategory"})
+    void rejectsAttributeCollidingWithALogField(String attributes, String name, String field) {
+        userProperties(Map.of(attributes + "." + name, "x-value"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description()).contains("'" + name + "'", "'" + field + "'", attributes);
+                    assertThat(ex.action())
+                            .contains("'" + field + "'",
+                                    "correlationId, traceId, spanId, operation, errorCode and errorCategory");
+                });
+    }
+
+    /**
+     * The reason names what would happen: a name equal to an MDC field is the same MDC entry, so one value overwrites
+     * the other; a name equal to a key-value makes Boot's Logback formats drop the line; a dotted name nests.
+     */
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {"traceId | one value would overwrite the other",
+            "correlationId.source | nests a dotted name under its first part",
+            "operation | Boot would drop the lines that carry both",
+            "errorCode.x | nests a dotted name under its first part"})
+    void theReasonFitsTheCollision(String name, String reason) {
+        userProperties(Map.of("synapse.api.rest.context.headers." + name, "x-value"));
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class,
+                        ex -> assertThat(ex.description()).contains(reason));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"synapse.api.rest.context.headers.tenant, synapse.api.rest.context.headers.tenant.region",
+            "synapse.api.rest.context.headers.tenant, synapse.api.grpc.context.metadata.tenant.region",
+            "synapse.api.grpc.context.metadata.tenant.region, synapse.api.rest.context.headers.tenant"})
+    void rejectsAttributeNestedUnderAnother(String first, String second) {
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put(first, "x-a");
+        user.put(second, "x-b");
+        userProperties(user);
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description()).contains("'tenant.region'", "'tenant'", "Duplicate nested pairs");
+                    assertThat(ex.action()).contains("tenant");
+                });
+    }
+
+    @Test
+    void acceptsAttributesThatOnlyShareAPrefix() {
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put("synapse.api.rest.context.headers.tenant", "X-Tenant");
+        user.put("synapse.api.rest.context.headers.tenantRegion", "X-Tenant-Region");
+        user.put("synapse.api.grpc.context.metadata.tenant", "x-tenant");
+        user.put("synapse.api.grpc.context.metadata.traceIdSource", "x-trace-id-source");
+        user.put("synapse.api.grpc.context.metadata.operations", "x-operations");
+        userProperties(user);
+        process();
+        assertThat(list(CORRELATION_FIELDS))
+                .containsExactlyInAnyOrder("correlationId", "tenant", "tenantRegion", "traceIdSource", "operations");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"log.level, log", "traceId, traceId", "spanId.x, spanId", "correlationId.source, correlationId",
+            "errorCode, errorCode", "'a,a.b', a", "'tenant.region', tenant"})
+    void rejectsCorrelationFieldsUnderTheSameRules(String fields, String reserved) {
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put(CORRELATION_FIELDS, fields);
+        user.put("synapse.api.rest.context.headers.tenant", "X-Tenant");
+        userProperties(user);
+        assertThatThrownBy(this::process)
+                .isInstanceOfSatisfying(SynapseConfigurationException.class,
+                        ex -> assertThat(ex.description()).contains(CORRELATION_FIELDS, "'" + reserved + "'"));
+    }
+
+    @Test
+    void acceptsCorrelationFieldsThatRepeatSynapseFields() {
+        userProperties(Map
+                .of(CORRELATION_FIELDS, "correlationId,tenant,region",
+                        "synapse.api.rest.context.headers.tenant", "X-Tenant"));
+        process();
+        assertThat(list(CORRELATION_FIELDS)).containsExactly("correlationId", "tenant", "region");
     }
 
     @Test

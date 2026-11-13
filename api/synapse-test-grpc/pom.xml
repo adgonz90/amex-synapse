@@ -76,6 +76,13 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- SliceChecksCoexistTest: the REST slice's check beside this one (synapse-test-rest depends only on
+             synapse-test and synapse-api-rest, so there is no cycle). -->
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-test-rest</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <!-- MissingGrpcMockIT and UnboundMethodIT launch a @SynapseGrpcTest class whose context must fail, and
                  inspect the failure. -->

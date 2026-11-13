@@ -14,7 +14,8 @@
 -->
 <!--
     Integration tests of synapse-data-jpa and synapse-data-jdbc on one class path: each module's own tests have only
-    one access module, so that a store with access AUTO resolves there. It has test sources only. Never published.
+    one access module, so that a store with access AUTO resolves there. It also starts stores beside an API plugin
+    (gRPC), whose auto-configuration the data modules' own tests don't have. It has test sources only. Never published.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
@@ -52,6 +53,13 @@
         <dependency>
             <groupId>io.americanexpress.synapse</groupId>
             <artifactId>synapse-data-jdbc</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- StoresWithGrpcTest: stores in a service with the gRPC plugin, whose auto-configuration evaluates an
+                 annotation-based @ConditionalOnBean before Synapse's JPA auto-configuration. -->
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-api-grpc</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -112,23 +120,22 @@
             </plugin>
             <plugin>
                 <!-- As in the java-module profile: sets synapse.mockitoAgentArg to Mockito's -javaagent, so Mockito
-                     runs as an agent instead of attaching itself at run time. -->
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-antrun-plugin</artifactId>
+                     runs as an agent instead of attaching itself at run time (parent/synapse-parent/pom.xml explains
+                     the regex). -->
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
                 <executions>
                     <execution>
                         <id>mockito-agent-arg</id>
                         <phase>process-test-classes</phase>
                         <goals>
-                            <goal>run</goal>
+                            <goal>regex-property</goal>
                         </goals>
                         <configuration>
-                            <exportAntProperties>true</exportAntProperties>
-                            <target>
-                                <condition property="synapse.mockitoAgentArg" value="&quot;-javaagent:${org.mockito:mockito-core:jar}&quot;" else="">
-                                    <available file="${org.mockito:mockito-core:jar}"/>
-                                </condition>
-                            </target>
+                            <name>synapse.mockitoAgentArg</name>
+                            <value>"-javaagent:${org.mockito:mockito-core:jar}"</value>
+                            <regex>^"-javaagent:\$\{.*|^(.+)$</regex>
+                            <replacement>$1</replacement>
                         </configuration>
                     </execution>
                 </executions>

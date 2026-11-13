@@ -37,8 +37,13 @@ import org.springframework.boot.health.actuate.endpoint.StatusAggregator;
  * child. Every other setting of the group, and every other group, stays as it is. Without a {@code readiness} group
  * (probes turned off) there is nothing to add to.
  * <p>
- * It has no order, so it runs after Boot's probe post-processor, which replaces the {@code readiness} group whatever
- * the groups it is given hold. The groups it returns keep Boot's additional paths, such as {@code /readyz}.
+ * It has no order, so it runs after Boot's probe post-processor. That post-processor adds Boot's {@code readiness}
+ * group (member {@code readinessState}) only when the application doesn't define one, and otherwise keeps the
+ * application's group as it is. Setting any {@code management.endpoint.health.group.readiness.*} key, such as an
+ * {@code additional-path} of {@code server:/health}, defines the group, and a group without {@code include} has every
+ * indicator, every store's included. So that setup needs {@code include: readinessState} too; the stores that opt in
+ * are then added to it here. The groups it returns keep the additional paths, such as {@code /readyz} or
+ * {@code /health}.
  */
 public final class StoreReadinessGroups implements HealthEndpointGroupsPostProcessor {
 

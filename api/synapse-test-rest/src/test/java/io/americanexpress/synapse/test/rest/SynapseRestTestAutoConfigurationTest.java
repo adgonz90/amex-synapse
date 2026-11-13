@@ -20,31 +20,36 @@ import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import io.americanexpress.synapse.test.slice.BoundOperationMocksCheck;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SynapseRestTestAutoConfigurationTest {
+
+    private static final BoundOperationMocksCheck USER_CHECK = new BoundOperationMocksCheck(Object.class, "user");
 
     private static final AutoConfigurations CONFIGURATION = AutoConfigurations
             .of(SynapseRestTestAutoConfiguration.class);
 
     @Test
-    void registersTheCheckInServletWebApplications() {
+    void restSliceRegistersItsCheck() {
         new WebApplicationContextRunner()
                 .withConfiguration(CONFIGURATION)
                 .run(context -> assertThat(context)
                         .hasSingleBean(BoundOperationMocksCheck.class)
-                        .hasBean("boundOperationMocksCheck"));
+                        .hasBean("synapseRestBoundOperationMocksCheck"));
     }
 
     @Test
-    void backsOffToAUserCheck() {
+    void aUserBeanWithTheSameNameReplacesTheCheck() {
         new WebApplicationContextRunner()
                 .withConfiguration(CONFIGURATION)
                 .withUserConfiguration(UserCheckConfiguration.class)
                 .run(context -> assertThat(context)
                         .hasSingleBean(BoundOperationMocksCheck.class)
-                        .hasBean("userCheck")
-                        .doesNotHaveBean("boundOperationMocksCheck"));
+                        .hasBean("synapseRestBoundOperationMocksCheck")
+                        .getBean("synapseRestBoundOperationMocksCheck")
+                        .isSameAs(USER_CHECK));
     }
 
     @Test
@@ -58,8 +63,8 @@ class SynapseRestTestAutoConfigurationTest {
     static class UserCheckConfiguration {
 
         @Bean
-        static BoundOperationMocksCheck userCheck() {
-            return new BoundOperationMocksCheck();
+        static BoundOperationMocksCheck synapseRestBoundOperationMocksCheck() {
+            return USER_CHECK;
         }
     }
 }

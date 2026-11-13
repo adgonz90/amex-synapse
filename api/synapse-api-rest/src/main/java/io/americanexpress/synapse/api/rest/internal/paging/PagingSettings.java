@@ -36,16 +36,16 @@ public record PagingSettings(String cursor, String offset, String size, String s
         int maxSize) {
 
     /**
-     * Returns the settings from the REST plugin's paging properties and core's page sizes.
+     * Returns the settings from the REST plugin's parameter names and core's offset cap and page sizes.
      *
      * @param paging the {@code synapse.api.rest.paging} properties
-     * @param sizes the {@code synapse.paging} properties
+     * @param core the {@code synapse.paging} properties
      * @return the settings
      */
-    public static PagingSettings of(SynapseRestProperties.Paging paging, SynapsePagingProperties sizes) {
+    public static PagingSettings of(SynapseRestProperties.Paging paging, SynapsePagingProperties core) {
         SynapseRestProperties.Paging.Parameters parameters = paging.parameters();
         return new PagingSettings(parameters.cursor(), parameters.offset(), parameters.size(), parameters.sort(),
-                paging.maxOffset(), sizes.defaultSize(), sizes.maxSize());
+                core.maxOffset(), core.defaultSize(), core.maxSize());
     }
 
     /**

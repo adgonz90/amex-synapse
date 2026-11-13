@@ -33,9 +33,11 @@ import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
-import io.americanexpress.synapse.api.rest.internal.paging.PageCursors;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.internal.paging.PageCursors;
 
 /**
  * Compiles the REST bindings into functional routes at startup. It resolves and checks every route (including the
@@ -64,6 +66,8 @@ public final class RouteCompiler {
 
     private final PageCursors cursors;
 
+    private final PagingSettings paging;
+
     /**
      * Creates the compiler.
      *
@@ -71,12 +75,15 @@ public final class RouteCompiler {
      * @param binder checks and binds the inputs
      * @param writer writes the responses
      * @param cursors unwraps the cursor tokens, and reports a generated cursor key
+     * @param paging the paging settings, for the cursor parameter name a rejected token names
      */
-    public RouteCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer, PageCursors cursors) {
+    public RouteCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer, PageCursors cursors,
+            PagingSettings paging) {
         this.validator = validator;
         this.binder = binder;
         this.writer = writer;
         this.cursors = cursors;
+        this.paging = paging;
     }
 
     /**
@@ -88,13 +95,16 @@ public final class RouteCompiler {
      * @throws SynapseConfigurationException on the first binding mistake
      */
     public RouterFunction<ServerResponse> compile(List<RestBindings> bindings, List<RestConventions> conventions) {
-        List<RouteDefinition> declared = bindings.stream().flatMap(each -> each.routes().stream()).toList();
+        List<RouteDefinition> declared = bindings
+                .stream()
+                .flatMap(each -> RestBindingsAccess.routes(each).stream())
+                .toList();
         List<RouteDefinition> routes = bySpecificity(validator.validate(declared, conventions));
         RouterFunctions.Builder builder = RouterFunctions.route();
         Map<RouteDefinition, OperationHandler> getRoutes = new LinkedHashMap<>();
         for (RouteDefinition route : routes) {
             binder.checkBindable(route);
-            OperationHandler handler = new OperationHandler(route, binder, writer, cursors);
+            OperationHandler handler = new OperationHandler(route, binder, writer, cursors, paging);
             builder.route(predicate(route.method(), route), handler);
             if (HttpMethod.GET.equals(route.method())) {
                 getRoutes.put(route, handler);
@@ -103,7 +113,9 @@ public final class RouteCompiler {
         // HEAD is served by each GET route's handler, after every declared route so a declared HEAD route wins.
         getRoutes.forEach((route, handler) -> builder.route(predicate(HttpMethod.HEAD, route), handler));
         // Every route is checked: a startup that fails on a binding mistake reports nothing.
-        cursors.reportGeneratedKey(routes);
+        if (routes.stream().anyMatch(RouteDefinition::pagedOutput)) {
+            cursors.reportGeneratedKey();
+        }
         return builder.build();
     }
 

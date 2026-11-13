@@ -1,0 +1,23 @@
+# The two databases of the local environment, one per store: docker compose up -d (README.md). Local compose only:
+# the user names and passwords below are for these throwaway containers, and the data modules' config-local.yaml
+# files repeat them. Every other environment gives each store its own credentials through environment variables.
+#
+# The image is the tag with its digest, the one SynapseContainers.POSTGRES_IMAGE pins for the tests, so local runs and
+# the tests use one image, and a re-pushed tag can't change it. Update both together.
+services:
+  orders-db:
+    image: postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+    ports:
+      - "5433:5432"
+  ledger-db:
+    image: postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    environment:
+      POSTGRES_DB: ledger
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+    ports:
+      - "5434:5432"

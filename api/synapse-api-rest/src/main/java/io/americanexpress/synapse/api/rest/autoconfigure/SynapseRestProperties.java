@@ -25,7 +25,6 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.boot.context.properties.bind.Name;
@@ -41,7 +40,7 @@ import org.springframework.util.unit.DataSize;
  * @param maxRequestSize Largest request body accepted unless a route sets its own limit; a larger body gets 413
  *     without being read. Must be positive.
  * @param errors Error status overrides for every operation.
- * @param paging Paging settings.
+ * @param paging Paging settings: the names of the paging query parameters.
  * @param operations Settings per operation, keyed by operation name.
  * @param cors Cross-origin resource sharing (CORS) settings of the REST routes.
  */
@@ -128,27 +127,12 @@ public record SynapseRestProperties(@DefaultValue Context context, @DefaultValue
     }
 
     /**
-     * Paging settings.
+     * Paging settings of the REST edge. The page sizes, the offset cap and the cursor keys are core's, under
+     * synapse.paging.
      *
      * @param parameters Names of the paging query parameters.
-     * @param maxOffset Largest offset a caller may request; a larger one is rejected before the operation runs. Must
-     *     not be negative.
-     * @param cursor Settings of the opaque cursors the plugin issues.
      */
-    public record Paging(@DefaultValue Parameters parameters, @DefaultValue("1000") long maxOffset,
-            @DefaultValue Cursor cursor) {
-
-        /**
-         * Validates the properties.
-         *
-         * @throws IllegalArgumentException when the offset limit is negative
-         */
-        public Paging {
-            if (maxOffset < 0) {
-                throw new IllegalArgumentException(
-                        "synapse.api.rest.paging.max-offset must not be negative but was " + maxOffset);
-            }
-        }
+    public record Paging(@DefaultValue Parameters parameters) {
 
         /**
          * Names of the paging query parameters, as callers send them.
@@ -185,45 +169,8 @@ public record SynapseRestProperties(@DefaultValue Context context, @DefaultValue
                 }
             }
         }
-
-        /**
-         * Cursor settings.
-         *
-         * @param key Base64 key that encrypts cursors; whitespace around it is ignored. When unset or blank, a key is
-         *     generated at startup.
-         * @param previousKeys Earlier keys, used only to read cursors issued before a key rotation. Blank entries are
-         *     ignored.
-         * @param maxAge How long a cursor stays valid. When unset, cursors do not expire. Must be positive when set.
-         */
-        public record Cursor(@Nullable String key, List<String> previousKeys, @Nullable Duration maxAge) {
-
-            /**
-             * Normalizes and validates the properties.
-             *
-             * @throws IllegalArgumentException when the maximum age is not positive
-             */
-            public Cursor {
-                previousKeys = previousKeys == null ? List.of() : List.copyOf(previousKeys);
-                if (maxAge != null && (maxAge.isZero() || maxAge.isNegative())) {
-                    throw new IllegalArgumentException(
-                            "synapse.api.rest.paging.cursor.max-age must be positive but was " + maxAge);
-                }
-            }
-
-            /**
-             * Describes the settings without key material.
-             *
-             * @return whether the key is set (a blank key is not), how many non-blank previous keys there are, and the
-             *     maximum age
-             */
-            @Override
-            public String toString() {
-                long previous = previousKeys.stream().filter(previousKey -> !previousKey.isBlank()).count();
-                return "Cursor[key=" + (key == null || key.isBlank() ? "unset" : "set") + ", previousKeys=" + previous
-                        + ", maxAge=" + maxAge + "]";
-            }
-        }
     }
+
     /**
      * Settings of one operation.
      *

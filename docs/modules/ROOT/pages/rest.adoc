@@ -279,8 +279,9 @@ RestBindings books(SearchBooksOperation searchBooks) {
 [cols="1,3,4",options="header"]
 |===
 |Parameter |Name property |Value
-|`cursor` |`synapse.api.rest.paging.parameters.cursor` |A token from a previous page (its `nextCursor` or `Link`).
-|`offset` |`synapse.api.rest.paging.parameters.offset` |Items to skip: 0 to `synapse.api.rest.paging.max-offset`
+|`cursor` |`synapse.api.rest.paging.parameters.cursor` |A token from a previous page (its `nextCursor` or `Link`), or a
+gRPC `next_page_token` for the same operation (see <<cursors>>).
+|`offset` |`synapse.api.rest.paging.parameters.offset` |Items to skip: 0 to `synapse.paging.max-offset`
 (1000), inclusive.
 |`size` |`synapse.api.rest.paging.parameters.size` |Page size: 1 to `synapse.paging.max-size` (100). Without it,
 `synapse.paging.default-size` (20).
@@ -318,7 +319,9 @@ and the operation is not called:
 |`cursor`, `offset` or `size` repeated |`must have a single value`
 |`cursor` together with `offset` |`{cursor, must not be combined with offset}`
 |A cursor the codec rejects |`{cursor, is not valid for this request}`
-|`sort` on a route without `.sortable` |`{sort, is not supported by this route}`
+|A cursor token that carries an offset above `max-offset` (issued before the cap was lowered) |`{cursor, must be less
+than or equal to 1000}` (the cap)
+|`sort` on a route without `.sortable` |`{sort, is not supported}` (gRPC's `order_by` says the same)
 |A key `.sortable` doesn't allow |`{sort, has a key that is not allowed (allowed: title, publishedAt)}`
 |An empty key (`sort=title,,year`) or a lone `-` |`{sort, is not a valid value}`
 |A key named twice (`sort=title,-title`) |`{sort, names a key more than once}`
@@ -364,7 +367,15 @@ strategy):
 ----
 
 `items` and `hasNext` are always written (an empty page is `"items":[]`); `nextCursor` and `total` are left out when
-they are `null`. `nextCursor` is a token that wraps the operation's own cursor (see <<cursors>>).
+they are `null`. `nextCursor` is the token of the next page (see <<cursors>>), the same token gRPC writes to
+`next_page_token`, by the rule of the `Link` below:
+
+* none when `hasNext` is `false`, even if the operation returned a cursor;
+* the operation's next cursor, wrapped, when it returned one;
+* otherwise, when the request had no cursor, a token that carries the next offset (the request's `offset`, or 0, plus
+  its size), unless that is over `max-offset`. This holds on every method, so a `POST` search of an operation that
+  pages by offset only (`PageResult.of(items, hasNext)`) pages with `nextCursor` too;
+* otherwise none: a cursor page that returns no cursor can't continue by offset.
 
 On `GET` and `HEAD`, a page with `hasNext` also gets a relative `Link` to the next page:
 
@@ -382,8 +393,8 @@ Link: </books?sort=title&size=2&cursor=AdBO4qUFIR4mf5sIkyAQ6cjvMVBF>; rel="next"
   cursor page can't continue by offset.
 * When the next offset would be over `max-offset`, there is no link, although `hasNext` is `true`: past the cap,
   callers page by cursor.
-* Other methods (a `POST` search) get no `Link`; they page with `nextCursor`. A route whose input has no `PageQuery`
-  gets no `Link` either.
+* Other methods (a `POST` search) get no `Link`; they page with `nextCursor`, cursor or offset. A route whose input
+  has no `PageQuery` gets no `Link` either.
 
 `PageResult` must be the operation's direct output. `Optional<PageResult<...>>`, `List<PageResult<...>>`, a page of
 pages (`PageResult<PageResult<...>>`), or a `PageResult` inside a component, collection, map or `Optional` of the
@@ -398,6 +409,12 @@ The operation returns its own cursor in `PageResult.nextCursor()`, such as the k
 sends it to the client: it encrypts it into an opaque token, and when the client sends the token back, the operation
 receives its own cursor again in `PageQuery.cursor()`.
 
+The `cursor` parameter also accepts a token that carries a next offset, which gRPC writes to `next_page_token` for a
+page that has a next page but no cursor (`PageResult.of(items, true)`; see xref:grpc.adoc#paging[gRPC paging]). The
+operation then receives `PageQuery(null, offset, size, sort)`, as if the request had sent `offset`. The token has the
+same scope as a cursor token, and its offset is checked against the current `max-offset` when it comes back. REST's
+body `nextCursor` carries such a token for its own offset pages too; its `Link` still uses `offset`.
+
 A token is bound to:
 
 * the operation, not the route: a token from `GET /books` works on `POST /books/search` when both call the same
@@ -409,9 +426,13 @@ A token is bound to:
 The page size is not bound, so a client may change it between pages. The `Link` repeats the sort and filters; a client
 that follows `nextCursor` must send them again itself, and a `POST` search must send the same body.
 
-The digest is a SHA-256 of a canonical form of the input:
+The digest is core's: a SHA-256 of a canonical form of the input, the same for every protocol.
 
-* The `PageQuery` component and the components bound from `If-Match` or `If-None-Match` are left out.
+* Every `PageQuery` component and every `VersionCondition` component is left out, by its type. On REST these are the
+  paging parameters and the components bound from `If-Match` or `If-None-Match`, since only a `VersionCondition` can
+  bind those headers.
+* On a versioned route, the route's version is written beside the components as `@version`, parsed (`1` and `1.0`
+  are both `1.0.0`). Routes of one operation whose versions parse equal share their tokens.
 * The canonical form is Synapse's own: it ignores the application's Jackson annotations, mix-ins and modules, so
   `@JsonIgnore` or a custom serializer can't hide a component or make two values look alike. Maps are sorted by key
   and set elements are sorted, so their order doesn't matter.
@@ -430,7 +451,7 @@ A value the digest still can't write fails the request with `INTERNAL` (500); it
 
 A token that is malformed, changed, issued by an instance with another key, issued for another operation, sort or
 filters, or expired is the one violation `{cursor, is not valid for this request}`, whatever the reason, and the
-operation is not called. The reason is logged at DEBUG on `io.americanexpress.synapse.api.rest`; the token and its
+operation is not called. The reason is logged at DEBUG on `io.americanexpress.synapse.core`; the token and its
 contents never are. With payload logging on (`synapse.operations.<name>.logging.payloads`), `PageQuery.cursor` and
 `PageResult.nextCursor` are masked (`"***"`) in the logged input and output; the page body is not affected. Tokens
 longer than 1024 characters are rejected. A raw cursor longer than 512 UTF-8 bytes is an operation bug and fails the
@@ -444,29 +465,31 @@ unchanged.
 
 === Cursor keys
 
-The default codec encrypts tokens with AES-256-GCM. Set the key, the same on every instance:
+The default codec is core's, and every API plugin of the application shares it, with its keys under
+`synapse.paging.cursor.*`. It encrypts tokens with AES-256-GCM. Set the key, the same on every instance:
 
 [source,properties]
 ----
 # openssl rand -base64 32
-synapse.api.rest.paging.cursor.key=${CURSOR_KEY}
+synapse.paging.cursor.key=${CURSOR_KEY}
 ----
 
 * The key is base64 (standard or URL-safe alphabet, padding optional) of exactly 32 bytes, a 256-bit AES key.
   Whitespace around it is ignored, such as the newline at the end of a key read from a file. Any other value fails
   startup with a message that names the property, never the value.
-* An unset or blank key (`${CURSOR_KEY:}` without the variable) makes the plugin generate a key at startup. Cursors
-  then fail with 400 after a restart and on another instance. When at least one route returns `PageResult`, startup
-  logs once on `io.americanexpress.synapse.api.rest`, at WARN in every environment:
+* An unset or blank key (`${CURSOR_KEY:}` without the variable) makes core generate a key at startup. Cursors then
+  fail with 400 after a restart and on another instance. When at least one route returns `PageResult`, startup logs
+  once on `io.americanexpress.synapse.core`, at WARN in every environment (once per application, whichever plugins
+  have paged routes or methods):
 +
 ----
-synapse.api.rest.paging.cursor.key is not set, so paging cursors are encrypted with a key generated at startup: a
-cursor fails with 400 after a restart or on another instance. Set the same base64 256-bit key on every instance (for
-example: openssl rand -base64 32).
+synapse.paging.cursor.key is not set, so paging cursors are encrypted with a key generated at startup: a cursor is
+rejected after a restart or on another instance. Set the same base64 256-bit key on every instance (for example:
+openssl rand -base64 32).
 ----
-* `synapse.api.rest.paging.cursor.previous-keys` lists earlier keys, which only decrypt. Blank entries are ignored; a
+* `synapse.paging.cursor.previous-keys` lists earlier keys, which only decrypt. Blank entries are ignored; a
   key listed twice, or the current key listed again, fails startup.
-* `synapse.api.rest.paging.cursor.max-age` (a `Duration`, unset by default) rejects tokens older than that. Unset,
+* `synapse.paging.cursor.max-age` (a `Duration`, unset by default) rejects tokens older than that. Unset,
   tokens don't expire. When set, it must be positive: zero or a negative duration fails startup. The issue time comes
   from the application's `Clock` bean.
 * Use one key per service. A token is bound to the operation name, not to the application, so two services that share
@@ -485,7 +508,7 @@ key, counted across every instance that shares it, and every page that returns a
 
 === Replacing the codec
 
-`CursorCodec` (in `io.americanexpress.synapse.api.rest.paging`, incubating) turns raw cursors into tokens and back.
+`CursorCodec` (in core's `io.americanexpress.synapse.core.paging`, incubating) turns raw cursors into tokens and back.
 Define a bean of that type to replace the default `synapseCursorCodec`, for example for approved or KMS-backed
 cryptography:
 
@@ -498,8 +521,8 @@ cryptography:
   violation; any other exception is `INTERNAL` (500);
 * neither may log or return a token's contents, a raw cursor or key material.
 
-The `cursor.*` properties and the generated-key log line belong to the default codec. Synapse uses no HMAC for
-cursors: the default codec is JDK AES-GCM, and the digest a plain SHA-256.
+The `synapse.paging.cursor.*` properties and the generated-key log line belong to the default codec. Synapse uses no
+HMAC for cursors: the default codec is JDK AES-GCM, and the digest a plain SHA-256.
 
 WARNING: An escape-hatch `@RestController` (see <<escape-hatch>>) that returns a `PageResult` is not wrapped. Spring
 MVC writes it with its own converters, so the client receives the operation's raw cursor as `nextCursor`, and the
@@ -519,9 +542,8 @@ binds it back from `If-Match`.
 .post("/books", createBook).created(book -> "/books/" + book.id()).etag(Book::version)
 ----
 
-* `.etag(component)` names a string, number, boolean, enum or `java.time` component of the output record (not a
-  `UUID`). It is formatted with Spring MVC's conversion service, sent as a strong tag (`ETag: "7"`), and stays in the
-  body.
+* `.etag(component)` names a component of a version type of the output record (see <<version-tokens>>). It is
+  formatted as a version token, sent as a strong tag (`ETag: "7"`), and stays in the body.
 * A 200 to `GET` or `HEAD` (the implicit `HEAD` included) carries `ETag`, `Cache-Control: no-cache` and `Vary: Accept`.
   A 201 to `POST` carries `ETag` only.
 * `If-None-Match` on `GET` and `HEAD` is evaluated after the operation, only when the answer would be 200 with an
@@ -533,6 +555,27 @@ binds it back from `If-Match`.
 * A `null` component sends no `ETag`, no caching headers and no 304.
 * An empty value, or one with a character an entity tag can't carry (a double quote, a space, a control character,
   DEL, or anything above U+00FF), is an operation bug: `INTERNAL` (500).
+
+[#version-tokens]
+==== Version tokens
+
+The value inside an entity tag's quotes is a version token, written and read by one codec in core, the same one
+gRPC uses for its `etag` field (see xref:grpc.adoc#versions[gRPC versions]). It never uses Spring MVC's conversion
+service, `spring.mvc.format.*`, formatting annotations or the locale, so a token is the same on every instance and
+over every protocol:
+
+[cols="2,3",options="header"]
+|===
+|Version type |Token
+|`String` (or `CharSequence`) |The string itself: non-empty, and only characters an entity tag can carry
+|`byte`, `short`, `int`, `long` (boxed or not), `BigInteger` |Plain decimal: `7`, `-3`. A leading `+` or zero, `0x`,
+an exponent or a space is not a version.
+|`Instant`, `LocalDate`, `LocalDateTime`, `LocalTime`, `OffsetDateTime`, `OffsetTime`, `ZonedDateTime`, `Year`,
+`YearMonth` |ISO-8601, as the type's `toString` writes it: `2026-11-07T15:04:05`, `2026-11-07`
+|===
+
+These are the only version types, for `.etag` and for the version type of a `VersionCondition`: anything else
+(a `double`, a `boolean`, an enum, a `UUID`) fails startup.
 
 `.etag` is allowed on `GET`, on a declared `HEAD`, and on a `POST` with `.created(...)`. Startup fails when it is
 declared on `PUT` or `DELETE` (RFC 9110 section 9.3.4: a write's response carries no validator; clients take the new
@@ -567,7 +610,8 @@ On a write (every method but `GET` and `HEAD`), a component bound from `If-Match
 `VersionCondition` that declares a concrete version type (`VersionCondition<Long>`, not a raw
 `VersionCondition`, `VersionCondition<?>`, or `VersionCondition<Object>`, `<Serializable>` or another abstract
 supertype of `String` other than `CharSequence`, which would keep the text and never equal the version), so that `*`
-and an absent header stay apart. On a read, such a component must be `@Nullable`: a read can't require a
+and an absent header stay apart. The version type is one of the <<version-tokens,version types>>. On a read, such a
+component must be `@Nullable`: a read can't require a
 precondition. One component at most is bound from each header
 (a `RestConventions` header rule for `VersionCondition` works too), and a `VersionCondition` binds only from these two
 headers, `.context` or `.from`. Anything else fails startup, a plain type included:
@@ -584,14 +628,15 @@ The header is parsed strictly as RFC 9110 entity tags:
 |`If-Match` |`version` |Answer
 |Absent |`null` |The operation runs (an unconditional write). When the component isn't `@Nullable`, 428
 `PRECONDITION_REQUIRED` instead, and the operation is not called.
-|`"5"` |`Version(5)`, the tag's value converted to `V` |The operation runs and checks version 5.
+|`"5"` |`Version(5)`, the tag's value read as a `V` version token (<<version-tokens>>) |The operation runs and checks
+version 5.
 |`*` |`AnyVersion` |The operation runs; `*` counts as present, also when the header is required. A missing resource
 is the operation's 404.
 |`W/"5"` (weak) | |412 `PRECONDITION_FAILED`: a weak tag never matches a write. The operation is not called.
 |`"5", "6"`, or two header lines | |400, violation `{version, must be a single entity tag}`
 |`5` (unquoted), malformed, empty, an empty list element (`"5",,`), `*` with tags | |400, violation
 `{version, must be an entity tag}`
-|`"abc"` or `""` for a `Long` | |400, violation `{version, is not a valid value}`
+|`""` (for every version type), or `"abc"` for a `Long` | |400, violation `{version, is not a valid value}`
 |===
 
 A JSON body may carry the component too, for example a resource read with `GET` and sent back with `PUT`. Its
@@ -946,6 +991,7 @@ With Spring Security, such a failure (in the form content filter, `-9900`) happe
 the answer doesn't pass through Spring Security's ERROR-dispatch chain: an unauthenticated caller that sends a
 malformed or oversized body gets the 400 or 413 problem, not 401.
 
+[#correlation-id]
 == Correlation id and context
 
 The edge opens the Synapse `RequestContext` for every request, inside the span of Boot's server observation, so the
@@ -968,6 +1014,19 @@ Attributes are read in this order, so when there are more than the context limit
 * *Locale:* from `Accept-Language`, only when the header is present.
 
 Synapse adds `correlationId` and the attribute names to Boot's baggage remote fields and correlation (MDC) fields.
+So each attribute is a field of every log line in the request. A name that collides with another field would
+overwrite it, or be overwritten (the MDC holds one value per name), or make Boot drop the lines that carry both (a
+key-value of the same name on Logback, or a dotted name that ECS nests). Startup fails when an attribute's name is one
+of these, or starts with one followed by a dot:
+
+* a top-level field Boot's ECS log format writes itself (`@timestamp`, `log`, `process`, `service`, `message`,
+  `error`, `tags` or `ecs`), such as `log.level`;
+* a log field Synapse or Boot's tracing sets (`correlationId`, `traceId`, `spanId`, `operation`, `errorCode` or
+  `errorCategory`), such as `traceId.x`;
+* another attribute's name, such as `tenant` and `tenant.region`.
+
+The same name here and under `synapse.api.grpc.context.metadata` is one attribute. See
+xref:logging-log4j2.adoc#ecs[ECS JSON by default] for why.
 
 === Baggage and trust
 
@@ -994,8 +1053,10 @@ The correlation header must not be a baggage, remote-field or trace header, or u
 fails when it is (see xref:core.adoc#correlation-id[Correlation id]).
 
 WARNING: The masking works on the HTTP headers that Boot's OpenTelemetry bridge reads. The OpenTelemetry Java agent
-reads the caller's trace and baggage before any servlet filter runs, so under the agent `trusted=false` does not yet
-restart the trace or drop the caller's baggage. A Synapse agent extension that closes this gap is planned.
+reads the caller's trace and baggage before any servlet filter runs, so under the agent `trusted=false` does not
+restart the trace, and dropping the caller's baggage is not verified. A Synapse agent extension that closes this gap is
+planned; until then,
+see xref:opentelemetry-agent.adoc#untrusted[the agent page] for the setting that restarts the trace.
 
 Never base a security decision on an attribute or on baggage; callers control them.
 
@@ -1278,17 +1339,18 @@ covering every method reference created in that class. So:
 The types of operation inputs and outputs are registered by core, and the plugin registers the page body it writes
 for a `PageResult`. Spring's AOT processing of a REST service is tested on the JVM; whether a native image also needs
 metadata for the lambdas' `writeReplace` method is not verified yet, and will be checked by the native build of the
-reference application. That build will also verify AES-GCM cursors and the `@JsonProperty` names of sort-key enums
+reference application in P4. That build will also verify AES-GCM cursors and the `@JsonProperty` names of sort-key enums
 in a native image.
 
 == Configuration
 
 The REST properties are `synapse.api.rest.*`; all are in the
-xref:reference/configuration-properties.adoc[property reference]. The paging settings are under
-`synapse.api.rest.paging.*`: the parameter names (`parameters.cursor`, `.offset`, `.size`, `.sort`), `max-offset`, and
-the cursor `key`, `previous-keys` and `max-age` (see <<paging>>). The CORS settings are under
+xref:reference/configuration-properties.adoc[property reference]. The paging parameter names are under
+`synapse.api.rest.paging.parameters.*` (`cursor`, `offset`, `size`, `sort`); the offset cap
+(`synapse.paging.max-offset`) and the cursor `key`, `previous-keys` and `max-age` (`synapse.paging.cursor.*`) are
+core's (see <<paging>>). The CORS settings are under
 `synapse.api.rest.cors.*`: `allowed-origins`, `allowed-methods`, `allowed-headers`, `exposed-headers`,
 `allow-credentials` and `max-age` (see <<cors>>). API versioning is tuned with Boot's `spring.mvc.apiversion.*` (see
 <<versioning>>). The plugin also reads core's
 `synapse.correlation.*`, `synapse.context.inbound.*`, `synapse.errors.*` and `synapse.paging.*` (the default and
-largest page size).
+largest page size, the offset cap and the cursor keys).

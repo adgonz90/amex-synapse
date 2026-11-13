@@ -1,0 +1,13 @@
+# The ${serviceName} store in the build environment. This file exists for the image's training run and for -Paot: the
+# Dockerfile's AOT-cache training run, and the one of synapse-parent's -Pimage, start the service in this environment
+# and exit as soon as the context is refreshed (spring.context.exit=onRefresh), and spring-boot:process-aot (with
+# -Paot) runs it here too. None of them connects. AOT processing creates some of the store's beans (its dialects are
+# chosen from the url), and the store migrates only when its lifecycle starts, which the training run exits before. So
+# the url names a closed port, and the credentials are placeholders. Nothing here is a secret.
+synapse:
+  data:
+    stores:
+      ${serviceName}:
+        url: jdbc:postgresql://127.0.0.1:1/${serviceName}
+        username: build
+        password: ""

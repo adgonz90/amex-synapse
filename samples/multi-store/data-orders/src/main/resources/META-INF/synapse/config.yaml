@@ -1,0 +1,15 @@
+# The orders store's settings for every environment. They ship in this module's jar, so a service that depends on the
+# module gets them without referencing anything; the service's own application*.yaml files win over them. Where to
+# connect is not here: it differs per environment (config-<env>.yaml), and the tests connect to a container.
+synapse:
+  data:
+    stores:
+      orders:
+        hikari:
+          # At most 5 connections per instance (Hikari's default is 10). Startup logs the budget of every store.
+          maximum-pool-size: 5
+        health:
+          # The store joins the readiness group: while it is down, the service reports itself not ready (503 on
+          # /health), so the platform stops sending it traffic. A store that doesn't set this (the ledger) shows in
+          # /actuator/health but never takes the service out of rotation.
+          readiness: true

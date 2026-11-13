@@ -77,10 +77,10 @@ as their qualifier (`legacy-orders`). Every store has:
 |===
 
 A JPA store adds `<p>PersistenceManagedTypes`, `<p>EntityManagerFactory`, `<p>TransactionManager`
-(`JpaTransactionManager`), `<p>SchemaAction` and its repositories. A JDBC store adds `<p>TransactionManager`
-(`JdbcTransactionManager`), `<p>JdbcDialect`, `<p>RelationalManagedTypes`, `<p>JdbcCustomConversions`,
-`<p>JdbcMappingContext`, `<p>JdbcConverter`, `<p>DataAccessStrategy`, `<p>JdbcAggregateTemplate` and its
-repositories. The persistence unit name is the store name.
+(`SynapseJpaTransactionManager`, see <<transaction-managers>>), `<p>SchemaAction` and its repositories. A JDBC store
+adds `<p>TransactionManager` (`SynapseJdbcTransactionManager`), `<p>JdbcDialect`, `<p>RelationalManagedTypes`,
+`<p>JdbcCustomConversions`, `<p>JdbcMappingContext`, `<p>JdbcConverter`, `<p>DataAccessStrategy`,
+`<p>JdbcAggregateTemplate` and its repositories. The persistence unit name is the store name.
 
 Inject a store's beans by qualifier:
 
@@ -91,6 +91,16 @@ BooksQueries(@Qualifier("books") JdbcClient jdbc) { ... }
 
 A repository fragment injects the store's `EntityManager` the same way, `@Qualifier("books") EntityManager`, or with
 `@PersistenceContext(unitName = "books")`.
+
+A condition on a store's beans goes in an auto-configuration ordered after the access module's:
+`@AutoConfiguration(after = SynapseDataJpaAutoConfiguration.class)` (or `SynapseDataJdbcAutoConfiguration`). The
+store's beans are defined while the application's configuration is read, but Synapse's auto-configuration defines the
+factories that make them. Until it has, a lookup by type without eager initialization, which is what Boot's
+type-based conditions use (`@ConditionalOnBean(DataSource.class)`,
+`@ConditionalOnMissingBean(EntityManagerFactory.class)`), doesn't see the store's beans: Spring skips a bean whose
+factory isn't defined yet. An eager `getBeansOfType` does see them. A `@ConditionalOnMissingBean` processed that early
+would add a second bean. A lookup by annotation, such as `@ConditionalOnBean(annotation = ...)`, sees them at any
+point.
 
 [#replacing]
 === Replacing a bean
@@ -106,8 +116,10 @@ it gets the store's qualifier (unless it names one of its own) and is primary ex
 public class NotesStore {
 
     @Bean
-    JdbcTransactionManager notesTransactionManager(@Qualifier("notes") DataSource dataSource) {
-        return new JdbcTransactionManager(dataSource);
+    SynapseJdbcTransactionManager notesTransactionManager(@Qualifier("notes") DataSource dataSource) {
+        SynapseJdbcTransactionManager transactionManager = new SynapseJdbcTransactionManager(dataSource);
+        transactionManager.setDefaultTimeout(30);
+        return transactionManager;
     }
 }
 ----
@@ -124,6 +136,32 @@ What a replacement loses:
   can't use `ddl-auto: update`.
 * A replaced `<p>JdbcAggregateTemplate` has none of Synapse's callbacks. Add an `IdGeneratingEntityCallback` for
   `@Sequence` ids yourself.
+* A replaced `<p>TransactionManager` that isn't a `SynapseJdbcTransactionManager` or `SynapseJpaTransactionManager`
+  (or a subclass) loses what they add (see <<transaction-managers>>). With a plain `JpaTransactionManager` or
+  `DataSourceTransactionManager`, a connection lost while a transaction commits is a retryable `UNAVAILABLE`, not
+  `COMMIT_OUTCOME_UNKNOWN`, so a retry can write twice; with a plain `JpaTransactionManager`, a failed rollback also
+  hides the failure it replaced. The startup report logs a WARN naming the store. Extend Synapse's manager instead,
+  as above. The check doesn't create the bean. With lazy initialization, a replacement not created yet whose `@Bean`
+  method declares a supertype (`PlatformTransactionManager`, or `DataSourceTransactionManager`) can't be told apart
+  from a subclass, so its WARN says so; declare the replacement's own type to have it checked.
+
+[#transaction-managers]
+==== The store transaction managers
+
+`io.americanexpress.synapse.data.jdbc.SynapseJdbcTransactionManager` (a `JdbcTransactionManager`) and
+`io.americanexpress.synapse.data.jpa.SynapseJpaTransactionManager` (a `JpaTransactionManager`) are what Synapse
+builds for each store, and the classes to extend in a replacement. They add two things to Spring's:
+
+* *Commit-outcome detection.* A connection lost while the transaction commits is reported as
+  `COMMIT_OUTCOME_UNKNOWN`, not a retryable `UNAVAILABLE` (see <<commit-outcome-unknown>>).
+* *The original failure.* A rollback that fails is a `TransactionSystemException`, which keeps the failure the
+  rollback replaced as its application exception, so the translators decide by that failure (see
+  <<lost-connection>>). Spring's managers do so only for some failures: `JdbcTransactionManager` reports a rollback
+  failure whose SQLState it translates (an I/O error, say) as that `DataAccessException`, and
+  `JpaTransactionManager` reports every one as a `DataAccessException`. The JPA manager also flushes before it
+  commits, so a connection lost in that flush is a statement failure (`UNAVAILABLE`), not an unknown commit outcome.
+
+A subclass that overrides `doCommit` or `doRollback` calls `super` to keep them.
 
 [#keys]
 == Keys
@@ -425,6 +463,17 @@ On a unique violation, Hibernate logs the database's message, which carries the 
 logger `org.hibernate.orm.jdbc.error`. It goes to the server log only. A service that must keep such values out of its
 logs sets that logger's level.
 
+[#paging]
+=== Paging a repository
+
+`SpringDataPages.pageable(PageQuery)` turns an operation's `PageQuery` into a `Pageable` for a repository method, and
+`SpringDataPages.from(Page)` or `from(Slice)` turns the result into a `PageResult` (see xref:core.adoc#paging[Paging]).
+The sort keys reach Spring Data as entity properties, unchanged. For keys declared with `.sortable(SortKey.class)`,
+they are the enum constants' names (`PUBLISHED_YEAR`), which Spring Data rejects unless the entity has a property of
+that name. Name the constants after the entity's properties, or map each key to its property before calling
+`pageable`, as the reference bookstore's `SearchBooksOperation` does. The mapping is shown in
+xref:core.adoc#paging[Paging].
+
 [#ids]
 == Entity bases and ids
 
@@ -506,8 +555,17 @@ them. `@Table("name")` is case-sensitive (the name is quoted).
 == Error translation
 
 Data access failures become Synapse errors (see xref:core.adoc#errors[Errors]). The translators walk the cause chain
-to depth 10, so a failure wrapped at commit is still found. The caller sees only the code's message; the exception is
-logged on the server side.
+to depth 10, so a failure wrapped at commit is still found. The caller sees the code, and the code's message only as
+the detail (`synapse.errors.include-detail`); the exception is logged on the server side. Core's
+`ConstraintViolationTranslator` (`@Order(0)`) runs first, then the data translator (`Ordered`,
+`LOWEST_PRECEDENCE - 100`), then the JPA one (`- 90`).
+
+IMPORTANT: Changed behaviour. An application `ExceptionTranslator` bean that declares no order now runs after
+Synapse's data translators. It used to run before them (unordered beans ran in registration order, and an
+application's own beans register first), so a translator of its own for, say,
+`DuplicateKeyException` or `OptimisticLockingFailureException` is pre-empted. Give it an `@Order` (or implement
+`Ordered`) with a higher precedence than `LOWEST_PRECEDENCE - 100` to run it first, or replace Synapse's by its bean
+name (`synapseDataExceptionTranslator`, `synapseJpaExceptionTranslator`).
 
 [cols="3,2",options="header"]
 |===
@@ -515,8 +573,10 @@ logged on the server side.
 |Optimistic lock (`@Version`): Spring's `OptimisticLockingFailureException`, JPA's `OptimisticLockException`, Hibernate's `StaleStateException` |`STALE_VERSION`
 |Unique constraint: Spring's `DuplicateKeyException`, a Hibernate `ConstraintViolationException` of kind `UNIQUE` |`ALREADY_EXISTS`
 |Query timeout: Spring's, JPA's or Hibernate's `QueryTimeoutException` |`DEADLINE_EXCEEDED`
-|Connection failure, a transaction that can't begin: `DataAccessResourceFailureException`, `TransientDataAccessResourceException`, `CannotCreateTransactionException` |`UNAVAILABLE`
-|Anything else, such as a NOT NULL or foreign key violation |`INTERNAL`
+|Connection failure, a transaction that can't begin: `DataAccessResourceFailureException`, `TransientDataAccessResourceException`, `CannotCreateTransactionException`, `SQLNonTransientConnectionException`, `SQLTransientConnectionException`, or an `SQLException` of SQLState class 08 or PostgreSQL's 57P01, 57P02 or 57P03 |`UNAVAILABLE`
+|A commit that lost its connection, which a store's transaction manager reports as a `CommitOutcomeUnknownException`, or SQLState 08007 anywhere in the causes (see <<commit-outcome-unknown>>) |`COMMIT_OUTCOME_UNKNOWN`
+|A rollback that failed after the application's failure: that failure alone decides (see <<lost-connection>>) |that failure's code
+|Anything else, such as a NOT NULL or foreign key violation, or a rollback that failed with no failure to replace |`INTERNAL`
 |===
 
 `ALREADY_EXISTS` and `STALE_VERSION` are `CONFLICT` (409 over REST). Observed on PostgreSQL 18.6 with PgJDBC 42.7.14:
@@ -531,12 +591,113 @@ logged on the server side.
 |`lock_timeout` |55P03 |`UncategorizedSQLException` (JDBC), `PessimisticLockException` (JPA) |`INTERNAL`
 |Serialization failure |40001 |`CannotAcquireLockException` |`INTERNAL`
 |Deadlock |40P01 |`PessimisticLockingFailureException` |`INTERNAL`
+|Connection ended in a transaction, JDBC |57P01 |`TransactionSystemException` (the rollback), holding a `DataAccessResourceFailureException` as its application exception |`UNAVAILABLE`
+|Connection ended before the commit, JDBC |57P01 |`CommitOutcomeUnknownException` (the commit), no rollback |`COMMIT_OUTCOME_UNKNOWN`
+|Connection ended in a transaction, JPA |57P01 |`TransactionSystemException` (the rollback), holding a `DataAccessResourceFailureException` as its application exception |`UNAVAILABLE`
+|Connection ended before the commit, JPA, changes unflushed |57P01 |`DataAccessResourceFailureException` (the manager's flush before the commit); the transaction completes as rolled back |`UNAVAILABLE`
+|Connection ended before the commit, JPA, changes flushed |57P01 |`CommitOutcomeUnknownException` (the commit) |`COMMIT_OUTCOME_UNKNOWN`
+|COMMIT applied, its reply lost, JDBC |08006 |`CommitOutcomeUnknownException` (the commit); the row is committed |`COMMIT_OUTCOME_UNKNOWN`
+|`FOR UPDATE` with an aggregate in a transaction, JDBC or JPA |0A000 |`TransactionSystemException` (the rollback, on the connection Hikari closed) |`INTERNAL`
 |===
 
 * 57014 is PostgreSQL's *query_canceled*, so a cancelled statement (`pg_cancel_backend`, `Statement.cancel()`) is
   `DEADLINE_EXCEEDED` too.
 * The lock types follow Spring's SQLState fallback: class 40 is pessimistic locking, and class 55 is in no set.
   Whether lock failures should become a retryable code is still open.
+
+[#lost-connection]
+=== A connection lost in a transaction
+
+When a database goes away while a transaction holds one of its connections (it stops, fails over, or an
+administrator ends the session; the table's cases used `pg_terminate_backend`), the statement fails, and then so does
+the rollback. Hikari closes a connection whose failure it treats as fatal, so the rollback fails with Hikari's
+`SQLException: Connection is closed`, which has no SQLState, and that rollback failure is what Spring throws, as a
+`TransactionSystemException` that keeps the statement's failure as its application exception, not as its cause.
+Spring's `JpaTransactionManager` reports a failed rollback as a `JpaSystemException` instead, which Spring throws
+without the failure it replaced, so a JPA store's transaction manager (Synapse's `SynapseJpaTransactionManager`)
+reports it as a `TransactionSystemException` too.
+
+The translators decide by the failure the rollback replaced alone. It is `UNAVAILABLE` (503 over REST, `UNAVAILABLE`
+over gRPC, with no detail) when it is a lost connection: a `DataAccessResourceFailureException`, or an `SQLException`
+of SQLState class 08 or PostgreSQL's 57P01, 57P02 or 57P03. Hikari's `Connection is closed` never counts, because
+Hikari closes a connection on other states too, such as PostgreSQL's 0A000 (feature_not_supported), and after
+use-after-close: such a failure keeps its own code, or is `INTERNAL`. An operation's own `SynapseException` that the
+rollback replaced (a domain rejection, for example) keeps its code and arguments.
+
+Class 08 also covers failures to open a connection, some of them configuration errors rather than outages (08004,
+the server rejected the connection, for example). They happen when a connection is opened, which Spring reports as a
+`CannotCreateTransactionException` or a `DataAccessResourceFailureException`, so they are `UNAVAILABLE` either way. 08007 (transaction_resolution_unknown)
+is `COMMIT_OUTCOME_UNKNOWN` (see <<commit-outcome-unknown>>).
+
+What the logs show for a connection lost in a statement:
+
+* The operation's failure line is a WARN `UNAVAILABLE` whose stack trace is the thrown `TransactionSystemException`:
+  the rollback's `SQLException: Connection is closed`, not the lost connection.
+* The lost connection itself is in Spring's own ERROR line, logged just before by `TransactionInterceptor` (or
+  `TransactionTemplate`): `Application exception overridden by rollback exception`, with the statement's failure and
+  its stack trace. It has the same trace and span ids as the failure line. Expect one such ERROR line per broken
+  transaction during an outage; it is Spring's, and filtering it out loses the root cause.
+* Hikari logs a WARN `Connection ... marked as broken because of SQLSTATE(...)` for each connection it closes.
+
+[#commit-outcome-unknown]
+=== A connection lost while committing: `COMMIT_OUTCOME_UNKNOWN`
+
+When the connection is lost while the transaction commits, nobody knows whether it committed: the database may have
+applied the COMMIT and lost only its reply. A store's transaction manager (`SynapseJdbcTransactionManager`,
+`SynapseJpaTransactionManager`, see <<transaction-managers>>) reports a commit whose failure is a lost connection as a
+`io.americanexpress.synapse.data.CommitOutcomeUnknownException`, and the translator maps it to
+`DataErrors.COMMIT_OUTCOME_UNKNOWN`. Code that commits outside an operation (a `TransactionTemplate` in a scheduled
+job, say) catches that public type to recognise an unknown outcome. A lost connection
+is what the translator reports as `UNAVAILABLE` everywhere else (one shared rule): Spring's connection exceptions, the
+JDBC connection exception types, and SQLState class 08 or 57P01-57P03 anywhere in the causes. So no commit-phase
+failure is ever a retryable `UNAVAILABLE`.
+
+That rule is wider than a lost connection in one case: Spring also translates SQLState classes 53, 54, 57 and 58
+(insufficient resources, program limits, operator intervention, system errors) to a
+`DataAccessResourceFailureException`. So a commit that fails with, say, 53100 (disk full) is `COMMIT_OUTCOME_UNKNOWN`
+too, although the database answered and nothing was committed. One rule for both the translator and the commit check
+keeps the invariant that a commit-phase failure is never `UNAVAILABLE`; it over-reports such a commit, which only
+stops a retry.
+
+* Its category is `INTERNAL`: REST 500, gRPC `INTERNAL`, logged at ERROR with the cause chain. The logged exception is
+  the `SynapseException` (`The outcome of the request is unknown`); its first `Caused by:` says
+  `whether it committed is unknown` (under ECS, in `error.stack_trace`). It carries no `Retry-After` or `RetryInfo`.
+* The caller sees the code, `COMMIT_OUTCOME_UNKNOWN` (and over REST the status's title). The message,
+  `The outcome of the request is unknown`, is the detail, shown only when `synapse.errors.include-detail` is `true`.
+* It is not `UNAVAILABLE` on purpose. `UNAVAILABLE` is the code callers and service meshes retry, and a retry of a
+  write whose commit was applied writes it twice.
+* SQLState 08007 (transaction_resolution_unknown) anywhere in a failure's causes is `COMMIT_OUTCOME_UNKNOWN` too,
+  although Spring translates it to a `DataAccessResourceFailureException`.
+
+Clients must not retry a `COMMIT_OUTCOME_UNKNOWN` blindly. A client that knows the code checks whether the write was
+applied (reads it back by its id, for example) before it sends it again. Retrying safely with an idempotency key on the
+service's own routes is an open question in the design (inbound idempotency keys, `specs/v2/DESIGN.md` §6).
+
+What happens to the transaction:
+
+* Spring doesn't roll back after this exception: it completes the transaction with an unknown status. The store's
+  transaction manager rolls the connection back first unless the connection is closed (Hikari closes one that
+  reported a class-08 or 57P01-57P03 state), so a connection still open, after a driver's connection exception that
+  the pool doesn't close it for, never goes back to the pool with an open transaction. On a JPA store,
+  Hibernate still tries its own rollback inside the failed commit; on the connection Hikari has closed it fails at
+  once and is ignored. No rollback can undo a COMMIT the database applied.
+* With `spring.transaction.rollback-on-commit-failure=true`, Spring rolls back after the failed commit anyway. On a
+  JDBC store that rollback fails on the closed connection and replaces the exception, so the caller gets a plain
+  `INTERNAL` (still not retried, but without the code). On a JPA store the transaction is no longer active after the
+  failed commit, so the code is kept, but Spring then completes the transaction as rolled back
+  (`afterCompletion(STATUS_ROLLED_BACK)`): after-rollback listeners run for a commit that the database may have
+  applied.
+
+A JPA store's transaction manager flushes before it commits, so a connection lost in that flush, before any COMMIT is
+sent, is `UNAVAILABLE` like any statement's: nothing was committed. The manager ends Hibernate's transaction (a
+rollback, which fails without harm on a connection the pool closed), so the transaction completes as rolled back and
+after-rollback callbacks (`@TransactionalEventListener(phase = AFTER_ROLLBACK)`) run. A commit that lost its
+connection completes with an unknown status instead (`afterCompletion(STATUS_UNKNOWN)`), so neither after-commit nor
+after-rollback listeners run, unless `spring.transaction.rollback-on-commit-failure=true` on a JPA store makes it
+complete as rolled back (above). The code still over-reports one case: a connection lost before the COMMIT reached the
+database is reported the same way, although nothing was committed, because the client can't tell it from a lost
+reply. A connection lost in a statement, before the commit, is `UNAVAILABLE`, since PostgreSQL rolls back a session
+that ends.
 
 [#health]
 == Health and readiness
@@ -553,7 +714,32 @@ Synapse defines `dbHealthContributor`, so Boot's backs off. It has one indicator
   `No connection within 1000 ms.`, `The check was interrupted.`, `The check could not start.`
 
 A store joins the `readiness` group only with `health.readiness: true`, so a busy or down store doesn't take the
-service out of rotation unless it opts in. Limits:
+service out of rotation unless it opts in.
+
+To serve readiness at a load balancer's path, such as `/health` on the server's port, give the group an
+`additional-path` and also its `include`:
+
+[source,yaml]
+----
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState
+          additional-path: server:/health
+----
+
+The liveness and readiness probes need no key: `management.endpoint.health.probes.enabled` is `true` by default in
+Spring Boot 4.
+
+Setting a key of the `readiness` group defines the group, and Boot then keeps it instead of its own probe group, whose
+only member is `readinessState`. A group without `include` has every indicator, every store's included, so any store
+down would take the service out of rotation. With `include: readinessState`, the path serves Boot's readiness state
+and the stores that opt in. Boot's `probes.add-additional-paths: true` (`/livez`, `/readyz`) needs no `include`: it
+keeps Boot's probe groups.
+
+Limits:
 
 * While stores exist, the application's own DataSource (one that isn't a store's) has no health indicator: Boot's
   backs off by name.

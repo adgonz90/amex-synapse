@@ -153,7 +153,9 @@ The framework's own `SynapseErrors`:
 
 Throw `STALE_VERSION` when a write finds the resource at another version than the one it expects: a version check
 or a compare-and-set failed. Over REST it is 409, or 412 `PRECONDITION_FAILED` when the request sent a bound
-`If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]); over gRPC it is `ABORTED`.
+`If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]); over gRPC it is `ABORTED`, or
+`FAILED_PRECONDITION` with `PRECONDITION_FAILED` when the request sent an `etag` (see
+xref:grpc.adoc#versions[Versions and entity tags]).
 
 Throw `ALREADY_EXISTS` when a resource with the same identity exists, such as when a create finds it already there.
 The data modules use it for unique-constraint violations (see xref:data.adoc#errors[Data error translation]). Over
@@ -163,21 +165,74 @@ xref:grpc.adoc#errors[gRPC errors]).
 Register `ExceptionTranslator` beans to map exceptions of libraries you use. Modules contribute their own; core has
 no data or security dependency. `ConstraintViolationException` is translated to `VALIDATION_FAILED`.
 
+[#paging]
 == Paging
 
 `PageQuery` is a cursor *or* an offset, a size and a sort list. The edge fills in the default size. The pipeline checks
 it (also as a `PageQuery` record component of the input): a cursor combined with an offset, a negative offset, or a
 size below 1 or above the cap fails as `VALIDATION_FAILED`. `PageResult<T>` holds the items, the next cursor, `hasNext`
 and an optional total. With Spring Data on the classpath, `SpringDataPages.from(Page)`, `from(Slice)` and
-`pageable(PageQuery)` convert (the `Pageable` is offset-based with an exact offset; a cursor query is rejected).
+`pageable(PageQuery)` convert (the `Pageable` is offset-based with an exact offset; a cursor query is rejected). A
+page converted with `from(Page)` has a next page when `offset + elements < total`, at any offset: Spring Data's own
+`Page.hasNext()` compares page numbers, which is wrong for an offset that is not a multiple of the size.
 
-Defaults: `synapse.paging.default-size` 20, `synapse.paging.max-size` 100.
+`pageable(PageQuery)` passes each `SortOrder.property()` to Spring Data unchanged, as an entity property. For keys
+declared with `.sortable(SortKey.class)`, on any protocol, that property is the enum constant's name (`TITLE`,
+`PUBLISHED_YEAR`), which is not an entity property unless the entity has a field of that name: Spring Data then fails
+the first sorted request, and the caller gets an `INTERNAL` error. Either name the constants after the entity's
+properties, or map each key to its property before calling `pageable`, as the reference bookstore's
+`SearchBooksOperation` does:
+
+[source,java]
+----
+List<SortOrder> orders = page.sort().stream()
+        .map(order -> new SortOrder(switch (SortKey.valueOf(order.property())) {
+            case TITLE -> "title";
+            case PUBLISHED_YEAR -> "publishedYear";
+        }, order.direction()))
+        .toList();
+Pageable pageable = SpringDataPages.pageable(new PageQuery(page.cursor(), page.offset(), page.size(), orders));
+----
+
+Keys declared with REST's `.sortable(String...)` are passed as declared, so they work when they are the entity's
+property names.
+
+Defaults: `synapse.paging.default-size` 20, `synapse.paging.max-size` 100, `synapse.paging.max-offset` 1000 (the
+largest offset a caller may request; it must not be negative).
 
 The REST plugin checks paging at the edge, before the pipeline runs: the page size against `synapse.paging.max-size`,
-the offset against `synapse.api.rest.paging.max-offset`, a cursor combined with an offset, and the sort keys against
+the offset against `synapse.paging.max-offset`, a cursor combined with an offset, and the sort keys against
 the route's `.sortable` allow-list. It reports violations under the query parameter names (`size`, `offset`,
-`cursor`, `sort`), so core's check never reports them a second time. The edge also encrypts the operation's cursor
-into an opaque token bound to the operation, the sort and the other inputs. See xref:rest.adoc#paging[REST paging].
+`cursor`, `sort`), so core's check never reports them a second time. See xref:rest.adoc#paging[REST paging]. The gRPC
+plugin applies the same caps and allow-list to the AIP-158 request fields, with the same codes and messages under the
+field names (`page_size`, `skip`, `page_token`, `order_by`). See xref:grpc.adoc#paging[gRPC paging].
+
+[#paging-cursors]
+=== Cursors
+
+An operation's raw cursor never reaches a caller. Core turns it into an opaque token, and back, for every API plugin,
+so a token issued over one protocol is read by another for the same operation. A token carries the raw cursor, or, for
+a page that has a next page but no cursor, the next offset. REST's `nextCursor` and gRPC's `next_page_token` carry
+the same token, by REST's `Link: next` rule; it is read back as `PageQuery(null, offset, size, sort)`, and an offset
+above the current `synapse.paging.max-offset` is rejected as an `offset` over the cap is. A token is bound to a
+`CursorScope`:
+the operation's name, the sort (each key as the enum constant's name for keys declared with `.sortable(Class)`, on
+every protocol, and as the declared name for REST's `.sortable(String...)`) and a digest of the other inputs. The
+digest is a SHA-256 of a canonical form of the input record:
+
+* every `PageQuery` component and every `VersionCondition` component is left out, by its type, whatever binds it;
+* every other component is included, also those the plugin fills from a header or the request context, so a token of
+  one tenant is rejected for another;
+* the plugin adds its own entries, under keys that start with `@` so they can't take a component's place: REST adds a
+  versioned route's version as `@version`, so a token of `/v1/books` is rejected by `/v2/books`.
+
+The default codec, `synapseCursorCodec`, encrypts tokens with AES-256-GCM. Its key is `synapse.paging.cursor.key`
+(base64, 256 bits, the same on every instance), with `synapse.paging.cursor.previous-keys` for rotation and
+`synapse.paging.cursor.max-age` for expiry (unset: tokens don't expire; when set, it must be positive). An invalid key
+fails startup, with or without a paged route. Without a key, core generates one at startup, and the first plugin with
+a paged route or method logs one WARN on `io.americanexpress.synapse.core`, in every environment. Define a
+`CursorCodec` bean (`io.americanexpress.synapse.core.paging`, incubating) to replace the default. Key rotation, the
+token rules and the replacement contract are in xref:rest.adoc#paging[REST paging].
 
 [#version-condition]
 == Version conditions
@@ -192,10 +247,12 @@ Its nullability in the input record is the operation's contract, the same over e
 
 * `@Nullable VersionCondition<V>`: the condition is optional, and `null` means the request has none (an unconditional
   write).
-* `VersionCondition<V>`, not `@Nullable`: the condition is required. The operation never sees a request without one:
-  the API plugin answers it `SynapseErrors.PRECONDITION_REQUIRED` ("The request must be conditional", category
-  `PRECONDITION_FAILED`) before the operation runs, with a violation that says how to resubmit. Over REST that is 428
-  (RFC 6585 §3). `AnyVersion` counts as a condition, so a client that means "whatever version is current" says so.
+* `VersionCondition<V>`, not `@Nullable`: the condition is required. Through an API plugin, the operation never sees
+  a request without one: the plugin answers it `SynapseErrors.PRECONDITION_REQUIRED` ("The request must be
+  conditional", category `PRECONDITION_FAILED`) before the operation runs, with a violation that says how to resubmit.
+  Over REST that is 428 (RFC 6585 §3). `AnyVersion` counts as a condition, so a client that means "whatever version
+  is current" says so. The pipeline itself doesn't check it: other callers, such as an escape-hatch controller, a
+  subscriber or a test that calls the operation directly, can pass `null`, and must not.
 
 Google's AIP-154 puts the same choice in the request message: an `etag` field is annotated `REQUIRED` or `OPTIONAL`.
 
@@ -280,8 +337,18 @@ log nothing. A failing call logs one line, from the outermost call on the thread
 `io.americanexpress.synapse.operation`: WARN for every category except `INTERNAL`, which is ERROR with the stack
 trace. `UNAVAILABLE` and `TIMEOUT` failures that carry a cause (a translated downstream fault, such as a connection
 pool timeout) are WARN with the cause's stack trace; without a cause (the pipeline's own drain rejection or deadline
-check) they are one line. The line carries the key-values `operation`, `error.code`, `error.category` and
-`correlationId`.
+check) they are one line. The line carries the key-values `operation`, `errorCode` and `errorCategory`, and payload
+lines carry `operation`. In Boot's structured log formats both always carry `correlationId` (Boot's default text
+pattern prints neither `correlationId` nor key-values): through the MDC when tracing puts it there (it is one of
+Boot's correlation fields, see <<tracing>>), otherwise as a key-value, for example with
+`synapse.observability.require-tracing=false` or on a thread the MDC didn't reach. It is never both, because Boot's
+Logback structured formats write the MDC and the key-values into one object and drop a line whose key-value repeats an
+MDC name. Don't put `correlationId` in the MDC yourself, for example from a filter you migrate: an entry that is
+already there wins on both backends, so the line would carry your value, not the pipeline's, which is the one that
+responses echo. Unlike the observation keys
+`error.code` and `error.category`, the log keys have no dot: Boot's ECS format nests dotted keys and writes a logged
+exception as the `error` object, so a key under `error.` would make it drop the line. Startup rejects context
+attribute names that would collide with any of these fields (see xref:logging-log4j2.adoc#ecs[ECS JSON by default]).
 
 [#tracing]
 == Tracing is required
@@ -291,13 +358,21 @@ Operations carry their context as tracing baggage, so the service module needs t
 no-op, or `management.tracing.baggage.enabled=false`. OpenTelemetry is the supported bridge.
 
 * With the OpenTelemetry Java agent, keep the starter and define an `OpenTelemetry` bean that returns
-  `GlobalOpenTelemetry.get()`, so Boot's bridge uses the agent's SDK instead of starting a second one.
+  `GlobalOpenTelemetry.get()`, so Boot's bridge uses the agent's SDK instead of starting a second one (the recipe is
+  in xref:opentelemetry-agent.adoc[OpenTelemetry Java agent]).
 * Spring Boot maps `OTEL_*` environment variables to its properties. `OTEL_PROPAGATORS` without `baggage` turns
   baggage off, and the startup message then names that variable. Add `baggage` to it, or configure the agent with
   `-Dotel.propagators` and set `management.opentelemetry.map-environment-variables=false`.
 * `synapse.observability.require-tracing=false` turns the check off. Startup then logs one INFO line if tracing cannot
   carry the context; the correlation id and context attributes then reach neither the logs nor outbound calls. You can
   also replace the check by defining a bean named `synapseTracingRequirementCheck`.
+* The starter also brings Micrometer's OTLP metrics registry, and Spring Boot turns its export on by default
+  (`management.otlp.metrics.export.enabled`): every minute it pushes metrics to `http://localhost:4318/v1/metrics`,
+  and logs a WARN when no collector answers there. Synapse doesn't change that Boot default. The samples and the
+  archetypes set `management.otlp.metrics.export.enabled: false`; turn it on, with
+  `management.otlp.metrics.export.url`, where a collector runs. Traces and logs are exported only once their
+  endpoints are set (`management.opentelemetry.tracing.export.otlp.endpoint` and
+  `management.opentelemetry.logging.export.otlp.endpoint`).
 
 Synapse adds `correlationId` and the attribute names bound under `synapse.api.rest.context.headers` and
 `synapse.api.grpc.context.metadata` to `management.tracing.baggage.remote-fields` and
@@ -344,8 +419,16 @@ the default 30.
 Core registers runtime hints for its context accessor service file, for the modules' configuration files
 (`META-INF/synapse/config*.yaml` and `config*.properties`) and binding reflection hints for the input and output types
 of operations and business beans (generic arguments and arrays are unwrapped). The JVM AOT mode is tested; a native
-image build is not covered yet. Environment files under AOT have their own rules: see
+image build is not covered yet (P4). Environment files under AOT have their own rules: see
 xref:environments.adoc#aot[AOT and native images].
+
+Core's build-time switch check, `synapseBuildTimeSwitchCheck`, runs only when the application runs with AOT-generated
+artifacts. Each module registers a switch for a property that decides which of its beans exist; the check compares
+each switch's value now with the value the build used, and fails startup once, listing every switch that differs, in
+property-name order. The P1 switches are `springdoc.api-docs.enabled` (xref:openapi.adoc#aot-toggle[OpenAPI]) and
+`spring.grpc.server.reflection.enabled` (xref:grpc.adoc#_server_reflection[gRPC]); the message is in
+xref:environments.adoc#aot-switches[AOT and native images]. Define a bean named `synapseBuildTimeSwitchCheck` to
+replace the check.
 
 == Configuration
 

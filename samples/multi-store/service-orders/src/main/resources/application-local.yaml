@@ -1,0 +1,16 @@
+# The local environment: ENV=local java -jar ... (README.md). In a service whose data modules are installed,
+# ./mvnw ... spring-boot:run runs it too (the pom sets spring-boot.run.profiles=local). Only local conveniences belong
+# here. The stores' local connections are in the data modules' config-local.yaml files: the containers of
+# compose.yaml.
+synapse:
+  errors:
+    # Problem responses carry "detail" (the formatted message), which helps while trying the service. Every other
+    # environment keeps the default (off).
+    include-detail: true
+
+management:
+  endpoint:
+    health:
+      # /actuator/health lists each store's indicator (db/orders, db/ledger), so you can watch one go down. Boot's
+      # default, never, shows only the overall status.
+      show-components: always

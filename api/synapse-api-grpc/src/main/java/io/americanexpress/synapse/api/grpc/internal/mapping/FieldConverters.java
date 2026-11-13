@@ -22,10 +22,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 
 import com.google.protobuf.ByteString;
@@ -44,10 +46,13 @@ import org.springframework.util.ReflectionUtils;
 
 import io.americanexpress.synapse.api.grpc.internal.binding.ContextSource;
 import io.americanexpress.synapse.api.grpc.internal.mapping.FieldConverter.Reading;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
+import io.americanexpress.synapse.core.internal.conditional.EntityTags;
+import io.americanexpress.synapse.core.internal.conditional.VersionTokens;
 
 /**
  * The field converters: scalars, enums, the well-known {@code Timestamp}, {@code Duration} and wrapper types,
@@ -58,6 +63,12 @@ final class FieldConverters {
     private static final Logger LOG = LoggerFactory.getLogger("io.americanexpress.synapse.api.grpc");
 
     private static final TypeDescriptor STRING = TypeDescriptor.valueOf(String.class);
+
+    /** The violation of an {@code etag} off the entity tag grammar, as REST names a malformed {@code If-Match}. */
+    private static final String NOT_A_TAG = "must be an entity tag";
+
+    /** The violation of an {@code etag} with more than one tag, as REST names an {@code If-Match} list. */
+    private static final String NOT_A_SINGLE_TAG = "must be a single entity tag";
 
     private static final int NANOS_PER_SECOND = 1_000_000_000;
 
@@ -380,6 +391,58 @@ final class FieldConverters {
         };
     }
 
+    /**
+     * Returns the converter of a request's token field ({@code etag} or {@code if_none_match}) for a
+     * {@code VersionCondition<V>} component. The value is an entity tag list with REST's grammar ({@link EntityTags}):
+     * empty is no condition ({@code null}), {@code *} is {@code AnyVersion}, and one tag is {@code Version(v)}, its
+     * opaque value read as a {@code V} by core's {@link VersionTokens} (the codec REST uses too, never a conversion
+     * service), strong or weak. A value off the grammar, more than one tag, or a token that names no version of
+     * {@code V} is a violation. Input only.
+     *
+     * @param version the version type
+     * @param weakFails whether a weak tag fails the precondition once the input is valid: REST's rule for a write's
+     *        {@code If-Match}, which compares strongly; a read's tag and an {@code If-None-Match} (compared weakly)
+     *        bind the weak tag's value
+     */
+    static FieldConverter versionCondition(Class<?> version, boolean weakFails) {
+        return new FieldConverter() {
+
+            @Override
+            public @Nullable Object read(Object value, Reading reading, String path) {
+                String text = (String) value;
+                if (text.isEmpty()) {
+                    return null;
+                }
+                EntityTags.Parsed parsed;
+                try {
+                    parsed = EntityTags.parse(text);
+                } catch (IllegalArgumentException e) {
+                    reading.violation(path, NOT_A_TAG);
+                    return FAILED;
+                }
+                if (!(parsed instanceof EntityTags.Parsed.Tags list)) {
+                    return VersionCondition.any();
+                }
+                if (list.tags().size() > 1) {
+                    reading.violation(path, NOT_A_SINGLE_TAG);
+                    return FAILED;
+                }
+                EntityTags.Tag tag = list.tags().getFirst();
+                // An IllegalArgumentException (a tag that names no version) is recorded by Reading.convert.
+                Object parsedVersion = VersionTokens.parse(tag.opaque(), version);
+                if (tag.weak() && weakFails) {
+                    reading.weakTag();
+                }
+                return VersionCondition.of(parsedVersion);
+            }
+
+            @Override
+            public Object write(Object value) {
+                throw new IllegalStateException("A VersionCondition is input only");
+            }
+        };
+    }
+
     /** A converter made of two functions, for values that are never absent once present. */
     private record Simple(Function<Object, @Nullable Object> reader,
             Function<Object, @Nullable Object> writer) implements FieldConverter {
@@ -405,18 +468,38 @@ final class FieldConverters {
      * @param protoPath the field path in proto names, or {@code null} for a context component
      * @param converter the field's converter, or {@code null} for a context component
      * @param context the context source, or {@code null}
+     * @param requiredAdvice for an input {@code VersionCondition} read from a token field, how to resubmit when a
+     *        non-null one has no value (a missing precondition, not a violation); {@code null} for any other component
+     * @param page for an input {@code PageQuery}, the request's page fields it reads; {@code null} for any other
+     *        component
      */
     record ComponentMapping(ResolvedComponent component, Method accessor, List<FieldDescriptor> fields,
-            @Nullable String protoPath, @Nullable FieldConverter converter, @Nullable ContextSource context) {
+            @Nullable String protoPath, @Nullable FieldConverter converter, @Nullable ContextSource context,
+            @Nullable String requiredAdvice, @Nullable PageFields page) {
 
         static ComponentMapping field(ResolvedComponent component, List<FieldDescriptor> fields, String protoPath,
                 FieldConverter converter) {
             return new ComponentMapping(component, accessor(component), List.copyOf(fields), protoPath, converter,
-                    null);
+                    null, null, null);
+        }
+
+        static ComponentMapping condition(ResolvedComponent component, FieldDescriptor token, FieldConverter converter,
+                String requiredAdvice) {
+            return new ComponentMapping(component, accessor(component), List.of(token), token.getName(), converter,
+                    null, requiredAdvice, null);
         }
 
         static ComponentMapping context(ResolvedComponent component, ContextSource context) {
-            return new ComponentMapping(component, accessor(component), List.of(), null, null, context);
+            return new ComponentMapping(component, accessor(component), List.of(), null, null, context, null, null);
+        }
+
+        static ComponentMapping page(ResolvedComponent component, PageFields page) {
+            return new ComponentMapping(component, accessor(component), List.of(), null, null, null, null, page);
+        }
+
+        /** Whether the component is an input {@code VersionCondition} read from a token field. */
+        boolean condition() {
+            return requiredAdvice != null;
         }
 
         /** The path of the component's violations: the proto path, or the component name without a field. */
@@ -429,6 +512,11 @@ final class FieldConverters {
         Object read(Message message, Reading reading, String base) {
             if (context != null) {
                 return context.value().apply(RequestContext.current());
+            }
+            PageFields pageFields = page;
+            if (pageFields != null) {
+                // The page fields are the request's own: a PageQuery is a component of the input record itself.
+                return pageFields.read(message, reading);
             }
             FieldConverter fieldConverter = converter;
             if (fieldConverter == null) {
@@ -445,30 +533,67 @@ final class FieldConverters {
             return reading.convert(fieldConverter, holder.getField(leaf), path(base));
         }
 
-        void write(Object record, Target target) {
+        /** Writes the component's value, and returns whether it set a field (a {@code null} value sets none). */
+        boolean write(Object record, Target target) {
             FieldConverter fieldConverter = converter;
             if (fieldConverter == null) {
-                return;
+                return false;
             }
             Object value = ReflectionUtils.invokeMethod(accessor, record);
             if (value == null) {
-                return;
+                return false;
             }
             Object written = fieldConverter.write(value);
             if (written == null) {
-                return;
+                return false;
             }
             Target holder = target;
             for (int i = 0; i < fields.size() - 1; i++) {
                 holder = holder.child(fields.get(i));
             }
             holder.builder.setField(fields.getLast(), written);
+            return true;
         }
 
         private static Method accessor(ResolvedComponent component) {
             Method accessor = component.component().getAccessor();
             ReflectionUtils.makeAccessible(accessor);
             return accessor;
+        }
+    }
+
+    /**
+     * The {@code @Nullable} output components of a record that write into the members of one {@code oneof}: they may
+     * set fields of one member only, because setting a second member would silently clear the first.
+     *
+     * @param oneof the oneof, {@code <message full name>.<path>.<oneof>}
+     * @param components the indexes of the components in the record's mapping, in component order
+     * @param names the components, {@code Record.component}, in the same order
+     * @param members the member each component writes (the member itself, or a field inside it), in the same order
+     */
+    record OneofGroup(String oneof, List<Integer> components, List<String> names, List<String> members) {
+
+        /**
+         * Fails when the group's components set fields of more than one member.
+         *
+         * @param written whether each component of the record set its field, by index
+         * @throws IllegalStateException naming the oneof and the components that have a value, an operation bug that
+         *         the call answers with {@code INTERNAL}; the message never repeats a value
+         */
+        void check(boolean[] written) {
+            List<String> set = new ArrayList<>();
+            Set<String> setMembers = new HashSet<>();
+            for (int i = 0; i < components.size(); i++) {
+                if (written[components.get(i)]) {
+                    set.add(names.get(i));
+                    setMembers.add(members.get(i));
+                }
+            }
+            if (setMembers.size() > 1) {
+                String listed = String.join(", ", set.subList(0, set.size() - 1)) + " and " + set.getLast();
+                throw new IllegalStateException(listed + (set.size() == 2 ? " both" : " all")
+                        + " have a value, but they write members of oneof " + oneof + ", which holds one");
+            }
         }
     }
 
@@ -507,6 +632,8 @@ final class FieldConverters {
 
         private List<ComponentMapping> components = List.of();
 
+        private List<OneofGroup> oneofs = List.of();
+
         RecordConverter(Class<?> type, Descriptor message) {
             this.type = type;
             this.message = message;
@@ -519,6 +646,11 @@ final class FieldConverters {
 
         List<ComponentMapping> components() {
             return components;
+        }
+
+        /** Sets the groups of output components that share a {@code oneof}, checked on every write. */
+        void oneofs(List<OneofGroup> groups) {
+            this.oneofs = List.copyOf(groups);
         }
 
         @Override
@@ -548,7 +680,12 @@ final class FieldConverters {
                 if (FieldConverter.failed(read)) {
                     failed = true;
                 } else if (read == null && !component.component().nullable()) {
-                    reading.missing(component.path(path));
+                    String advice = component.requiredAdvice();
+                    if (advice != null) {
+                        reading.preconditionMissing(component.path(path), advice);
+                    } else {
+                        reading.missing(component.path(path));
+                    }
                     failed = true;
                 } else {
                     args[i] = read;
@@ -586,8 +723,12 @@ final class FieldConverters {
 
         DynamicMessage writeRecord(Object record) {
             Target target = new Target(message);
-            for (ComponentMapping component : components) {
-                component.write(record, target);
+            boolean[] written = new boolean[components.size()];
+            for (int i = 0; i < written.length; i++) {
+                written[i] = components.get(i).write(record, target);
+            }
+            for (OneofGroup oneof : oneofs) {
+                oneof.check(written);
             }
             return target.build();
         }
