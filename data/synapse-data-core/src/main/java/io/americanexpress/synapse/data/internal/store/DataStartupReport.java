@@ -32,14 +32,17 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyN
 import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.context.properties.source.IterableConfigurationPropertySource;
 import org.springframework.boot.env.DefaultPropertiesPropertySource;
+import org.springframework.boot.persistence.autoconfigure.EntityScanPackages;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.support.SpringFactoriesLoader;
+import org.springframework.util.ClassUtils;
 
 import io.americanexpress.synapse.data.DataAccess;
+import io.americanexpress.synapse.data.internal.migration.FlywayStoreFactory;
 
 /**
  * Reports the data stores once the application has started, on the logger {@code io.americanexpress.synapse.data}:
@@ -47,7 +50,10 @@ import io.americanexpress.synapse.data.DataAccess;
  * Boot prefix or key that the application sets. Data-core's are {@code spring.datasource}, {@code spring.flyway} and
  * {@code spring.jdbc.template}; each access module adds its stores' ({@link StoreInfrastructure#ignoredKeys()}) when a
  * store uses it. A WARN names the keys, never their values; it reads every enumerable property source except Boot's
- * default properties, and gives each key to the most specific prefix or key it matches. A store whose
+ * default properties, and gives each key to the most specific prefix or key it matches. With Flyway on the class path,
+ * one WARN per Flyway {@code Callback} or {@code JavaMigration} bean that no store uses
+ * ({@link FlywayStoreFactory#unusedBeans}), and one per bean of a Boot type that an access module a store uses
+ * ignores ({@link StoreInfrastructure#ignoredBeanTypes()}). A store whose
  * {@code <prefix>DataSource} is not a Hikari pool, such as one its store class replaces, is listed without a pool
  * size and left out of the budget. Nothing is reported when the service has no store.
  */
@@ -57,6 +63,11 @@ public final class DataStartupReport implements ApplicationListener<ApplicationS
 
     /** The suffix of a store's transaction manager bean name. */
     private static final String TRANSACTION_MANAGER_SUFFIX = "TransactionManager";
+
+    private static final String FLYWAY = "org.flywaydb.core.Flyway";
+
+    /** The bean {@code @EntityScan} registers, in spring-boot-persistence. */
+    private static final String ENTITY_SCAN_PACKAGES = EntityScanPackages.class.getName();
 
     /** The Boot keys that every store ignores. */
     private static final List<IgnoredKeys> IGNORED = List
@@ -97,20 +108,67 @@ public final class DataStartupReport implements ApplicationListener<ApplicationS
                 logger.warn("{}", ignored.warning(List.copyOf(keys)));
             }
         });
+        if (ClassUtils.isPresent(FLYWAY, classLoader)) {
+            // FlywayStoreFactory names Flyway's types, so it is used only when Flyway is present.
+            FlywayStoreFactory.unusedBeans(started.getBeanFactory()).forEach(line -> logger.warn("{}", line));
+        }
+        warnAboutIgnoredBeans(started, ignoringInfrastructures(infrastructures, stores), classLoader);
         stores.forEach(store -> warnAboutTransactionManager(started, infrastructures, store));
     }
 
     /** Returns data-core's ignored keys, then those of each access module that a store uses. */
     private static List<IgnoredKeys> ignored(List<StoreInfrastructure> infrastructures, List<StoreDefinition> stores) {
+        List<IgnoredKeys> ignored = new ArrayList<>(IGNORED);
+        ignoringInfrastructures(infrastructures, stores)
+                .forEach(infrastructure -> ignored.addAll(infrastructure.ignoredKeys()));
+        return ignored;
+    }
+
+    /** Returns the access modules that a store uses. */
+    private static List<StoreInfrastructure> ignoringInfrastructures(List<StoreInfrastructure> infrastructures,
+            List<StoreDefinition> stores) {
         Set<DataAccess> used = EnumSet.noneOf(DataAccess.class);
         stores.forEach(store -> used.add(store.access()));
-        List<IgnoredKeys> ignored = new ArrayList<>(IGNORED);
+        return infrastructures.stream().filter(infrastructure -> used.contains(infrastructure.access())).toList();
+    }
+
+    /**
+     * Warns about each bean of a Boot type that an access module a store uses ignores
+     * ({@link StoreInfrastructure#ignoredBeanTypes()}), when the type's class is present, without creating the bean:
+     * one WARN per bean, naming it and its type. Boot's {@code EntityScanPackages}, which {@code @EntityScan}
+     * registers, gets one WARN naming its packages; it is created to read them.
+     */
+    private static void warnAboutIgnoredBeans(ConfigurableApplicationContext context,
+            List<StoreInfrastructure> infrastructures, @Nullable ClassLoader classLoader) {
         for (StoreInfrastructure infrastructure : infrastructures) {
-            if (used.contains(infrastructure.access())) {
-                ignored.addAll(infrastructure.ignoredKeys());
+            for (String typeName : infrastructure.ignoredBeanTypes()) {
+                if (!ClassUtils.isPresent(typeName, classLoader)) {
+                    continue;
+                }
+                Class<?> type = ClassUtils.resolveClassName(typeName, classLoader);
+                for (String name : new TreeSet<>(
+                        List.of(context.getBeanFactory().getBeanNamesForType(type, true, false)))) {
+                    if (ENTITY_SCAN_PACKAGES.equals(typeName)) {
+                        warnAboutEntityScan(context.getBean(name, EntityScanPackages.class));
+                    } else {
+                        logger
+                                .warn("The {} bean {} ({}) is not used by any store: Synapse builds {} stores "
+                                        + "without it.",
+                                        type.getSimpleName(), name, typeName, infrastructure.access());
+                    }
+                }
             }
         }
-        return ignored;
+    }
+
+    private static void warnAboutEntityScan(EntityScanPackages entityScanPackages) {
+        List<String> packages = entityScanPackages.getPackageNames();
+        if (!packages.isEmpty()) {
+            List<String> sorted = packages.stream().sorted().toList();
+            logger
+                    .warn("@EntityScan names {}, which no store uses: a JPA store's entities are those in and below "
+                            + "its store class's package.", String.join(", ", sorted));
+        }
     }
 
     /**

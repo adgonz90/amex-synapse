@@ -19,6 +19,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.constraints.Size;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Tag;
@@ -45,7 +46,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.masking.Masked;
+import io.americanexpress.synapse.core.operation.BusinessOperation;
+import io.americanexpress.synapse.core.operation.QueryOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,6 +63,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RestErrorsIT {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
+
+    /** A value that must never reach the caller or the log. */
+    private static final String SECRET = "4111-SECRET-1111";
 
     @Autowired
     private RestTestClient client;
@@ -142,6 +150,33 @@ class RestErrorsIT {
     }
 
     @Test
+    void repeatedSingleValuedQueryParameterIsOneViolation() {
+        Result result = call(client.get().uri("/checked?id=1&id=2"));
+
+        assertThat(result.status()).isEqualTo(400);
+        assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        assertThat(result.json().get("violations")).hasSize(1);
+        assertThat(result.json().get("violations").get(0).get("field").asString()).isEqualTo("id");
+        assertThat(result.json().get("violations").get(0).get("message").asString())
+                .isEqualTo("must have a single value");
+    }
+
+    @Test
+    void rejectedBusinessInputIsInternalWithoutDetailEvenWithDetailOn(CapturedOutput output) {
+        Result result = call(client.get().uri("/cards?number=" + SECRET));
+
+        // The service built the business input: its violation is the service's bug, never the caller's.
+        assertThat(result.status()).isEqualTo(500);
+        assertThat(result.json().get("code").asString()).isEqualTo("INTERNAL");
+        assertThat(result.json().has("violations")).isFalse();
+        assertThat(result.json().get("detail").asString()).isEqualTo("An internal error occurred");
+        assertThat(result.body()).doesNotContain(SECRET).doesNotContain("number").doesNotContain("too long");
+        assertThat(output.getOut())
+                .contains("Operation card failed with INTERNAL", "number: ${validatedValue} is too long")
+                .doesNotContain(SECRET);
+    }
+
+    @Test
     void invalidRequestParameterIsValidationFailed() {
         Result result = call(client.get().uri("/items?limit=xyz-qz"));
 
@@ -216,6 +251,26 @@ class RestErrorsIT {
     @Import(BooksController.class)
     static class TestApplication {
 
+        @Bean
+        CheckOperation checkOperation() {
+            return new CheckOperation();
+        }
+
+        @Bean
+        CardRule cardRule() {
+            return new CardRule();
+        }
+
+        @Bean
+        CardOperation cardOperation(CardRule cardRule) {
+            return new CardOperation(cardRule);
+        }
+
+        @Bean
+        RestBindings bindings(CheckOperation check, CardOperation card) {
+            return RestBindings.builder().get("/checked", check).get("/cards", card).build();
+        }
+
         /** A filter of the application that fails on {@code /filter-boom}, outside Spring MVC. */
         @Bean
         FilterRegistrationBean<OncePerRequestFilter> failingFilter() {
@@ -233,6 +288,49 @@ class RestErrorsIT {
             registration.setDispatcherTypes(DispatcherType.REQUEST);
             registration.setOrder(0);
             return registration;
+        }
+    }
+
+    record CheckRequest(@Nullable Long id) {
+    }
+
+    /** A query named {@code check}. */
+    static class CheckOperation implements QueryOperation<CheckRequest, String> {
+
+        @Override
+        public String execute(CheckRequest input) {
+            return "checked " + input.id();
+        }
+    }
+
+    /** A card number: masked, with a constraint message that would show the rejected value. */
+    record Card(@Masked @Size(max = 3, message = "${validatedValue} is too long") String number) {
+    }
+
+    /** A business rule on a card, named {@code card-rule}. */
+    static class CardRule implements BusinessOperation<Card, String> {
+
+        @Override
+        public String execute(Card input) {
+            return input.number();
+        }
+    }
+
+    record CardRequest(String number) {
+    }
+
+    /** A query named {@code card}: it passes the caller's number to the rule, which rejects one too long. */
+    static class CardOperation implements QueryOperation<CardRequest, String> {
+
+        private final CardRule rule;
+
+        CardOperation(CardRule rule) {
+            this.rule = rule;
+        }
+
+        @Override
+        public String execute(CardRequest input) {
+            return rule.execute(new Card(input.number()));
         }
     }
 

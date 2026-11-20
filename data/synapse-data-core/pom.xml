@@ -51,6 +51,11 @@
             <artifactId>spring-boot-transaction</artifactId>
         </dependency>
         <dependency>
+            <!-- EntityScanPackages, read by the startup report. spring-boot-transaction brings it already. -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-persistence</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-tx</artifactId>
         </dependency>
@@ -58,6 +63,13 @@
             <!-- Per-store migrations, only when flyway-core is on the service's class path. -->
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <!-- For FlywayConfigurationCustomizer; the consumer has it when it uses Boot's Flyway support. The tests
+                 also use Boot's Flyway auto-configuration, to test that it backs off for the stores' Flyway beans. -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
             <optional>true</optional>
         </dependency>
         <dependency>
@@ -95,12 +107,6 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <!-- Boot's Flyway auto-configuration, to test that it backs off for the stores' Flyway beans. -->
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-flyway</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

@@ -21,6 +21,7 @@ import org.aopalliance.intercept.MethodInterceptor;
 import org.aopalliance.intercept.MethodInvocation;
 import org.jspecify.annotations.Nullable;
 
+import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.observability.BusinessObservation;
 import io.americanexpress.synapse.core.observability.SynapseObservations;
@@ -29,7 +30,9 @@ import io.americanexpress.synapse.core.operation.BusinessOperation;
 /**
  * Runs the reduced pipeline around {@code BusinessOperation.execute}: the {@value SynapseObservations#BUSINESS}
  * observation (or timer, by {@link BusinessObservation} mode), then validation. There is no context, deadline,
- * translation or logging step: exceptions propagate unchanged.
+ * translation or logging step: exceptions propagate unchanged. A rejected input is {@code INTERNAL}, with the
+ * {@code VALIDATION_FAILED} as its cause: the service builds a business input, so its violations are never the
+ * caller's to see.
  */
 final class BusinessInterceptor implements MethodInterceptor {
 
@@ -65,7 +68,12 @@ final class BusinessInterceptor implements MethodInterceptor {
     }
 
     private @Nullable Object execute(MethodInvocation invocation) throws Throwable {
-        pipeline.validate(invocation.getArguments()[0]);
+        try {
+            pipeline.validate(invocation.getArguments()[0]);
+        } catch (SynapseException rejected) {
+            // The service built this input, so a violation is its bug, never the caller's.
+            throw new SynapseException(SynapseErrors.INTERNAL, rejected);
+        }
         return invocation.proceed();
     }
 

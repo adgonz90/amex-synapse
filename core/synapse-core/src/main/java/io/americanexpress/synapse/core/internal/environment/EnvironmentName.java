@@ -13,8 +13,10 @@
  */
 package io.americanexpress.synapse.core.internal.environment;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -23,14 +25,19 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.aot.AotDetector;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.bind.PlaceholdersResolver;
+import org.springframework.boot.context.properties.bind.PropertySourcesPlaceholdersResolver;
 import org.springframework.boot.context.properties.source.ConfigurationProperty;
 import org.springframework.boot.context.properties.source.ConfigurationPropertyName;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
 import org.springframework.boot.context.properties.source.ConfigurationPropertyState;
 import org.springframework.context.aot.AbstractAotProcessor;
+import org.springframework.core.ResolvableType;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.PropertySource;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 
@@ -48,6 +55,13 @@ public record EnvironmentName(String name, String setBy) {
     private static final String ACTIVE = "spring.profiles.active";
 
     private static final String DEFAULT = "spring.profiles.default";
+
+    private static final String INCLUDE = "spring.profiles.include";
+
+    private static final String GROUP = "spring.profiles.group";
+
+    private static final Bindable<MultiValueMap<String, String>> GROUPS = Bindable
+            .of(ResolvableType.forClassWithGenerics(MultiValueMap.class, String.class, String.class));
 
     private static final ConfigurationPropertyName ACTIVE_NAME = ConfigurationPropertyName.of(ACTIVE);
 
@@ -136,21 +150,94 @@ public record EnvironmentName(String name, String setBy) {
     }
 
     /**
-     * During AOT processing Boot reads the default profile's files only while no profile is active, and an included
-     * profile is an active one, so the build environment would silently not apply.
+     * During AOT processing Boot reads the default profile's files only while no profile is active, so the build
+     * environment would silently not apply. An active profile comes from {@code spring.profiles.include} (directly or
+     * through the included profiles' groups) or was added by a library or the platform, and each cause has its own
+     * sentence and action.
      */
     private static void requireNoActiveProfile(ConfigurableEnvironment environment, String name) {
         String[] activeProfiles = environment.getActiveProfiles();
-        if (activeProfiles.length > 0) {
-            throw new SynapseConfigurationException("During AOT processing the environment is the default profile '"
-                    + name + "', but these profiles are active: " + String.join(", ", activeProfiles) + ". Boot "
-                    + "ignores the default profile while any profile is active, whether spring.profiles.include set it "
-                    + "or a library added it (as spring-cloud-kubernetes adds kubernetes inside a Kubernetes pod), so "
-                    + "AOT processing would not read the build environment's files.",
-                    "Move feature profiles from spring.profiles.include to each environment's profile group, "
-                            + "spring.profiles.group.<env>, including the build environment's (spring.profiles.group."
-                            + name + "). Turn off for AOT processing a library that adds a profile.");
+        if (activeProfiles.length == 0) {
+            return;
         }
+        Set<String> includes = includedProfiles(environment);
+        List<String> included = new ArrayList<>();
+        List<String> added = new ArrayList<>();
+        for (String profile : activeProfiles) {
+            if (includes.contains(profile)) {
+                included.add(profile);
+            } else {
+                added.add(profile);
+            }
+        }
+        StringBuilder description = new StringBuilder("During AOT processing the environment is the default profile '")
+                .append(name)
+                .append("', but these profiles are active: ")
+                .append(String.join(", ", activeProfiles))
+                .append(". Boot ignores the default profile while any profile is active, so AOT processing would not "
+                        + "read the build environment's files.");
+        List<String> actions = new ArrayList<>();
+        if (!included.isEmpty()) {
+            description
+                    .append(" ")
+                    .append(INCLUDE)
+                    .append(" activates ")
+                    .append(String.join(", ", included))
+                    .append('.');
+            actions
+                    .add("Move feature profiles from " + INCLUDE + " to each environment's profile group, "
+                            + "spring.profiles.group.<env>, including the build environment's (spring.profiles.group."
+                            + name
+                            + ").");
+        }
+        if (!added.isEmpty()) {
+            String profiles = String.join(", ", added);
+            description
+                    .append(" A library or the platform added ")
+                    .append(profiles)
+                    .append(" (as spring-cloud-kubernetes adds kubernetes when Boot detects Kubernetes).");
+            actions
+                    .add("Turn off, for AOT processing, what adds " + profiles + ". A library that follows Boot's "
+                            + "cloud platform detection, as spring-cloud-kubernetes does, is turned off by "
+                            + "--spring.main.cloud-platform=none, for example with -Dspring-boot.aot.jvmArguments="
+                            + "-Dspring.main.cloud-platform=none on the Maven command line.");
+        }
+        throw new SynapseConfigurationException(description.toString(), String.join(" ", actions));
+    }
+
+    /**
+     * The profiles that {@code spring.profiles.include} activates, as Boot's config data processing collects them: the
+     * includes of every property source added up (not only the highest source's), then expanded through the profile
+     * groups.
+     */
+    private static Set<String> includedProfiles(ConfigurableEnvironment environment) {
+        PlaceholdersResolver placeholders = new PropertySourcesPlaceholdersResolver(environment);
+        Deque<String> pending = new ArrayDeque<>();
+        for (PropertySource<?> source : environment.getPropertySources()) {
+            if (ConfigurationPropertySources.isAttachedConfigurationPropertySource(source)) {
+                continue;
+            }
+            List<ConfigurationPropertySource> sources = new ArrayList<>();
+            for (ConfigurationPropertySource configurationSource : ConfigurationPropertySources.from(source)) {
+                if (configurationSource != null) {
+                    sources.add(configurationSource);
+                }
+            }
+            Binder binder = new Binder(sources, placeholders);
+            pending.addAll(names(binder.bind(INCLUDE, Bindable.listOf(String.class)).orElse(List.of())));
+        }
+        MultiValueMap<String, String> groups = Binder
+                .get(environment)
+                .bind(GROUP, GROUPS)
+                .orElseGet(LinkedMultiValueMap::new);
+        Set<String> included = new LinkedHashSet<>();
+        while (!pending.isEmpty()) {
+            String profile = pending.poll();
+            if (included.add(profile)) {
+                pending.addAll(names(groups.getOrDefault(profile, List.of())));
+            }
+        }
+        return included;
     }
 
     /**

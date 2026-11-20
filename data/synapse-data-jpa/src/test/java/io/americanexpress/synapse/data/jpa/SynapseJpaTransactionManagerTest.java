@@ -18,6 +18,7 @@ import java.sql.SQLException;
 import java.sql.SQLNonTransientConnectionException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.EntityTransaction;
@@ -35,7 +36,10 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.data.CommitOutcomeUnknownException;
+import io.americanexpress.synapse.data.internal.error.DataExceptionTranslator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -131,6 +135,27 @@ class SynapseJpaTransactionManagerTest {
                 .cause()
                 .isInstanceOf(JpaSystemException.class);
         verify(transaction, never()).rollback();
+    }
+
+    /**
+     * A commit the server rejects for a full disk (53100, insufficient resources) didn't lose its connection, so
+     * nothing was committed: the transaction is rolled back, and the failure is the server's transient
+     * {@code UNAVAILABLE}, as for a JDBC store.
+     */
+    @Test
+    void aCommitRejectedForDiskFullIsNotOutcomeUnknown() {
+        doThrow(new PersistenceException("Unable to commit against JDBC Connection",
+                new SQLException("could not extend file: No space left on device", "53100")))
+                .when(transaction)
+                .commit();
+
+        Throwable thrown = catchThrowable(() -> template.executeWithoutResult(status -> {
+        }));
+
+        assertThat(thrown).isInstanceOf(JpaSystemException.class).isNotInstanceOf(CommitOutcomeUnknownException.class);
+        verify(transaction).rollback();
+        SynapseException translated = new DataExceptionTranslator().translate(Objects.requireNonNull(thrown));
+        assertThat(Objects.requireNonNull(translated).code()).isEqualTo(SynapseErrors.UNAVAILABLE.code());
     }
 
     /** A commit that fails on a connection that wasn't lost is reported as before. */

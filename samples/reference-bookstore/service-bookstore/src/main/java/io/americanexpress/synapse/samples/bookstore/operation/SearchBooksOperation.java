@@ -13,9 +13,6 @@
  */
 package io.americanexpress.synapse.samples.bookstore.operation;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
@@ -63,32 +60,17 @@ public class SearchBooksOperation implements QueryOperation<SearchBooksRequest, 
     @Override
     public PageResult<Book> execute(SearchBooksRequest request) {
         PageQuery page = request.page();
-        // The edge has checked the size and the offset, and the sort keys against SortKey. Spring Data sorts by the
-        // entity's properties, so the keys are mapped to them.
+        // The edge has checked the size and the offset, and the sort keys against SortKey, by their names. Spring Data
+        // sorts by the entity's properties, so the keys are mapped to them, then the title (unless a key is the title)
+        // and the id break ties.
         Pageable pageable = SpringDataPages
-                .pageable(new PageQuery(page.cursor(), page.offset(), page.size(), properties(page.sort())));
+                .pageable(page, key -> property(SortKey.valueOf(key)),
+                        new SortOrder("title", SortOrder.Direction.ASC), new SortOrder("id", SortOrder.Direction.ASC));
         String author = request.author();
         Page<StoredBook> found = author == null
                 ? books.findAll(pageable)
                 : books.findByAuthorContainingIgnoreCase(author, pageable);
         return SpringDataPages.from(found.map(BookMapping::toBook));
-    }
-
-    /** The caller's keys as the entity's properties, then the title unless a key is the title, then the id. */
-    private static List<SortOrder> properties(List<SortOrder> keys) {
-        List<SortOrder> orders = new ArrayList<>();
-        boolean byTitle = false;
-        for (SortOrder key : keys) {
-            // The edge lets through only the constants of SortKey, by their names.
-            SortKey sortKey = SortKey.valueOf(key.property());
-            byTitle |= sortKey == SortKey.TITLE;
-            orders.add(new SortOrder(property(sortKey), key.direction()));
-        }
-        if (!byTitle) {
-            orders.add(new SortOrder("title", SortOrder.Direction.ASC));
-        }
-        orders.add(new SortOrder("id", SortOrder.Direction.ASC));
-        return orders;
     }
 
     private static String property(SortKey key) {

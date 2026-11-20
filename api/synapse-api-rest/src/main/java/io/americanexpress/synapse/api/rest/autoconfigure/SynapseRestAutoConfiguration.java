@@ -21,6 +21,7 @@ import jakarta.servlet.DispatcherType;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.LazyInitializationExcludeFilter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -70,9 +71,11 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseContextProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationProperties;
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.SynapseBaggageFields;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.internal.pipeline.OperationSettingsPrefix;
 
 /**
  * Auto-configuration for the REST API plugin: its properties, the edge filters, the CORS configuration, and the routes
@@ -88,6 +91,9 @@ import io.americanexpress.synapse.core.internal.paging.PageCursors;
 public final class SynapseRestAutoConfiguration {
 
     private static final String REMOTE_FIELDS = "management.tracing.baggage.remote-fields";
+
+    /** The routes bean, kept eager under lazy initialization. */
+    private static final String ROUTES = "synapseRestRoutes";
 
     /**
      * The first edge filter: it hides or strips inbound propagation headers before Boot's server observation filter
@@ -281,6 +287,20 @@ public final class SynapseRestAutoConfiguration {
     }
 
     /**
+     * Keeps the {@code synapseRestRoutes} bean eager under {@code spring.main.lazy-initialization=true}, so the bindings
+     * compile, and fail on a mistake, while the singletons are created, and core's parity check between protocols sees
+     * them. Only the bean of that name is excluded, not every {@code RouterFunction}. Define a bean with the same name
+     * to replace it.
+     *
+     * @return the filter
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseRestRoutesLazyInitializationExcludeFilter")
+    static LazyInitializationExcludeFilter synapseRestRoutesLazyInitializationExcludeFilter() {
+        return (beanName, definition, beanType) -> ROUTES.equals(beanName);
+    }
+
+    /**
      * The 405 and {@code OPTIONS} fallback of the routes bean's Synapse routes, as a handler mapping ordered after
      * every other mapping (annotated controllers included) and before the static resources, so an escape-hatch
      * controller on a Synapse path wins. It never handles the container's error dispatch. Define a bean with the same
@@ -323,14 +343,29 @@ public final class SynapseRestAutoConfiguration {
      * @param writer writes the responses
      * @param cursors core's page cursors: they unwrap the cursor tokens, and report a cursor key generated at startup
      * @param paging the paging settings, for the cursor parameter name
+     * @param declarations core's registry of compiled bindings, which the parity check between protocols reads; none
+     *     when core's operation auto-configuration is absent, and then the routes are not registered
      * @return the compiler
      */
     @Bean
     @ConditionalOnBean(RestBindings.class)
     @ConditionalOnMissingBean
     RouteCompiler routeCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer,
-            PageCursors cursors, PagingSettings paging) {
-        return new RouteCompiler(validator, binder, writer, cursors, paging);
+            PageCursors cursors, PagingSettings paging, ObjectProvider<BindingDeclarations> declarations) {
+        return new RouteCompiler(validator, binder, writer, cursors, paging,
+                declarations.getIfAvailable());
+    }
+
+    /**
+     * The prefix of the per-operation REST settings, {@code synapse.api.rest.operations}, whose names core's startup
+     * check reports when they match no operation bean. Internal: the bean backs off by name only.
+     *
+     * @return the prefix
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseRestOperationSettingsPrefix")
+    OperationSettingsPrefix synapseRestOperationSettingsPrefix() {
+        return new OperationSettingsPrefix("synapse.api.rest.operations");
     }
 
     /**

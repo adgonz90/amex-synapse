@@ -73,9 +73,12 @@ adds `spring.profiles.default (<value>) does not count.`
 |In AOT mode, the AOT-generated code activates a profile (the application was processed with an active profile)
 |`The AOT-generated code activates the profiles build at every run (com.example.BooksApplication__EnvironmentPostProcessor): they were active during AOT processing, so they are active in every environment the application runs in.`
 |`Process the application with no active profile and the build environment as the default profile (--spring.profiles.active= --spring.profiles.default=<build environment>), as synapse-parent's process-aot execution does, and build again.`
-|During AOT processing, a profile is active beside the build environment, such as one from `spring.profiles.include`. This fails the build.
-|`During AOT processing the environment is the default profile 'build', but these profiles are active: kafka. Boot ignores the default profile while any profile is active, whether spring.profiles.include set it or a library added it (as spring-cloud-kubernetes adds kubernetes inside a Kubernetes pod), so AOT processing would not read the build environment's files.`
-|`Move feature profiles from spring.profiles.include to each environment's profile group, spring.profiles.group.<env>, including the build environment's (spring.profiles.group.build). Turn off for AOT processing a library that adds a profile.`
+|During AOT processing, a profile is active beside the build environment because `spring.profiles.include` names it (in any source, directly or through the included profile's group). This fails the build.
+|`During AOT processing the environment is the default profile 'build', but these profiles are active: kafka. Boot ignores the default profile while any profile is active, so AOT processing would not read the build environment's files. spring.profiles.include activates kafka.`
+|`Move feature profiles from spring.profiles.include to each environment's profile group, spring.profiles.group.<env>, including the build environment's (spring.profiles.group.build).`
+|During AOT processing, a profile that no `spring.profiles.include` names is active beside the build environment: a library or the platform added it, as spring-cloud-kubernetes adds `kubernetes` on a build agent that runs in a Kubernetes pod. This fails the build. When both causes apply, the description has both sentences and the action both actions. A profile that an include names and a library also adds is named only in the include's sentence; once the include is removed, the next run names the library.
+|`During AOT processing the environment is the default profile 'build', but these profiles are active: kubernetes. Boot ignores the default profile while any profile is active, so AOT processing would not read the build environment's files. A library or the platform added kubernetes (as spring-cloud-kubernetes adds kubernetes when Boot detects Kubernetes).`
+|`Turn off, for AOT processing, what adds kubernetes. A library that follows Boot's cloud platform detection, as spring-cloud-kubernetes does, is turned off by --spring.main.cloud-platform=none, for example with -Dspring-boot.aot.jvmArguments=-Dspring.main.cloud-platform=none on the Maven command line.` See xref:parent.adoc#aot-cloud-platform[the caveats] before you use it.
 |No file for the environment
 |`The environment 'e9' has no file in the service: none of application-e9.yaml, application-e9.yml, application-e9.properties was loaded or found on the classpath. Environment names are case-sensitive.`
 |`Add application-e9.yaml to the service (it may be empty), or set the environment to the name of an existing file.`
@@ -462,7 +465,9 @@ fails there naming both.
   checks only the profiles that the generated `<Main>__EnvironmentPostProcessor` activates, a class Spring Boot
   generates only when a profile was active during processing; profiles that libraries add at run time, such as
   `kubernetes`, are not affected. A `spring.profiles.include` during processing would be such an active profile, and
-  Boot would then not read the build environment's files, so Synapse fails the build instead. The
+  Boot would then not read the build environment's files, so Synapse fails the build instead. So does a profile that
+  a library adds during processing, such as `kubernetes` on a build agent in a pod; see
+  xref:parent.adoc#aot-cloud-platform[Build environment] for `spring.main.cloud-platform=none` and its caveats. The
   bean definitions that the build environment decided stay in the generated code, which is one more reason never to
   use the environment in a `@Conditional`.
 * The image's training run is an ordinary run, in the build environment as its one active profile

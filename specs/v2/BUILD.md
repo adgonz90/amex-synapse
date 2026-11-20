@@ -139,7 +139,8 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
   active at run time.
 - **Spring AOT processing is opt-in in P1** (decided 2026-11-08, maintainer): the parent runs `process-aot` only with
   its `aot` profile (`-Paot`), and a build without it generates no AOT code. The rules above hold for every module
-  either way and stay tested in the framework modules. In P4, with the native image, AOT becomes full (DESIGN.md,
+  either way and stay tested in the framework modules. `-Paot` is experimental until P4: it may change without notice.
+  In P4, with the native image, AOT becomes full (DESIGN.md,
   *Spring AOT opt-in in P1*).
 
 ### 3.4 Dependency management
@@ -162,6 +163,8 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 - Deprecations happen in a minor; removal only in the next major.
 - `SynapseArchitecture.forApplication(…)` includes a rule that consumer code never imports
   `io.americanexpress.synapse..internal..`.
+- A bean the docs call replaceable has a public type outside `..internal..`, or the docs don't call it replaceable.
+  Synapse's internal beans back off by bean name. The P6 API pass applies this rule to the existing beans.
 
 ### 3.6 Environments and module configuration
 - **The environment is the one active Spring profile.** Each service's `application.yaml` maps the platform's variable:
@@ -356,16 +359,28 @@ outermost first:
    is none (scheduled jobs, runners, direct calls). Nested calls reuse it.
 3. **Deadline:** if the deadline has passed, fail with `TIMEOUT` without executing.
 4. **Validation:** Jakarta Validation on `I` (skipped when the type has no constraints); failure is `INVALID_INPUT`
-   with violations.
+   with violations. Then, for an input record, each required `VersionCondition` component (not `@Nullable`) that is
+   `null` fails the call with `PRECONDITION_REQUIRED`, one violation per component, so no caller reaches an operation
+   without a required condition (plan 2026-11-13, D6). Only the outermost call's input is the caller's own: in a
+   nested call either failure is `INTERNAL`, with it as the logged cause (plan 2026-11-13, Q11). Outermost is per
+   thread, so an operation run on another thread keeps its own rejection, which reaches the caller only if the
+   calling operation unwraps and rethrows it.
 5. **Execute.** A Spring `@Transactional` boundary, if present, sits inside the Synapse advisor (Synapse never opens
    transactions itself).
 6. **Translation:** `SynapseException` passes through; other exceptions go through the `ExceptionTranslator`s;
-   anything left becomes `INTERNAL` (cause logged, never exposed).
+   anything left becomes `INTERNAL` (cause logged, never exposed). A `ConstraintViolationException` reaches the
+   translators only when it is the thrown exception and every violation's root bean is the outermost call's input
+   (by identity); any other one, thrown or in the cause chain (a collaborator's method validation, an entity at
+   flush or commit), is `INTERNAL` without violations, and its logged cause names each violation by path and message
+   template, not by its interpolated message (Q11), for an exception the pipeline finds: the failure or one of its
+   first 9 causes, not a suppressed one (the cases this misses are in `core.adoc`, *Masking*).
 7. **Logging:** failures only, by the outermost invocation only (see *Logging*). Successful calls log nothing.
 
 `BusinessOperation` beans get a reduced pipeline: validation on `I` and a child observation `synapse.business`
-(configurable, see *Observability*); no context, deadline, translation or logging steps. `@Transactional` works on
-business `execute`; the operation is the preferred transaction boundary and a business bean joins it by default.
+(configurable, see *Observability*); no context, deadline, translation or logging steps. A rejected business input
+is `INTERNAL`, with the `INVALID_INPUT` failure as its cause: the service built it, so it is never the caller's
+fault (Q11). `@Transactional` works on business `execute`; the operation is the preferred transaction boundary
+and a business bean joins it by default.
 
 An operation may call other operations (same pipeline, same `RequestContext`).
 
@@ -490,9 +505,11 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   doesn't flip it.
 - Load-balancer paths use Boot's health-group `additional-path` (e.g. `/health`); Synapse adds no alias. Setting a
   key of the `readiness` group defines the group, and Boot then keeps it instead of its own probe group, whose only
-  member is `readinessState`; a group without `include` has every indicator. So the readiness setup is
-  `management.endpoint.health.group.readiness.include=readinessState` with its `additional-path` (stores that opt in
-  are added to it).
+  member is `readinessState`; a group without `include` has every indicator. So when an application configures the
+  readiness group, for example with `additional-path`, Synapse defaults its `include` to `readinessState` at lowest
+  precedence; an application's `include` replaces it; otherwise Synapse sets no `include`, and Boot's probe group
+  keeps its settings (the stores that opt in still join it). The readiness setup is then the group's
+  `additional-path` alone (stores that opt in are added to the group).
 - Actuator exposure stays at Boot's default (health only).
 
 ---
@@ -513,7 +530,9 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 - **Errors:** each plugin maps `ErrorCategory` to its protocol (table below). Overrides are keyed by error code,
   globally or per operation (`synapse.api.rest.errors.status.[CODE]`, `synapse.api.rest.operations.<op>.errors.status.[CODE]`,
   `synapse.api.grpc.errors.status.[CODE]`, `synapse.api.grpc.operations.<op>.errors.status.[CODE]`); precedence:
-  per-operation > global > category default.
+  per-operation > global > (gRPC only) `ABORTED` for a stale `etag` (6.3) > a built-in code's fixed status (REST: a
+  `RestErrors` code's own status, 428 for `PRECONDITION_REQUIRED`; gRPC: `ALREADY_EXISTS`, `METHOD_NOT_FOUND`)
+  > category default.
 - **Exposure inventory:** at startup each plugin logs every exposed operation with protocol, route/method and port.
 
 | Category | REST | gRPC | GraphQL (`ErrorType`) |
@@ -523,7 +542,7 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 | FORBIDDEN | 403 | PERMISSION_DENIED | FORBIDDEN |
 | NOT_FOUND | 404 | NOT_FOUND | NOT_FOUND |
 | CONFLICT | 409 | ABORTED (the code `ALREADY_EXISTS`: ALREADY_EXISTS) | BAD_REQUEST |
-| PRECONDITION_FAILED | 412 | FAILED_PRECONDITION | BAD_REQUEST |
+| PRECONDITION_FAILED | 412 | FAILED_PRECONDITION (a stale `etag`: ABORTED, see 6.3) | BAD_REQUEST |
 | RATE_LIMITED | 429 | RESOURCE_EXHAUSTED | INTERNAL_ERROR |
 | UNAVAILABLE | 503 | UNAVAILABLE | INTERNAL_ERROR |
 | TIMEOUT | 504 | DEADLINE_EXCEEDED | INTERNAL_ERROR |
@@ -753,8 +772,10 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   write (a `CommandOperation`), as REST: a non-null component without a value is `PRECONDITION_REQUIRED` (by category
   `FAILED_PRECONDITION`) with the header's own advice, a weak `etag` is `PRECONDITION_FAILED` (a weak
   `if_none_match` binds its value), and a non-empty token field no component binds is `PRECONDITION_FAILED`, all
-  before the operation runs. `STALE_VERSION` from a request that sent an `etag` becomes `PRECONDITION_FAILED` (REST's
-  412); without one it stays `STALE_VERSION` (`ABORTED`, REST's 409). A read binds a weak tag's value and ignores an
+  before the operation runs. `STALE_VERSION` from a request that sent an `etag` becomes the code `PRECONDITION_FAILED`
+  (REST's 412) with the status `ABORTED` (AIP-154; plan 2026-11-13, D2), unless a `[PRECONDITION_FAILED]` status is
+  configured; without one it stays `STALE_VERSION` (`ABORTED`, REST's 409). Every other `PRECONDITION_FAILED` (weak,
+  unbound, or the operation's own) is `FAILED_PRECONDITION`. A read binds a weak tag's value and ignores an
   unbound token, and gets no 304. `.etag(Record::component)` writes the strong tag to the response's `string etag`
   field, on a `QueryOperation` or a `CommandOperation` whose input has no `VersionCondition` only (REST sends no `ETag`
   on `PUT`/`DELETE`).
@@ -1407,6 +1428,60 @@ plugin can pass `null`. Task 21 re-ran every sample README
 against the app and fixed the one drift it found (the agent's JDBC span), but the README's Paketo log lines and its
 `image-smoke.sh` run of the Paketo image are unverified: the buildpack's download of the Liberica JRE from github.com
 returned HTTP 504 in Task 21 and again in the pre-review cleanup (2026-11-08). The Dockerfile image was verified.
+
+**Review fixes (plan 2026-11-13, `plans/2026-11-13-p1-review-fixes.md`):** the fixes from the P1 review, on the
+branch `feature/v2-p1-review-fixes` (base 4a4a6e4e). What landed:
+- Core: the pipeline answers a `null` required `VersionCondition` `PRECONDITION_REQUIRED` for every caller, one
+  violation per component (D6; 5.2); only the operation input's own constraint violations reach the caller, while a
+  business or nested input's, a collaborator's or an entity's are `INTERNAL`, logged at ERROR with paths and message
+  templates, not interpolated messages, for violations the pipeline finds in the failure or its first 9 causes (not
+  suppressed; the cases this misses are in `core.adoc`, *Masking*) (Q11, I3); `@Masked` masks a component that has
+  its own serializer (M9); the readiness group's `include` defaults to `readinessState` only when the application
+  configures the group (D19; 5.10); `SpringDataPages.pageable` maps sort keys to entity properties and adds
+  tie-breakers (D14); the AOT-processing failure names a library-added profile apart from an included one (E2/N1).
+- REST: a repeated value for a single-valued query parameter, header or cookie is `must have a single value`, header
+  lines are joined like one line, and only a list header ignores empty items (RFC 9110 §5.6.1.2), while query,
+  path and cookie lists keep them as a gRPC `repeated` field does (Q12, I2; maintainer, 2026-11-19); request bodies
+  are read through Jackson's public API (M11); the error controller can be proxied (M13); RFC 9110's condition for a
+  validator on a `PUT` is cited (Q3).
+- gRPC: a stale `etag` is `ABORTED` (D2; 6.3); Synapse's exception handler is ordered after Boot's server explicitly
+  (I5); a repeated element's path is built only when it fails (M3); an `int32` `total_size` overflow is documented as
+  unlogged (M8).
+- Both plugins: startup fails when the REST and gRPC bindings of one operation declare `.notFound`, `.etag` or
+  `.sortable` differently, also under lazy initialization for a `GrpcBindings` bean whose `@Bean` method declares
+  that type (D10).
+- Data: a lost connection is any exception in the chain that says so, with Spring's resource-failure types decided by
+  the first state below them, and class 53 `UNAVAILABLE` but never an unknown commit outcome (M1); stores honour Boot's
+  `FlywayConfigurationCustomizer`, `Callback` and `JavaMigration` beans (Q5, M4); the Boot JPA beans stores ignore get
+  a startup WARN, and `data.adoc` lists the beans stores honour (Q5, M5).
+- Archetypes: generated projects ship the Maven Wrapper (D31b).
+- Docs and spec: `-Paot` is labelled experimental until P4 (T9; 3.3); the replaceable-bean rule is in 3.5 (T10);
+  `grpc.adoc` says `has_next` is the only signal for a page capped by `synapse.paging.max-offset` (D12); `data.adoc`
+  says how a PostgreSQL store goes without migrations (D21b); and the reviews' parked Minors.
+
+The provisional choices are the plan's decisions R1-R20, plus the controller's rulings in the review log (the
+reconciled lost-connection rule for M1, the conditional readiness default for D19, the lazy-initialization filters
+for D10, and R19's skip of M10 to P6). The maintainer's questions they raised are in DESIGN.md §6.
+
+Verified locally (Windows, Docker on): at 206d0df0 the JDK 25 `CI=true ./mvnw clean verify` passed (BUILD SUCCESS,
+about 18 minutes), and so did the JDK 21 pull request leg (BUILD SUCCESS, about 12 minutes); the branch's base,
+4a4a6e4e, passed its baseline build too. Not verified, because only Linux CI or a later run can check it, or because
+no run has so far:
+- the generated `mvnw`'s executable bit: the archetype ITs assert it only on a file system with POSIX permissions, so
+  Windows runs skip it and Linux CI checks it;
+- the post-generate scripts' warning when the bit can't be set, and the archetype ITs' timeout branch for
+  `mvnw --version`: no run exercises either, Linux CI included, since there `setExecutable` succeeds and the wrapper
+  answers in time;
+- `../mvnw spring-boot:run` in a generated service project (the service archetype README's *Run it*): never run;
+- the quickstart archetype README's *Run it* commands in a generated project, `./mvnw package -DskipTests` then
+  `ENV=local java -jar target/<artifactId>-<version>.jar`, and `./mvnw spring-boot:run`: not run with the wrapper
+  (this branch ran only `./mvnw verify` in a generated quickstart);
+- the Paketo image (`spring-boot:build-image`): its build failed when the buildpack's download of the Liberica JRE
+  from github.com returned HTTP 504 (plan 5 Task 21 and its pre-review cleanup), so the bookstore README's Paketo log
+  lines and its `image-smoke.sh` run of that image are unverified; the Dockerfile image was verified;
+- R16: `-Dspring-boot.aot.jvmArguments=-Dspring.main.cloud-platform=none` was checked against the 4.1.2
+  `process-aot` goal page and the plugin's descriptor, not run on a build agent inside a cloud platform;
+- the nightly-only jobs (the full JDK 21 leg and `aot-reference`), which run only once the branch is pushed.
 
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):

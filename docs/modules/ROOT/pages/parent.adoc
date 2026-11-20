@@ -38,6 +38,8 @@ Spring AOT processing is opt-in. The parent runs it only in its Maven profile `a
 ./mvnw -Paot verify
 ----
 
+`-Paot` is experimental until P4: it may change without notice.
+
 Without the profile, no `process-aot` runs: the jar holds no AOT-generated code, `-Dspring.aot.enabled=true` can't
 start it, and the service needs no build environment file. That holds for a clean build. The code that `-Paot`
 generated stays in `target/` until `clean`, and a later build without the profile still puts it in the jar. So run
@@ -85,14 +87,35 @@ set of beans (see xref:environments.adoc#aot[AOT and native images]).
   profile may be active: a `spring.profiles.include` would make Boot ignore the default profile, so the build fails.
   Feature profiles go in `spring.profiles.group.<env>`, `spring.profiles.group.build` included (see
   xref:environments.adoc#environment[The environment]).
-* A library can add a profile too, and fail processing the same way: spring-cloud-kubernetes adds `kubernetes` when
-  Boot detects Kubernetes, which it does on a build agent that runs in a pod (Kubernetes sets
-  `KUBERNETES_SERVICE_HOST` in every container). Boot's `spring.main.cloud-platform=none` turns off Boot's platform
-  detection (`CloudPlatform.isActive` then answers `false` for every platform but `NONE`), so append
-  `<argument>--spring.main.cloud-platform=none</argument>` to the execution's arguments (with
-  `<arguments combine.children="append">`, as below). That this stops
-  spring-cloud-kubernetes from adding its profile is read from its source, not tested here. Beans that are
-  `@ConditionalOnCloudPlatform` are decided at build time too, so the AOT-processed application then has none of them.
+* [[aot-cloud-platform]]A library can add a profile too, and fail processing the same way: spring-cloud-kubernetes
+  adds `kubernetes` when Boot detects Kubernetes, which it does on a build agent that runs in a pod (Kubernetes sets
+  `KUBERNETES_SERVICE_HOST` in every container). The failure then says that a library or the platform added the
+  profile, not `spring.profiles.include`. Boot's `spring.main.cloud-platform=none` turns off Boot's platform detection
+  (`CloudPlatform.isActive` then answers `false` for every platform but `NONE`). A CI build that runs `-Paot` inside a
+  cloud platform can pass it to `process-aot` for that build only, through the goal's `spring-boot.aot.jvmArguments`
+  user property, which the parent's execution doesn't set
+  (https://docs.spring.io/spring-boot/maven-plugin/aot.html[Spring Boot Maven plugin, process-aot], 4.1.2):
++
+[source,shell]
+----
+./mvnw -Paot package -Dspring-boot.aot.jvmArguments=-Dspring.main.cloud-platform=none
+----
++
+To set it for every build of the service instead, append `<argument>--spring.main.cloud-platform=none</argument>` to
+the execution's arguments (with `<arguments combine.children="append">`, as below). Synapse doesn't set it in the
+parent, because it makes AOT processing decide everything that depends on the platform as if the service never ran on
+one:
+** a config-data document with `spring.config.activate.on-cloud-platform` is not read during processing, so a
+   property in it that decides which beans exist is decided as if it were unset;
+** beans that are `@ConditionalOnCloudPlatform` are decided at build time, so the AOT-processed application has none
+   of them, wherever it runs.
++
+The `server.forward-headers-strategy` default is not one of them: Boot's Tomcat customizer
+(`TomcatWebServerFactoryCustomizer`) decides it when the application starts, from the platform it runs on
+(`NATIVE` on a supported cloud platform), so `none` during processing doesn't change it. Setting
+`spring.main.cloud-platform` in the service's own files would, at every run.
++
+That this stops spring-cloud-kubernetes from adding its profile is read from its source, not tested here.
 * The empty `<profiles combine.self="override"/>` keeps a plugin-level `<profiles>`, such as one you set for
   `spring-boot:run`, out of AOT processing: plugin-level configuration applies to every goal of the plugin
   (https://maven.apache.org/pom.html[Maven POM reference]).

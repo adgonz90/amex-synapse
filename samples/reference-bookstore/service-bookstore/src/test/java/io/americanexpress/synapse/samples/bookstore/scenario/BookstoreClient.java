@@ -21,8 +21,10 @@ import org.jspecify.annotations.Nullable;
  * The bookstore's five operations over one protocol, with every answer as an {@link Outcome}. Each implementation
  * also checks its own protocol's status for every answer (REST 201 with a {@code Location}, 412 or 428; gRPC
  * {@code FAILED_PRECONDITION} or {@code ALREADY_EXISTS}, for example), so a wrong status fails that protocol's run
- * even when the outcome is right. There is no conditional read: REST's 304 has no gRPC form, so it is tested in
- * {@code BookstoreRestTest} only.
+ * even when the outcome is right. The one exception is gRPC's status for {@code PRECONDITION_FAILED}, which depends on
+ * why the precondition failed: the scenario that sends the {@code etag} checks it
+ * ({@link GrpcBookstoreClient#lastStatus()}). There is no conditional read: REST's 304 has no gRPC form, so it is
+ * tested in {@code BookstoreRestTest} only.
  */
 public interface BookstoreClient extends AutoCloseable {
 

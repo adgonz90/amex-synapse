@@ -288,8 +288,13 @@ final class FieldConverters {
         };
     }
 
-    /** {@code repeated T} ↔ {@code List<T>}; a violation in an element carries its index ({@code tags[1]}). */
+    /**
+     * {@code repeated T} ↔ {@code List<T>}; a violation in an element carries its index ({@code tags[1]}). The path of
+     * a scalar, enum or well-known type element is built only when the element fails; a message element's path is
+     * built up front, because its fields' paths start with it.
+     */
     static FieldConverter list(FieldConverter elements, Site site) {
+        boolean messages = elements instanceof RecordConverter;
         return new FieldConverter() {
 
             @Override
@@ -298,12 +303,13 @@ final class FieldConverters {
                 List<Object> read = new ArrayList<>(values.size());
                 boolean failed = false;
                 for (int i = 0; i < values.size(); i++) {
-                    String elementPath = path + "[" + i + "]";
-                    Object element = reading.convert(elements, values.get(i), elementPath);
+                    Object element = messages
+                            ? reading.convert(elements, values.get(i), Reading.elementPath(path, i))
+                            : reading.convertElement(elements, values.get(i), path, i);
                     if (FieldConverter.failed(element)) {
                         failed = true;
                     } else if (element == null) {
-                        reading.missing(elementPath);
+                        reading.missing(Reading.elementPath(path, i));
                         failed = true;
                     } else {
                         read.add(element);

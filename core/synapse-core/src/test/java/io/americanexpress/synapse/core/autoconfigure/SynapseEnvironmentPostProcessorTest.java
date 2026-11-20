@@ -162,9 +162,39 @@ class SynapseEnvironmentPostProcessorTest {
                         .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> assertThat(ex.description())
                                 .isEqualTo("During AOT processing the environment is the default profile 'build', "
                                         + "but these profiles are active: kafka. Boot ignores the default profile "
-                                        + "while any profile is active, whether spring.profiles.include set it or a library "
-                                        + "added it (as spring-cloud-kubernetes adds kubernetes inside a Kubernetes pod), so "
-                                        + "AOT processing would not read the build environment's files."));
+                                        + "while any profile is active, so AOT processing would not read the build "
+                                        + "environment's files. spring.profiles.include activates kafka."));
+            } finally {
+                System.clearProperty(AbstractAotProcessor.AOT_PROCESSING);
+            }
+        }
+    }
+
+    /**
+     * A profile that a library adds during AOT processing ({@link KubernetesLikeProfile}) fails the build too, and the
+     * failure blames the library, not {@code spring.profiles.include}.
+     */
+    @Test
+    void duringAotProcessingALibraryProfileBlamesTheLibrary() throws IOException {
+        Path service = ConfigFixtures
+                .directory(dir, "service", Map
+                        .of("application.yaml", "spring.profiles.active: ${ENV}\n", "application-build.yaml",
+                                "fixture.greeting: hello build\n", "META-INF/spring.factories",
+                                "org.springframework.boot.EnvironmentPostProcessor="
+                                        + KubernetesLikeProfile.class.getName() + "\n"));
+        String[] args = {"--spring.profiles.active=", "--spring.profiles.default=build"};
+        try (URLClassLoader classLoader = ConfigFixtures.classLoader(service)) {
+            System.setProperty(AbstractAotProcessor.AOT_PROCESSING, "true");
+            try {
+                assertThatThrownBy(() -> ConfigFixtures.application(classLoader, Map.of()).run(args))
+                        .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                            assertThat(ex.description())
+                                    .endsWith("A library or the platform added kubernetes (as spring-cloud-kubernetes "
+                                            + "adds kubernetes when Boot detects Kubernetes).");
+                            assertThat(ex.action())
+                                    .contains("--spring.main.cloud-platform=none")
+                                    .doesNotContain("spring.profiles.include");
+                        });
             } finally {
                 System.clearProperty(AbstractAotProcessor.AOT_PROCESSING);
             }

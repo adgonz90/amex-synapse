@@ -33,7 +33,7 @@
     <properties>
         <!-- spring-boot:run runs the local environment (application-local.yaml); -Dspring-boot.run.profiles=<env>
              picks another. It runs this module alone, so it needs contract-${serviceName} and data-${serviceName}
-             installed (mvn install from the aggregator). -->
+             installed (./mvnw install from the aggregator). -->
         <spring-boot.run.profiles>local</spring-boot.run.profiles>
         <!-- The OpenTelemetry Java agent that the build copies to target/otel (the otel-agent execution below). Spring
              Boot doesn't manage its version. -->
@@ -157,7 +157,7 @@
                  the build environment (application-build.yaml, data-${serviceName}'s config-build.yaml) and puts the
                  generated code in the jar. java -Dspring.aot.enabled=true -jar runs that code instead of the
                  configuration classes. With -Pimage, synapse-parent's image profile also binds build-image-no-fork
-                 here, the module that declares this plugin: mvn -Pimage package builds the image
+                 here, the module that declares this plugin: ./mvnw -Pimage package builds the image
                  service-${serviceName}:<version>. -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>

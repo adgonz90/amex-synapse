@@ -20,6 +20,7 @@ import java.util.Locale;
 import java.util.function.Function;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
+import jakarta.validation.constraints.Size;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -32,6 +33,7 @@ import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.CorrelationIdPolicy;
+import io.americanexpress.synapse.core.masking.Masked;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 
@@ -54,7 +56,17 @@ final class PipelineFixtures {
             .buildValidatorFactory()
             .getValidator();
 
+    /** A value that must never appear in a log line. */
+    static final String SECRET = "4111-SECRET-1111";
+
     private PipelineFixtures() {
+    }
+
+    /**
+     * A model with a masked component whose constraint message interpolates the rejected value, as Hibernate
+     * Validator does for {@code ${validatedValue}} by default.
+     */
+    record CardLabel(@Masked @Size(max = 3, message = "${validatedValue} is too long") String number) {
     }
 
     static ContextBinder binder() {

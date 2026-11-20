@@ -20,6 +20,7 @@ import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Validation;
 import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 import io.micrometer.observation.tck.TestObservationRegistry;
 import io.micrometer.observation.tck.TestObservationRegistryAssert;
@@ -31,6 +32,7 @@ import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.operation.BusinessOperation;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
@@ -86,8 +88,14 @@ class SynapseOperationsTest {
 
     @Test
     void invokeWorksForBusinessOperations() {
+        // A business input is built by the service, so its violation is INTERNAL; the cause keeps the violations.
         assertThatSynapseException(() -> SynapseOperations.invoke(new TitleRule(), new CreateBookRequest(" ")))
-                .hasCode(SynapseErrors.VALIDATION_FAILED);
+                .hasCode("INTERNAL")
+                .satisfies(failure -> assertThat(failure.getCause())
+                        .isInstanceOfSatisfying(SynapseException.class, cause -> {
+                            assertThat(cause.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+                            assertThat(cause.violations()).extracting(Violation::field).containsExactly("title");
+                        }));
         assertThat(SynapseOperations.invoke(new TitleRule(), new CreateBookRequest("Dune"))).isEqualTo("DUNE");
     }
 
@@ -180,11 +188,37 @@ class SynapseOperationsTest {
         }
     }
 
+    /** A group the pipeline never validates: the operation checks it by hand. */
+    interface Strict {
+    }
+
+    record CodeRequest(@Size(max = 3, groups = Strict.class) String code) {
+    }
+
+    /** Validates its own input by hand, for a rule the pipeline doesn't run. */
+    static class CheckCodeOperation implements CommandOperation<CodeRequest, String> {
+        @Override
+        public String execute(CodeRequest input) {
+            try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+                throw new ConstraintViolationException(factory.getValidator().validate(input, Strict.class));
+            }
+        }
+    }
+
     @Test
     void invokeTranslatesConstraintViolationsAsTheApplicationDoes() {
-        assertThatSynapseException(() -> SynapseOperations.invoke(new RejectedByCollaboratorOperation(), "x"))
+        assertThatSynapseException(() -> SynapseOperations.invoke(new CheckCodeOperation(), new CodeRequest("abcd")))
                 .hasCode(SynapseErrors.VALIDATION_FAILED)
-                .hasViolation("title");
+                .hasViolation("code");
+        // A collaborator's violations are not the caller's input: INTERNAL, with none of them.
+        assertThatSynapseException(() -> SynapseOperations.invoke(new RejectedByCollaboratorOperation(), "x"))
+                .hasCode("INTERNAL")
+                .satisfies(failure -> {
+                    assertThat(failure.violations()).isEmpty();
+                    assertThat(failure.getCause())
+                            .isNotInstanceOf(ConstraintViolationException.class)
+                            .hasMessageContaining("title: {jakarta.validation.constraints.NotBlank.message}");
+                });
     }
 
     @Test
@@ -194,7 +228,7 @@ class SynapseOperationsTest {
                 .translator(failure -> new SynapseException(SynapseErrors.UNAVAILABLE))
                 .invoker();
 
-        assertThatSynapseException(() -> invoker.invoke(new RejectedByCollaboratorOperation(), "x"))
+        assertThatSynapseException(() -> invoker.invoke(new CheckCodeOperation(), new CodeRequest("abcd")))
                 .hasCode(SynapseErrors.VALIDATION_FAILED);
         assertThatSynapseException(() -> invoker.invoke(new BoomOperation(), "x"))
                 .hasCode(SynapseErrors.UNAVAILABLE);

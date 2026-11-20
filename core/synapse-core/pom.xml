@@ -150,5 +150,11 @@
             <artifactId>spring-tx</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- The readiness group's default include is set only when Boot's probes auto-configuration is present. -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-health</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

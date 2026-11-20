@@ -22,10 +22,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import io.americanexpress.synapse.api.grpc.GrpcErrors;
+import io.americanexpress.synapse.api.grpc.internal.conditional.GrpcPreconditions;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.core.error.SynapseException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -84,6 +86,87 @@ class GrpcErrorStatusesTest {
         // Only Synapse's own ALREADY_EXISTS has the code default: another error with the same category doesn't.
         assertThat(DEFAULTS.statusFor(new Custom("BOOK_EXISTS", ErrorCategory.CONFLICT), null))
                 .isEqualTo(Status.Code.ABORTED);
+    }
+
+    /** A stale etag, as {@code GrpcPreconditions.translate} answers it: the operation's STALE_VERSION as the cause. */
+    private static SynapseException stale() {
+        return GrpcPreconditions.translate(true, new SynapseException(SynapseErrors.STALE_VERSION));
+    }
+
+    @Test
+    void staleCauseIsAborted() {
+        SynapseException built = new SynapseException(SynapseErrors.PRECONDITION_FAILED,
+                new SynapseException(SynapseErrors.STALE_VERSION));
+
+        assertThat(DEFAULTS.statusFor(built, null)).isEqualTo(Status.Code.ABORTED);
+        assertThat(DEFAULTS.statusFor(built, "update-book")).isEqualTo(Status.Code.ABORTED);
+        assertThat(DEFAULTS.statusFor(stale(), "update-book")).isEqualTo(Status.Code.ABORTED);
+        // The code's own status, without the exception, is still the category's.
+        assertThat(DEFAULTS.statusFor(SynapseErrors.PRECONDITION_FAILED, "update-book"))
+                .isEqualTo(Status.Code.FAILED_PRECONDITION);
+    }
+
+    @Test
+    void weakAndUnboundStayFailedPrecondition() {
+        // A weak tag, or an etag the write doesn't bind: PRECONDITION_FAILED without a cause, before the operation.
+        assertThat(DEFAULTS.statusFor(new SynapseException(SynapseErrors.PRECONDITION_FAILED), "update-book"))
+                .isEqualTo(Status.Code.FAILED_PRECONDITION);
+        // A cause that isn't a stale version.
+        assertThat(DEFAULTS
+                .statusFor(new SynapseException(SynapseErrors.PRECONDITION_FAILED,
+                        new SynapseException(SynapseErrors.CONFLICT)), "update-book"))
+                .isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(DEFAULTS
+                .statusFor(new SynapseException(SynapseErrors.PRECONDITION_FAILED, new IllegalStateException("x")),
+                        null))
+                .isEqualTo(Status.Code.FAILED_PRECONDITION);
+        // A missing etag.
+        assertThat(DEFAULTS.statusFor(new SynapseException(SynapseErrors.PRECONDITION_REQUIRED), "update-book"))
+                .isEqualTo(Status.Code.FAILED_PRECONDITION);
+    }
+
+    @Test
+    void operationsOwnPreconditionFailedStaysFailedPrecondition() {
+        // An operation that throws PRECONDITION_FAILED itself (a create-only put on an existing resource), or its own
+        // code in the PRECONDITION_FAILED category, even with a STALE_VERSION cause.
+        assertThat(DEFAULTS.statusFor(new SynapseException(SynapseErrors.PRECONDITION_FAILED), "put-doc"))
+                .isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(DEFAULTS
+                .statusFor(new SynapseException(new Custom("OUT_OF_STOCK", ErrorCategory.PRECONDITION_FAILED),
+                        new SynapseException(SynapseErrors.STALE_VERSION)), "adjust-stock"))
+                .isEqualTo(Status.Code.FAILED_PRECONDITION);
+        // A STALE_VERSION the operation throws on a request without an etag stays ABORTED, by its category.
+        assertThat(DEFAULTS.statusFor(new SynapseException(SynapseErrors.STALE_VERSION), "update-book"))
+                .isEqualTo(Status.Code.ABORTED);
+    }
+
+    @Test
+    void configuredOverrideWinsOverTheStaleDefault() {
+        GrpcErrorStatuses global = new GrpcErrorStatuses(
+                Map.of("PRECONDITION_FAILED", Status.Code.FAILED_PRECONDITION), Map.of());
+        GrpcErrorStatuses perOperation = new GrpcErrorStatuses(Map.of(),
+                Map.of("update-book", Map.of("PRECONDITION_FAILED", Status.Code.FAILED_PRECONDITION)));
+
+        assertThat(global.statusFor(stale(), "update-book")).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(global.statusFor(stale(), null)).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(perOperation.statusFor(stale(), "update-book")).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(perOperation.statusFor(stale(), "delete-book")).isEqualTo(Status.Code.ABORTED);
+        assertThat(perOperation.statusFor(stale(), null)).isEqualTo(Status.Code.ABORTED);
+    }
+
+    @Test
+    void staleVersionOverrideDoesNotApplyToTheTranslatedCode() {
+        GrpcErrorStatuses statuses = new GrpcErrorStatuses(Map.of("STALE_VERSION", Status.Code.UNAVAILABLE),
+                Map.of("update-book", Map.of("STALE_VERSION", Status.Code.OUT_OF_RANGE)));
+
+        // The caller sees PRECONDITION_FAILED, so only a [PRECONDITION_FAILED] override applies.
+        assertThat(statuses.statusFor(stale(), "update-book")).isEqualTo(Status.Code.ABORTED);
+        assertThat(statuses.statusFor(stale(), null)).isEqualTo(Status.Code.ABORTED);
+        // The overrides still apply to STALE_VERSION itself.
+        assertThat(statuses.statusFor(new SynapseException(SynapseErrors.STALE_VERSION), "update-book"))
+                .isEqualTo(Status.Code.OUT_OF_RANGE);
+        assertThat(statuses.statusFor(new SynapseException(SynapseErrors.STALE_VERSION), null))
+                .isEqualTo(Status.Code.UNAVAILABLE);
     }
 
     @Test

@@ -112,15 +112,17 @@ assert headings == [
 assert !readme.contains('#[[') && !readme.contains(']]#'): 'README still holds Velocity escapes'
 assert readme.contains('-Paot') && readme.contains('-Pimage'): 'README says nothing of -Paot and -Pimage'
 
-// Git keeps the project on LF, whatever line separator the generator used.
-assert new File(project, '.gitattributes').readLines()*.trim() == ['* text=auto eol=lf']
+// Git keeps the project on LF, whatever line separator the generator used, except the wrapper's Windows script.
+assert new File(project, '.gitattributes').readLines()*.trim() == ['* text=auto eol=lf', '*.cmd text eol=crlf', 'mvnw text eol=lf']
 
 // Velocity left nothing behind: no template token survives, and every ${...} is one meant for the shell, Docker or
-// Maven, never an unresolved archetype property such as ${package} or ${serviceName}.
+// Maven, never an unresolved archetype property such as ${package} or ${serviceName}. The wrapper's files are copied
+// as is, never through Velocity (their shell variables are checked below, against the repository's).
+def wrapperFiles = ['mvnw', 'mvnw.cmd', '.mvn/wrapper/maven-wrapper.properties']
 def allowed = ~/ENV|JAR_FILE|project\.[\w.]+|otel-agent\.jar|opentelemetry-javaagent\.\w+/
 project.eachFileRecurse(groovy.io.FileType.FILES) { file ->
     def path = project.toPath().relativize(file.toPath()).toString().replace('\\', '/')
-    if (path =~ /^([^\/]+\/)?target\// || path == 'build.log') {
+    if (path =~ /^([^\/]+\/)?target\// || path == 'build.log' || wrapperFiles.contains(path)) {
         return
     }
     def text = file.text
@@ -145,6 +147,41 @@ def log = new File(project, 'build.log').text
             "build.log has no passing run of ${test}"
 }
 assert !log.contains('in com.example.s.ServiceAotIT'): 'ServiceAotIT ran without -Paot'
+
+// The Maven Wrapper is the repository's, copied as is (an unfiltered fileSet), byte for byte: mvnw on LF and mvnw.cmd
+// on CRLF. basedir is archetypes/<archetype>/target/it/projects/<name>, so the repository root is six levels up. The
+// post-generation script sets mvnw executable; only a POSIX file system (Linux CI) can show it.
+def root = new File(basedir as File, '../../../../../..').canonicalFile
+wrapperFiles.each {
+    assert new File(project, it).isFile(): "no ${it}"
+    assert new File(project, it).bytes == new File(root, it).bytes: "${it} differs from the repository's (${root})"
+}
+def mvnw = new File(project, 'mvnw')
+assert !mvnw.getText('UTF-8').contains('\r'): 'mvnw has a carriage return'
+def mvnwCmd = new File(project, 'mvnw.cmd').getText('UTF-8')
+assert mvnwCmd.contains('\r\n') && !(mvnwCmd =~ /(?<!\r)\n/): 'mvnw.cmd is not on CRLF'
+if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains('posix')) {
+    assert java.nio.file.Files.isExecutable(mvnw.toPath()): 'mvnw is not executable'
+}
+
+// The wrapper runs: it downloads Maven 3.9.16 into ~/.m2/wrapper (once) and prints its version. On Windows the script
+// is named with its directory, .\mvnw.cmd: with NoDefaultCurrentDirectoryInExePath set, cmd doesn't look for a bare
+// mvnw.cmd in the current directory.
+def windows = System.getProperty('os.name').toLowerCase(Locale.ROOT).startsWith('windows')
+def versionLog = new File(basedir as File, 'mvnw-version.log')
+// Its stdin is the null device, so nothing it starts can wait for input. A timeout destroys the whole process tree:
+// on Windows, destroying cmd alone would leave its powershell or java running, holding the log open.
+def wrapper = new ProcessBuilder(windows ? ['cmd', '/c', '.\\mvnw.cmd', '--version'] : ['./mvnw', '--version'])
+        .directory(project).redirectErrorStream(true).redirectOutput(versionLog)
+        .redirectInput(ProcessBuilder.Redirect.from(new File(windows ? 'NUL' : '/dev/null'))).start()
+if (!wrapper.waitFor(10, java.util.concurrent.TimeUnit.MINUTES)) {
+    wrapper.toHandle().descendants().forEach { it.destroyForcibly() }
+    wrapper.destroyForcibly()
+    assert false: "mvnw --version didn't finish in 10 minutes:\n${versionLog.text}"
+}
+def versionOutput = versionLog.text
+assert wrapper.exitValue() == 0: "mvnw --version exited with ${wrapper.exitValue()}:\n${versionOutput}"
+assert versionOutput.contains('Apache Maven 3.9.16'): "mvnw --version didn't run Maven 3.9.16:\n${versionOutput}"
 
 true
 

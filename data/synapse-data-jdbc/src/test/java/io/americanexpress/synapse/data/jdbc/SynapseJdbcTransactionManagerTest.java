@@ -29,6 +29,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.data.CommitOutcomeUnknownException;
+import io.americanexpress.synapse.data.DataErrors;
 import io.americanexpress.synapse.data.internal.error.DataExceptionTranslator;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -104,6 +105,48 @@ class SynapseJdbcTransactionManagerTest {
     }
 
     /**
+     * A commit whose stated failure (HY000) has a lost connection below it has an unknown outcome: the commit check
+     * looks at every exception in the chain, as the translator does, so the same failure is never a retryable
+     * {@code UNAVAILABLE} at commit.
+     */
+    @Test
+    void aLostConnectionBelowAnotherStatedFailureHasAnUnknownOutcome() throws SQLException {
+        doThrow(new SQLException("general error", "HY000", new SQLException("I/O error", "08006")))
+                .when(connection)
+                .commit();
+
+        Throwable thrown = catchThrowable(() -> template.executeWithoutResult(status -> {
+        }));
+
+        assertThat(thrown).isInstanceOf(CommitOutcomeUnknownException.class);
+        SynapseException translated = new DataExceptionTranslator().translate(Objects.requireNonNull(thrown));
+        assertThat(Objects.requireNonNull(translated).code()).isEqualTo(DataErrors.COMMIT_OUTCOME_UNKNOWN.code());
+    }
+
+    /**
+     * A commit the database rejects for a full disk (53100) has a known outcome: the database answered, and nothing
+     * was committed. Spring translates the state to a {@code DataAccessResourceFailureException}, but the state, not
+     * the type, says the connection wasn't lost: the transaction is rolled back, and the failure is the server's
+     * transient {@code UNAVAILABLE}.
+     */
+    @Test
+    void aCommitRejectedForDiskFullIsNotOutcomeUnknown() throws SQLException {
+        doThrow(new SQLException("could not extend file: No space left on device", "53100"))
+                .when(connection)
+                .commit();
+
+        Throwable thrown = catchThrowable(() -> template.executeWithoutResult(status -> {
+        }));
+
+        assertThat(thrown)
+                .isInstanceOf(DataAccessResourceFailureException.class)
+                .isNotInstanceOf(CommitOutcomeUnknownException.class);
+        verify(connection).rollback();
+        SynapseException translated = new DataExceptionTranslator().translate(Objects.requireNonNull(thrown));
+        assertThat(Objects.requireNonNull(translated).code()).isEqualTo(SynapseErrors.UNAVAILABLE.code());
+    }
+
+    /**
      * A commit on a connection the pool already closed (Hikari's "Connection is closed", without a state) says nothing
      * about the commit's outcome: the connection was gone before it, so nothing was committed.
      */
@@ -121,9 +164,9 @@ class SynapseJdbcTransactionManagerTest {
 
     /**
      * A connection exception type without a class-08 state is a lost connection too: the commit-phase check uses the
-     * same rule as the translator, so no commit-phase failure is ever a retryable {@code UNAVAILABLE}. Hikari doesn't
-     * close a connection for it, so it is still open, and the transaction manager rolls it back: a pooled connection
-     * never goes back with an open transaction.
+     * same rule as the translator, so no commit that lost its connection is a retryable {@code UNAVAILABLE}. Hikari
+     * doesn't close a connection for it, so it is still open, and the transaction manager rolls it back: a pooled
+     * connection never goes back with an open transaction.
      */
     @Test
     void aCommitThatFailsWithAConnectionExceptionTypeHasAnUnknownOutcome() throws SQLException {

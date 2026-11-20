@@ -26,6 +26,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProp
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.grpc.server.autoconfigure.GrpcServerAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import org.springframework.grpc.server.GrpcServerFactory;
@@ -48,11 +49,14 @@ import io.americanexpress.synapse.core.internal.context.CorrelationIdPolicy;
  * Auto-configuration for the gRPC error handling: how Synapse errors become gRPC statuses and error details, and how
  * calls to unknown methods are answered. It is
  * separate from {@link SynapseGrpcAutoConfiguration}, as the REST plugin's error handling is, and has the same
- * conditions. It comes after Boot's gRPC security auto-configuration: Spring gRPC asks exception handlers in order,
- * and Spring Security's handler is unordered, so between it and the Synapse handler (ordered last) the one defined
- * first answers first.
+ * conditions. It comes after Boot's gRPC server and gRPC security auto-configurations, each by its own edge: Spring
+ * gRPC asks exception handlers in order, and the {@code @GrpcAdvice} and Spring Security handlers are unordered, so
+ * between one of them and the Synapse handler (ordered last) the one defined first answers first. A handler that
+ * another auto-configuration defines answers first only if it declares an order or that auto-configuration comes
+ * before this one.
  */
-@AutoConfiguration(after = {SynapseCoreAutoConfiguration.class, SynapseContextAutoConfiguration.class,
+@AutoConfiguration(after = {GrpcServerAutoConfiguration.class, SynapseCoreAutoConfiguration.class,
+        SynapseContextAutoConfiguration.class,
         SynapseOperationAutoConfiguration.class}, afterName = SynapseGrpcErrorAutoConfiguration.GRPC_SECURITY)
 @ConditionalOnClass({GrpcServerFactory.class, BindableService.class})
 @ConditionalOnBooleanProperty(name = "spring.grpc.server.enabled", matchIfMissing = true)

@@ -92,17 +92,44 @@ class BusinessInterceptorTest {
     }
 
     @Test
-    void validatesBusinessInput() {
+    void businessInputViolationIsInternal() {
         PriceCalculator target = calculator();
         PriceCalculator business = pipeline(BusinessObservation.SPANS).wrapBusiness(target);
 
         SynapseException failure = catchThrowableOfType(SynapseException.class,
                 () -> business.execute(new PriceRequest(0)));
 
-        assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
-        assertThat(failure.violations()).containsExactly(new Violation("quantity", "must be greater than 0"));
+        // The service built an invalid internal model: its bug, never the caller's, so no violation reaches them.
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.violations()).isEmpty();
+        assertThat(failure.getCause()).isInstanceOfSatisfying(SynapseException.class, cause -> {
+            assertThat(cause.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+            assertThat(cause.violations()).containsExactly(new Violation("quantity", "must be greater than 0"));
+        });
         assertThat(target.calls).isZero();
         assertThat(business.execute(new PriceRequest(2))).isEqualTo(20);
+    }
+
+    @Test
+    void validationFailedFromTheBusinessBodyPropagatesUnchanged() {
+        SynapseException own = SynapseException
+                .ofViolations(SynapseErrors.VALIDATION_FAILED,
+                        List.of(new Violation("quantity", "is too large")));
+        PriceCalculator business = pipeline(BusinessObservation.OFF).wrapBusiness(new PriceCalculator(in -> {
+            throw own;
+        }));
+
+        assertThatThrownBy(() -> business.execute(new PriceRequest(2))).isSameAs(own);
+    }
+
+    @Test
+    void businessInputViolationIsInternalInEveryMode() {
+        for (BusinessObservation mode : BusinessObservation.values()) {
+            PriceCalculator business = pipeline(mode).wrapBusiness(calculator());
+
+            assertThat(catchThrowableOfType(SynapseException.class, () -> business.execute(new PriceRequest(0)))
+                    .details()).as(mode.name()).isEqualTo(SynapseErrors.INTERNAL);
+        }
     }
 
     @Test

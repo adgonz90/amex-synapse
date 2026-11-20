@@ -68,9 +68,9 @@ public class BookstoreGrpcConfiguration {
                 .sortable(SearchBooksRequest.SortKey.class)
                 // PUT /books/{id}. The etag field fills UpdateBookRequest.version, which isn't @Nullable, so it is
                 // required: without it, FAILED_PRECONDITION with the reason PRECONDITION_REQUIRED (REST 428). A stale
-                // or weak one is FAILED_PRECONDITION with PRECONDITION_FAILED (REST 412). No .etag: as REST sends no
-                // ETag on PUT, the response's etag stays empty, and Synapse fails startup if a method whose input has
-                // a VersionCondition declares one.
+                // one is ABORTED (AIP-154) and a weak one FAILED_PRECONDITION, both with PRECONDITION_FAILED (REST
+                // 412). No .etag: as REST sends no ETag on PUT, the response's etag stays empty, and Synapse fails
+                // startup if a method whose input has a VersionCondition declares one.
                 .unary(BookServiceGrpc.getUpdateBookMethod(), updateBook)
                 // DELETE /books/{id}. The etag is required, as for UpdateBook. The operation returns nothing: the
                 // response is google.protobuf.Empty, as REST's 204.

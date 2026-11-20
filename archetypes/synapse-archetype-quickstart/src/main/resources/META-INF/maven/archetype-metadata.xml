@@ -17,9 +17,9 @@
     ${packageInPathFormat}, ${groupId}, ${artifactId} and ${version} are replaced, an undefined reference such as ${ENV}
     stays as it is, and a line starting with ## is a Velocity comment (so the README escapes its headings: #[[## …]]#).
     The template pom.xml is always generated; its synapse-parent version was filled in when this archetype was built.
-    Every fileSet is filtered, including those with nothing to replace: the generator writes a filtered file with the
-    platform's line separator and copies an unfiltered one as is, so this keeps a project generated on Windows on one
-    line ending. The generated .gitattributes then normalizes them to LF in git.
+    Every fileSet but the Maven Wrapper's is filtered, including those with nothing to replace: the generator writes a
+    filtered file with the platform's line separator and copies an unfiltered one as is, so this keeps a project
+    generated on Windows on one line ending. The generated .gitattributes then normalizes them to LF in git.
 -->
 <archetype-descriptor xmlns="https://maven.apache.org/plugins/maven-archetype-plugin/archetype-descriptor/1.1.0"
                       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -55,6 +55,18 @@
             <includes>
                 <include>.gitattributes</include>
                 <include>README.md</include>
+            </includes>
+        </fileSet>
+        <!-- The Maven Wrapper: the repository's mvnw, mvnw.cmd and maven-wrapper.properties, byte for byte (the
+             archetype-drift build-rules test checks it). Unfiltered, for two reasons: Velocity would read the scripts'
+             ${...} and # lines as its own, and an unfiltered file is copied as is, so mvnw keeps LF and mvnw.cmd keeps
+             CRLF on every platform. The post-generation script sets mvnw executable. -->
+        <fileSet filtered="false">
+            <directory></directory>
+            <includes>
+                <include>mvnw</include>
+                <include>mvnw.cmd</include>
+                <include>.mvn/wrapper/maven-wrapper.properties</include>
             </includes>
         </fileSet>
     </fileSets>

@@ -3,8 +3,9 @@
 // must reach its archetype, so this check compares their code: comments, blank lines and import order are ignored,
 // and each sample's names are replaced by the archetype's (its package by ${package}, and so on). It fails naming
 // each file that differs, and each quickstart file that one side has and the other hasn't. The service archetype's
-// domain files (Item, against the bookstore's Book) are not compared. basedir is
-// tests/synapse-build-rules-tests/target/it/archetype-drift, so the repository root is five levels up.
+// domain files (Item, against the bookstore's Book) are not compared. Each archetype's Maven Wrapper must equal the
+// repository's, byte for byte. basedir is tests/synapse-build-rules-tests/target/it/archetype-drift, so the repository
+// root is five levels up.
 def root = new File(basedir, '../../../../..').canonicalFile
 
 // The code of a file: no comment lines, no blank lines, the imports sorted at the end.
@@ -55,7 +56,7 @@ def compare = { String archetypeRoot, String sampleRoot, String archetypePath, S
 def quickstart = 'archetypes/synapse-archetype-quickstart/src/main/resources/archetype-resources'
 def hello = 'samples/hello-rest'
 def helloPackage = 'io/americanexpress/synapse/samples/hello/'
-def helloNames = ['io.americanexpress.synapse.samples.hello': '${package}', 'hello-rest': '${artifactId}', './mvnw ': 'mvn ']
+def helloNames = ['io.americanexpress.synapse.samples.hello': '${package}', 'hello-rest': '${artifactId}']
 def files = { String dir ->
     def base = new File(root, dir)
     def found = []
@@ -79,7 +80,7 @@ archetypeFiles.findAll { sampleFiles.contains(toSample(it)) }.each { compare(qui
 def service = 'archetypes/synapse-archetype-service/src/main/resources/archetype-resources'
 def bookstore = 'samples/reference-bookstore'
 def bookstoreNames = ['io.americanexpress.synapse.samples.bookstore': '${package}', '"bookstore.': '"service.',
-        'name: bookstore': 'name: ${serviceName}', './mvnw ': 'mvn ']
+        'name: bookstore': 'name: ${serviceName}']
 def bookstorePackage = 'io/americanexpress/synapse/samples/bookstore/'
 [
     'service-__serviceName__/.dockerignore',
@@ -103,6 +104,19 @@ def bookstorePackage = 'io/americanexpress/synapse/samples/bookstore/'
             .replace('data-__serviceName__/', 'data-books/')
             .replaceFirst(/\/src\/(main|test)\/java\//, "/src/\$1/java/${bookstorePackage}")
     compare(service, bookstore, path, samplePath, bookstoreNames)
+}
+
+// Both archetypes ship the repository's Maven Wrapper, copied byte for byte (their fileSets are unfiltered), so there
+// is one wrapper version to bump: after a wrapper upgrade, copy the three files into each archetype again.
+[quickstart, service].each { archetypeRoot ->
+    ['mvnw', 'mvnw.cmd', '.mvn/wrapper/maven-wrapper.properties'].each { path ->
+        def copy = new File(root, "${archetypeRoot}/${path}")
+        if (!copy.isFile()) {
+            differs << "${archetypeRoot}/${path} is missing: copy the repository's ${path} there".toString()
+        } else if (!Arrays.equals(copy.bytes, new File(root, path).bytes)) {
+            differs << "${archetypeRoot}/${path} differs from the repository's ${path}, byte for byte".toString()
+        }
+    }
 }
 
 assert differs.isEmpty() : 'an archetype has drifted from its sample; make the same change on both sides:\n' +

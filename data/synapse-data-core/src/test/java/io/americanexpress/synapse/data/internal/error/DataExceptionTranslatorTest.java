@@ -258,9 +258,37 @@ class DataExceptionTranslatorTest {
         assertThat(translated(spring)).hasCode(DataErrors.COMMIT_OUTCOME_UNKNOWN);
     }
 
+    /**
+     * SQLState class 53 (insufficient resources: 53300 too_many_connections, 53100 disk_full) is the server's
+     * transient state, not a lost connection: {@code UNAVAILABLE}, as Spring translates it or as the driver threw it.
+     */
+    @Test
+    void insufficientResourcesAreUnavailable() {
+        assertThat(translated(new DataAccessResourceFailureException("too many clients",
+                new SQLException("FATAL: sorry, too many clients already", "53300"))))
+                .hasCode(SynapseErrors.UNAVAILABLE);
+        assertThat(translated(new RuntimeException("wrapper", new SQLException("could not extend file", "53100"))))
+                .hasCode(SynapseErrors.UNAVAILABLE);
+    }
+
+    /** SQLState class 54 (program limit exceeded) is deterministic: a retry fails the same way, so it is INTERNAL. */
+    @Test
+    void programLimitIsInternal() {
+        DataAccessException spring = Objects
+                .requireNonNull(new SQLStateSQLExceptionTranslator()
+                        .translate("query", SQL, new SQLException("statement is too complex", "54001")));
+
+        assertThat(spring).isInstanceOf(DataAccessResourceFailureException.class);
+        assertThat(translation(spring)).isEmpty();
+        assertThat(translation(new SQLException("too many columns", "54011"))).isEmpty();
+    }
+
     /** The JDBC connection exception types are lost connections whatever their state, as Spring translates them. */
     @Test
     void connectionExceptionTypesAreUnavailable() {
+        assertThat(translated(new CannotGetJdbcConnectionException("Failed to obtain JDBC Connection",
+                new SQLNonTransientConnectionException("Connection is broken", "90067"))))
+                .hasCode(SynapseErrors.UNAVAILABLE);
         assertThat(translated(new SQLNonTransientConnectionException("The connection was reset")))
                 .hasCode(SynapseErrors.UNAVAILABLE);
         assertThat(translated(new SQLTransientConnectionException("Connection is not available")))

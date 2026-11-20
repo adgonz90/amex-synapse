@@ -14,10 +14,17 @@
 package io.americanexpress.synapse.core.internal.pipeline;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Validator;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
 
 import ch.qos.logback.classic.Level;
@@ -48,6 +55,7 @@ import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.ContextScope;
 import io.americanexpress.synapse.core.internal.context.InboundContext;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.BookErrors;
+import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.CardLabel;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.GetBookOperation;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.SaveBookOperation;
 import io.americanexpress.synapse.core.observability.DefaultOperationObservationConvention;
@@ -60,6 +68,7 @@ import io.americanexpress.synapse.core.paging.PageQuery;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.CLOCK;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.FAILURE_LOGGER;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.NOW;
+import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.SECRET;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.VALIDATOR;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.linesContaining;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.setLevel;
@@ -85,6 +94,14 @@ class OperationInterceptorTest {
     }
 
     record Search(@Nullable PageQuery page, String text) {
+    }
+
+    /** A group the pipeline never validates: an operation checks it by hand. */
+    interface Strict {
+    }
+
+    /** An order whose quantity only the operation itself checks (group {@link Strict}). */
+    record OrderRequest(@NotBlank String id, @Max(value = 5, groups = Strict.class) int quantity) {
     }
 
     private final TestObservationRegistry observations = TestObservationRegistry.create();
@@ -293,6 +310,146 @@ class OperationInterceptorTest {
                 .wrapOperation(failing(new IllegalStateException("busy")));
         assertThat(catchThrowableOfType(SynapseException.class, () -> untranslated.execute("x")).details())
                 .isEqualTo(SynapseErrors.INTERNAL);
+    }
+
+    /** A pipeline that translates constraint violations as the application does. */
+    private OperationPipeline translating() {
+        return pipeline().translators(List.of(new ConstraintViolationTranslator())).build();
+    }
+
+    private static SaveBookOperation<OrderRequest> throwing(Function<OrderRequest, RuntimeException> failure) {
+        return new SaveBookOperation<>(in -> {
+            throw failure.apply(in);
+        });
+    }
+
+    /** Violations of an object that is not the operation's input, as a collaborator's method validation reports. */
+    private static Set<ConstraintViolation<CreateBookRequest>> collaboratorViolations() {
+        return VALIDATOR.validate(new CreateBookRequest(""));
+    }
+
+    @Test
+    void collaboratorViolationIsInternal(CapturedOutput output) {
+        ConstraintViolationException thrown = new ConstraintViolationException(collaboratorViolations());
+        SaveBookOperation<OrderRequest> op = translating().wrapOperation(throwing(in -> thrown));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> op.execute(new OrderRequest("o-1", 9)));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.violations()).isEmpty();
+        // The logged cause stands in for the exception: each path and message template, with its stack trace.
+        assertThat(failure.getCause())
+                .isNotInstanceOf(ConstraintViolationException.class)
+                .hasMessage("ConstraintViolationException: title: {jakarta.validation.constraints.NotBlank.message}");
+        assertThat(Objects.requireNonNull(failure.getCause()).getStackTrace()).isEqualTo(thrown.getStackTrace());
+        assertThat(output.getOut())
+                .contains(" ERROR ", "Operation save-book failed with INTERNAL (INTERNAL)",
+                        "title: {jakarta.validation.constraints.NotBlank.message}")
+                .doesNotContain("must not be blank");
+    }
+
+    @Test
+    void aMaskedValueInACollaboratorViolationNeverReachesTheLog(CapturedOutput output) {
+        SaveBookOperation<OrderRequest> op = translating()
+                .wrapOperation(throwing(
+                        in -> new ConstraintViolationException(VALIDATOR.validate(new CardLabel(SECRET)))));
+
+        assertThat(catchThrowableOfType(SynapseException.class, () -> op.execute(new OrderRequest("o-1", 1))).details())
+                .isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(output.getOut())
+                .contains(" ERROR ", "number: ${validatedValue} is too long", "violations=\"number: ${validatedValue}")
+                .doesNotContain(SECRET);
+    }
+
+    @Test
+    void aWrappedViolationIsInternalAndNeverLogsTheWrappersMessages(CapturedOutput output) {
+        // As a commit wraps a flush failure: the wrapper's message repeats the violations' interpolated messages.
+        SaveBookOperation<OrderRequest> op = translating().wrapOperation(throwing(in -> {
+            ConstraintViolationException violations = new ConstraintViolationException(
+                    VALIDATOR.validate(new CardLabel(SECRET)));
+            return new IllegalStateException("Error while committing [" + violations.getMessage() + "]",
+                    new IllegalArgumentException("rollback", violations));
+        }));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> op.execute(new OrderRequest("o-1", 1)));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.getCause())
+                .hasMessage(
+                        "IllegalStateException > IllegalArgumentException > ConstraintViolationException: "
+                                + "number: ${validatedValue} is too long");
+        assertThat(output.getOut()).contains(" ERROR ", "failed with INTERNAL").doesNotContain(SECRET);
+    }
+
+    @Test
+    void handValidationOfTheInputIsValidationFailed() {
+        SaveBookOperation<OrderRequest> op = translating()
+                .wrapOperation(throwing(in -> new ConstraintViolationException(VALIDATOR.validate(in, Strict.class))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> op.execute(new OrderRequest("o-1", 9)));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        assertThat(failure.violations()).containsExactly(new Violation("quantity", "must be less than or equal to 5"));
+    }
+
+    @Test
+    void mixedRootsAreInternal() {
+        SaveBookOperation<OrderRequest> op = translating().wrapOperation(throwing(in -> {
+            Set<ConstraintViolation<?>> both = new HashSet<>(VALIDATOR.validate(in, Strict.class));
+            both.addAll(collaboratorViolations());
+            return new ConstraintViolationException(both);
+        }));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> op.execute(new OrderRequest("o-1", 9)));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.violations()).isEmpty();
+    }
+
+    @Test
+    void violationsOfAnEqualCopyOfTheInputAreInternal() {
+        // The rule is identity: an equal record built elsewhere is not the caller's input.
+        SaveBookOperation<OrderRequest> op = translating()
+                .wrapOperation(throwing(in -> new ConstraintViolationException(
+                        VALIDATOR.validate(new OrderRequest(in.id(), in.quantity()), Strict.class))));
+
+        assertThat(catchThrowableOfType(SynapseException.class, () -> op.execute(new OrderRequest("o-1", 9))).details())
+                .isEqualTo(SynapseErrors.INTERNAL);
+    }
+
+    @Test
+    void constraintViolationsWithoutAViolationAreInternal() {
+        SaveBookOperation<OrderRequest> none = translating()
+                .wrapOperation(throwing(in -> new ConstraintViolationException("no violations", Set.of())));
+        SaveBookOperation<OrderRequest> unknown = translating()
+                .wrapOperation(throwing(in -> new ConstraintViolationException("unknown", null)));
+        SaveBookOperation<OrderRequest> valueOnly = translating()
+                .wrapOperation(throwing(in -> new ConstraintViolationException(
+                        VALIDATOR.validateValue(OrderRequest.class, "id", ""))));
+
+        for (SaveBookOperation<OrderRequest> op : List.of(none, unknown, valueOnly)) {
+            assertThat(catchThrowableOfType(SynapseException.class, () -> op.execute(new OrderRequest("o-1", 1)))
+                    .details()).isEqualTo(SynapseErrors.INTERNAL);
+        }
+    }
+
+    @Test
+    void anEarlierTranslatorNeverSeesACollaboratorViolation() {
+        List<Throwable> seen = new ArrayList<>();
+        SaveBookOperation<OrderRequest> op = pipeline().translators(List.of(ex -> {
+            seen.add(ex);
+            return new SynapseException(SynapseErrors.CONFLICT, ex);
+        }, new ConstraintViolationTranslator()))
+                .build()
+                .wrapOperation(throwing(in -> new ConstraintViolationException(collaboratorViolations())));
+
+        assertThat(catchThrowableOfType(SynapseException.class, () -> op.execute(new OrderRequest("o-1", 1))).details())
+                .isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(seen).isEmpty();
     }
 
     @Test

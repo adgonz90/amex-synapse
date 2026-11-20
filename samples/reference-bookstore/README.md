@@ -28,7 +28,7 @@ Code paths are under `contract-bookstore/src/main/`, `data-books/src/main/` and
 | The OpenAPI document, on in `local` only; CORS for a local front end | [The OpenAPI document](#the-openapi-document), [CORS](#cors) |
 | The audit user: with no principal signed in, writes record `synapse.data.auditing.system-user` (`system`) | [The audit user](#the-audit-user) |
 | Environments: `local` on `docker compose`, `test`, `build` (AOT processing and an image's training run) and `dev`, an example of a deployed one | [Environments](#environments) |
-| AOT mode, opt-in with `-Paot`: the jar runs the code that `process-aot` generated at build time, and a run in an environment that turns on a build-time switch fails, naming every one | [AOT mode](#aot-mode) |
+| AOT mode, opt-in and experimental with `-Paot`: the jar runs the code that `process-aot` generated at build time, and a run in an environment that turns on a build-time switch fails, naming every one | [AOT mode](#aot-mode) |
 | A container image two ways, `spring-boot:build-image` (Paketo) and a `Dockerfile` on a digest-pinned Temurin JRE, each with the JVM's AOT cache from a training run in `build`, and a smoke script that runs it in `dev` against PostgreSQL | [Container image](#container-image) |
 | The OpenTelemetry Java agent as an alternative to Boot's own SDK: one configuration class, the agent jar from Maven, and a test that runs the jar under it | [OpenTelemetry Java agent](#opentelemetry-java-agent) |
 | One scenario suite that runs every case over both protocols and expects the same outcome, against the test context and, with `-Paot`, against the packaged jar in AOT mode | [Tests](#tests) |
@@ -386,7 +386,8 @@ grpcurl -plaintext -d "{\"id\": \"$ID\", \"isbn\": \"978-0547773742\", \"title\"
 
 The version is now 1 (grpcurl writes an `int64` as a string). An update answers without an entity tag, on both
 protocols, as REST sends no `ETag` on a `PUT`: a client reads the book again for the new one. The same `"0"` again is
-stale, and gRPC answers `FAILED_PRECONDITION` with REST's code, `PRECONDITION_FAILED`, in `ErrorInfo`:
+stale, and gRPC answers `ABORTED`, as AIP-154 answers a stale etag (read the book again and retry), with REST's code,
+`PRECONDITION_FAILED`, in `ErrorInfo`:
 
 ```bash
 grpcurl -plaintext -d "{\"id\": \"$ID\", \"isbn\": \"978-0547773742\", \"title\": \"Changed\", \"author\": \"Ursula K. Le Guin\", \"etag\": \"\\\"0\\\"\"}" \
@@ -395,14 +396,14 @@ grpcurl -plaintext -d "{\"id\": \"$ID\", \"isbn\": \"978-0547773742\", \"title\"
 
 ```
 ERROR:
-  Code: FailedPrecondition
+  Code: Aborted
   Message: A precondition failed
   Details:
   1)	{
     	  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
     	  "domain": "bookstore",
     	  "metadata": {
-    	    "correlationId": "9dd92e15-fbff-4d7e-a537-08352ea406fb"
+    	    "correlationId": "d3b798d5-fa95-44e2-8bfa-435232f097d8"
     	  },
     	  "reason": "PRECONDITION_FAILED"
     	}
@@ -485,7 +486,7 @@ ERROR:
 ```
 
 `*` names any current version, on both protocols. A weak tag (`W/"1"`) is `PRECONDITION_FAILED`, since a version is
-compared strongly.
+compared strongly; over gRPC its status is `FAILED_PRECONDITION`, not `ABORTED`, because reading again doesn't fix it.
 
 ### Pages across protocols
 
@@ -668,7 +669,10 @@ Date: Sun, 08 Nov 2026 06:36:43 GMT
 While the database is down, `/health` answers 503 DOWN, so the platform stops sending the instance traffic
 (`BookstoreOperationalIT` stops its database to check it; [`multi-store`](../multi-store/README.md) shows it with
 `docker compose stop`). Configuring the readiness group defines it, and a group includes every indicator unless it
-lists its members, hence `include: readinessState` in `application.yaml`; Synapse adds the stores that opt in.
+lists its members, so when an application configures the group, as `application.yaml` does with `additional-path`,
+Synapse defaults its `include` to `readinessState` (an `include` of yours replaces it; without a key of the group,
+Boot's probe group keeps its settings, and the stores that opt in still join it) and adds the stores that opt in;
+`application.yaml` sets no `include`.
 
 The gRPC port serves Boot's `grpc.health.v1.Health`:
 
@@ -830,7 +834,8 @@ reflection and the OpenAPI document are off, CORS is off, and the health endpoin
 
 ## AOT mode
 
-Spring's AOT processing is opt-in: `synapse-parent` runs it (`spring-boot:process-aot`) only with its `aot` profile,
+`-Paot` is experimental until P4: it may change without notice. Spring's AOT processing is opt-in: `synapse-parent`
+runs it (`spring-boot:process-aot`) only with its `aot` profile,
 `-Paot`. This sample is the one that shows it, so it keeps the build environment's files (`application-build.yaml`,
 data-books' `config-build.yaml`); the other samples don't have them. AOT processing evaluates the configuration once,
 at build time, in the `build` environment, and puts generated code for the bean definitions in the jar.
@@ -1050,9 +1055,9 @@ agent's. Stop the service with Ctrl+C. `BookstoreAgentIT` runs this recipe in ev
 | `data-books/.../BookRepositoryIT` | `@SynapseDataTest("books")` on a PostgreSQL container: the store migrated and validated, the ISBN unique, the version from 0, the author search ignoring case | integration |
 | `operation/BookOperationsTest` | The operations with the real pipeline and a mocked repository (`@SynapseOperationTest`): mapping, versions, `STALE_VERSION` without a write, `BOOK_NOT_FOUND`, validation before the operation, the search's page and sort | unit |
 | `api/rest/BookstoreRestTest` | The REST bindings on MockMvc with every operation mocked (`@SynapseRestTest`): 201 with `Location` and `ETag`, `If-Match` to the version, 304, 428, the sort keys, the query string; no store starts | unit |
-| `api/grpc/BookstoreGrpcTest` | The gRPC bindings on the in-process transport with every operation mocked (`@SynapseGrpcTest`): the fields, the `etag`, `PRECONDITION_REQUIRED` and `PRECONDITION_FAILED`, a weak tag, `ALREADY_EXISTS`, the page fields | unit |
+| `api/grpc/BookstoreGrpcTest` | The gRPC bindings on the in-process transport with every operation mocked (`@SynapseGrpcTest`): the fields, the `etag`, `PRECONDITION_REQUIRED`, a stale tag (`ABORTED`) and a weak one (`FAILED_PRECONDITION`), `ALREADY_EXISTS`, the page fields | unit |
 | `ArchitectureTest` | The layering rules, the data module included | unit |
-| `BookstoreJvmIT` | `BookstoreScenarios` against the whole service on free ports and a PostgreSQL container: every scenario over REST and over gRPC with the same outcome, an `ETag` and a page token taken from one protocol to the other, a change between an update's read and its write (412 / `FAILED_PRECONDITION`), and the generated-key WARN logged once for both plugins | integration |
+| `BookstoreJvmIT` | `BookstoreScenarios` against the whole service on free ports and a PostgreSQL container: every scenario over REST and over gRPC with the same outcome, an `ETag` and a page token taken from one protocol to the other, a change between an update's read and its write (412 / `ABORTED`, with the code `PRECONDITION_FAILED` on both), and the generated-key WARN logged once for both plugins | integration |
 | `BookstoreAotIT` | Only with `-Paot`. The same scenarios against the packaged jar in AOT mode, in `dev`, with the store's connection from environment variables: `dev` is the only active profile, and the generated-key WARN is logged once; a run in `local` fails naming both build-time switches; a run under the OpenTelemetry Java agent fails at startup with `OpenTelemetryAgentAotConfiguration`'s message | integration |
 | `BookstoreExitOnRefreshIT` | The jar in `build` with `-Dspring.context.exit=onRefresh`, as an image's training run starts it, exits 0 with no database reachable | integration |
 | `config/OpenTelemetryAgentConfigurationTest` | `OpenTelemetryAgentConfiguration` with Boot's SDK auto-configuration: without the agent's class, Boot's SDK is the `OpenTelemetry` bean; with it (a class loader that defines it), the bean is `GlobalOpenTelemetry.get()` and Boot's SDK backs off. The AOT check: in AOT mode with the agent's class and no bean, startup fails; with the bean, without the agent or on the JVM, it starts | unit |

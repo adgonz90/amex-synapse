@@ -51,7 +51,7 @@ public class UpdateBookOperation implements CommandOperation<UpdateBookRequest, 
      * @throws SynapseException {@link BookErrors#BOOK_NOT_FOUND} when no book has the id;
      *         {@link SynapseErrors#STALE_VERSION} when the book isn't at the version the request names. The request
      *         carried that version, so both edges answer it {@code PRECONDITION_FAILED} (REST 412, gRPC
-     *         {@code FAILED_PRECONDITION}). Another request that changes the book between the read and the write
+     *         {@code ABORTED}). Another request that changes the book between the read and the write
      *         fails the write itself (JPA's {@code @Version}), which is {@code STALE_VERSION} too;
      *         {@link SynapseErrors#ALREADY_EXISTS} when another book has the new ISBN
      */

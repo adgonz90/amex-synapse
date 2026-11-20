@@ -30,20 +30,23 @@ checks it with `SynapseArchitecture.forApplication(HelloApplication.class)`.
 
 #[[## Run it]]#
 
-You need JDK 21 or later and Maven 3.6.3 or later (Spring Boot's minimum). The project has no Maven Wrapper;
-`mvn wrapper:wrapper` adds one if you want every build to use the same Maven. From this directory:
+You need JDK 21 or later. The project has the Maven Wrapper, so every build uses the same Maven: the wrapper
+downloads Maven 3.9.16 the first time it runs. The commands are for Git Bash on Windows or any POSIX shell; in
+PowerShell or cmd, `.\mvnw.cmd` takes the place of `./mvnw`. If you commit the project from Windows, run
+`git update-index --chmod=+x mvnw` after `git add`, so that `mvnw` is executable where the repository is checked out
+on Linux (CI, a container build). From this directory:
 
 ```bash
-mvn package -DskipTests
+./mvnw package -DskipTests
 ENV=local java -jar target/${artifactId}-${version}.jar
 ```
 
-The first command builds the jar without running the tests (`mvn verify` runs them). The second runs the `local`
+The first command builds the jar without running the tests (`./mvnw verify` runs them). The second runs the `local`
 environment: `application.yaml` maps `spring.profiles.active: ${ENV}`, and `application-local.yaml` turns on `detail`
 in problem responses (`synapse.errors.include-detail: true`). Without `ENV` the service doesn't start: it needs exactly
 one environment.
 
-You can also run it with `mvn spring-boot:run`, which runs the `local` environment too (the pom sets
+You can also run it with `./mvnw spring-boot:run`, which runs the `local` environment too (the pom sets
 `spring-boot.run.profiles`; `-Dspring-boot.run.profiles=<env>` picks another).
 
 The service starts on port 8080 and logs ECS JSON, one object per line. These are the lines that matter (the
@@ -144,14 +147,14 @@ curl -s localhost:8080/actuator/health
 | `HelloApplicationIT` | The whole service on a real server in the `test` environment: the greeting and its correlation id, a too-long name as a problem response with no `detail`, an unknown route, and health | integration |
 
 ```bash
-mvn verify
+./mvnw verify
 ```
 
 runs them (`*Test` in the `test` phase, `*IT` in `verify`). To run one unit test class, or the integration test alone:
 
 ```bash
-mvn test -Dtest=GetGreetingOperationTest
-mvn verify -Dit.test=HelloApplicationIT -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false
+./mvnw test -Dtest=GetGreetingOperationTest
+./mvnw verify -Dit.test=HelloApplicationIT -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
 `src/test/resources/application-test.yaml` sets nothing, so `HelloApplicationIT` checks Synapse's defaults: a problem
@@ -162,11 +165,11 @@ response carries no `detail`.
 Both are off by default, and both need a file for the build environment, `build`, which this service doesn't have:
 `src/main/resources/application-build.yaml`. A comment alone is enough.
 
-* **Spring AOT** is opt-in, with `synapse-parent`'s `aot` profile: `mvn -Paot package` runs `process-aot` in the
-  build environment and puts the generated code in the jar (`java -Dspring.aot.enabled=true -jar ...` runs it).
+* **Spring AOT** is opt-in, with `synapse-parent`'s `aot` profile: `./mvnw -Paot package` runs `process-aot` in
+  the build environment and puts the generated code in the jar (`java -Dspring.aot.enabled=true -jar ...` runs it).
   Without `application-build.yaml`, `process-aot` fails the build. The generated code stays in `target/` until
-  `clean`, so the next build without `-Paot` needs `clean` (`mvn clean package`) for a jar without it.
-* **A container image**: `mvn -Pimage package` builds one with the Paketo buildpacks (it needs Docker). The image
+  `clean`, so the next build without `-Paot` needs `clean` (`./mvnw clean package`) for a jar without it.
+* **A container image**: `./mvnw -Pimage package` builds one with the Paketo buildpacks (it needs Docker). The image
   build's AOT-cache training run starts the service in the build environment, so `-Pimage` needs
   `application-build.yaml` too: without it the parent's `image` profile fails the build early, in `validate`, and
   names the file to add. Only `spring-boot:build-image` invoked on the command line skips that check; its training run
@@ -180,7 +183,9 @@ The details are in the
 
 ```
 ${artifactId}/
-  .gitattributes                      LF line endings in git
+  .gitattributes                      LF line endings in git (CRLF for mvnw.cmd)
+  .mvn/wrapper/                       the Maven Wrapper's settings: Maven 3.9.16
+  mvnw, mvnw.cmd                      the Maven Wrapper, for POSIX shells and for Windows
   pom.xml                             parent synapse-parent; the dependencies of a REST service, and two for tests
   src/main/java/${packageInPathFormat}/
     HelloApplication.java             @SpringBootApplication

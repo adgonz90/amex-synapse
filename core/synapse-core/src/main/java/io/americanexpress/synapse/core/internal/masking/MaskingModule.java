@@ -13,29 +13,25 @@
  */
 package io.americanexpress.synapse.core.internal.masking;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
-import tools.jackson.core.JsonGenerator;
 import tools.jackson.databind.BeanDescription;
 import tools.jackson.databind.SerializationConfig;
-import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.module.SimpleModule;
 import tools.jackson.databind.ser.BeanPropertyWriter;
 import tools.jackson.databind.ser.ValueSerializerModifier;
-import tools.jackson.databind.ser.std.StdSerializer;
 
-import io.americanexpress.synapse.core.masking.MaskType;
 import io.americanexpress.synapse.core.masking.Masked;
 
 /**
- * Jackson module that masks members annotated with {@link Masked}. Register it only on the mapper used for logs.
+ * Jackson module that masks members annotated with {@link Masked}. Register it only on the mapper used for logs. Each
+ * masked member's writer is replaced by one that writes the mask, so a member with a serializer of its own
+ * ({@code @JsonSerialize(using = ...)}) is masked too.
  */
 public final class MaskingModule extends SimpleModule {
 
     private static final long serialVersionUID = 1L;
-
-    private static final String FIXED_MASK = "***";
 
     /** Creates the module. */
     public MaskingModule() {
@@ -50,34 +46,12 @@ public final class MaskingModule extends SimpleModule {
         @Override
         public List<BeanPropertyWriter> changeProperties(SerializationConfig config, BeanDescription.Supplier beanDesc,
                 List<BeanPropertyWriter> beanProperties) {
+            List<BeanPropertyWriter> writers = new ArrayList<>(beanProperties.size());
             for (BeanPropertyWriter writer : beanProperties) {
                 Masked masked = writer.getAnnotation(Masked.class);
-                if (masked != null) {
-                    writer.assignSerializer(new MaskingSerializer(masked.value()));
-                }
+                writers.add(masked == null ? writer : new MaskedPropertyWriter(writer, masked.value()));
             }
-            return beanProperties;
-        }
-    }
-
-    private static final class MaskingSerializer extends StdSerializer<Object> {
-
-        private final MaskType type;
-
-        MaskingSerializer(MaskType type) {
-            super(Object.class);
-            this.type = type;
-        }
-
-        @Override
-        public void serialize(Object value, JsonGenerator gen, SerializationContext context) {
-            gen.writeString(isScalar(value) ? type.apply(value.toString()) : FIXED_MASK);
-        }
-
-        private static boolean isScalar(Object value) {
-            return value instanceof CharSequence || value instanceof Number || value instanceof Boolean
-                    || value instanceof Character || value instanceof Enum<?> || value instanceof UUID
-                    || value.getClass().getName().startsWith("java.time.");
+            return writers;
         }
     }
 }

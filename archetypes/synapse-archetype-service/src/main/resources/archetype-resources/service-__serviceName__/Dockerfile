@@ -1,10 +1,10 @@
-# The ${serviceName} service's container image without buildpacks, from the executable jar that mvn package builds
+# The ${serviceName} service's container image without buildpacks, from the executable jar that ./mvnw package builds
 # (with clean, so that no code from an earlier -Paot build is left in it), from the directory of the aggregator pom:
 #
-#   mvn clean package -DskipTests
+#   ./mvnw clean package -DskipTests
 #   docker build -t ${serviceName}:dockerfile service-${serviceName}
 #
-# mvn -Pimage package (synapse-parent's Paketo settings) is the other way to build it; both start the JVM with an AOT
+# ./mvnw -Pimage package (synapse-parent's Paketo settings) is the other way to build it; both start the JVM with an AOT
 # cache (JEP 483) recorded by a training run in the build environment. Synapse's parent POM documentation
 # (https://github.com/americanexpress/synapse/blob/main/docs/modules/ROOT/pages/parent.adoc, Images) says how they
 # differ and how to size the heap for small pods (JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=...).

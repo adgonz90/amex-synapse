@@ -15,6 +15,7 @@ package io.americanexpress.synapse.data.internal.store;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -135,22 +136,58 @@ public final class StoreBeans {
      */
     public static <T> List<T> applicationBeans(ConfigurableListableBeanFactory beanFactory, String store,
             Class<T> type, String suffix) {
+        return List.copyOf(applicationBeansByName(beanFactory, store, type, suffix).values());
+    }
+
+    /**
+     * Returns the beans {@link #applicationBeans} returns, by bean name, in the order to apply them, so that a failure
+     * can name the bean.
+     *
+     * @param <T> the beans' type
+     * @param beanFactory the bean factory
+     * @param store the store name
+     * @param type the beans' type
+     * @param suffix the suffix of a store's own bean of that type, such as {@code FlywayConfigurationCustomizer}
+     * @return the beans by name, in the order to apply them
+     */
+    public static <T> Map<String, T> applicationBeansByName(ConfigurableListableBeanFactory beanFactory, String store,
+            Class<T> type, String suffix) {
         Map<String, Optional<String>> others = qualifiers(beanFactory, store, type, suffix);
-        List<T> beans = new ArrayList<>(ordered(beanFactory, names(others, Optional.empty()), type));
-        beans.addAll(ordered(beanFactory, names(others, Optional.of(store)), type));
+        Map<String, T> beans = new LinkedHashMap<>(ordered(beanFactory, names(others, Optional.empty()), type));
+        beans.putAll(ordered(beanFactory, names(others, Optional.of(store)), type));
         return beans;
     }
 
-    /** Returns the beans, created, sorted by their order; equal orders keep the names' order. */
-    private static <T> List<T> ordered(ConfigurableListableBeanFactory beanFactory, List<String> names,
+    /**
+     * Returns the application beans of a type that are qualified with a store's name, in order, as
+     * {@link #applicationBeans} orders them, without the unqualified ones: for beans that an unqualified bean can't
+     * apply to while there are several stores.
+     *
+     * @param <T> the beans' type
+     * @param beanFactory the bean factory
+     * @param store the store name
+     * @param type the beans' type
+     * @param suffix the suffix of a store's own bean of that type
+     * @return the beans, in the order to apply them
+     */
+    public static <T> List<T> qualifiedApplicationBeans(ConfigurableListableBeanFactory beanFactory, String store,
+            Class<T> type, String suffix) {
+        Map<String, Optional<String>> others = qualifiers(beanFactory, store, type, suffix);
+        return List.copyOf(ordered(beanFactory, names(others, Optional.of(store)), type).values());
+    }
+
+    /** Returns the beans by name, created, sorted by their order; equal orders keep the names' order. */
+    private static <T> Map<String, T> ordered(ConfigurableListableBeanFactory beanFactory, List<String> names,
             Class<T> type) {
-        List<Map.Entry<Integer, T>> beans = new ArrayList<>();
+        List<Map.Entry<Integer, Map.Entry<String, T>>> beans = new ArrayList<>();
         for (String name : names) {
             T bean = beanFactory.getBean(name, type);
-            beans.add(Map.entry(order(beanFactory, name, bean), bean));
+            beans.add(Map.entry(order(beanFactory, name, bean), Map.entry(name, bean)));
         }
         beans.sort(Map.Entry.comparingByKey());
-        return beans.stream().map(Map.Entry::getValue).toList();
+        Map<String, T> ordered = new LinkedHashMap<>();
+        beans.forEach(entry -> ordered.put(entry.getValue().getKey(), entry.getValue().getValue()));
+        return ordered;
     }
 
     /**

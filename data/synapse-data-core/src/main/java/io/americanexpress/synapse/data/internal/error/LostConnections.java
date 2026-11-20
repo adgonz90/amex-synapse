@@ -28,15 +28,21 @@ import io.americanexpress.synapse.data.CommitOutcomeUnknownException;
 /**
  * The one rule for what says that the connection to the database was lost (or can't be had), shared by the data
  * translator, which reports it as {@code UNAVAILABLE}, and by the stores' transaction managers, which report it during
- * a commit as an unknown outcome instead, so a commit-phase failure is never a retryable {@code UNAVAILABLE}.
+ * a commit as an unknown outcome instead, so a commit that lost its connection is never a retryable
+ * {@code UNAVAILABLE}. Both look at each exception of the chain, and the connection was lost when any one of them
+ * says so:
  * <ul>
- * <li>Spring's {@code DataAccessResourceFailureException}, {@code TransientDataAccessResourceException} and
- * {@code CannotCreateTransactionException}.</li>
  * <li>The JDBC connection exception types, {@code SQLNonTransientConnectionException} and
- * {@code SQLTransientConnectionException}, whatever their state.</li>
+ * {@code SQLTransientConnectionException}, whatever their state (H2 gives its own, {@code 90067}).</li>
  * <li>An {@code SQLException} of the SQL standard's class {@code 08} (connection exception), or of PostgreSQL's
- * {@code 57P01} (the server ended the session, as {@code pg_terminate_backend} or a fast shutdown does), {@code 57P02}
- * (crash shutdown) or {@code 57P03} (the server can't accept connections yet).</li>
+ * {@code 57P01} (the server ended the session, as {@code pg_terminate_backend} or a fast shutdown does),
+ * {@code 57P02} (crash shutdown), {@code 57P03} (the server can't accept connections yet) or {@code 57P05} (idle
+ * session timeout). Any other state is not a lost connection, even under one of Spring's types below: Spring
+ * translates classes {@code 53}, {@code 54}, {@code 57} and {@code 58} to a {@code DataAccessResourceFailureException}
+ * too, although the database answered.</li>
+ * <li>Spring's {@code DataAccessResourceFailureException}, {@code TransientDataAccessResourceException} and
+ * {@code CannotCreateTransactionException} are decided by the first {@code SQLException} below them that has a state
+ * or one of those types, and are a lost connection only without one (a pool timeout, an I/O error).</li>
  * </ul>
  * Hikari closes a connection on more states than these, PostgreSQL's {@code 0A000} (feature_not_supported) among
  * them, and afterwards answers every call with {@code SQLException: Connection is closed}, without a state. That
@@ -56,7 +62,7 @@ public final class LostConnections {
     private static final String TRANSACTION_RESOLUTION_UNKNOWN = "08007";
 
     /** PostgreSQL's states for a session the server ended or can't open yet. */
-    private static final Set<String> SESSION_ENDED = Set.of("57P01", "57P02", "57P03");
+    private static final Set<String> SESSION_ENDED = Set.of("57P01", "57P02", "57P03", "57P05");
 
     private LostConnections() {
     }
@@ -75,23 +81,48 @@ public final class LostConnections {
     }
 
     /**
-     * Returns whether an exception itself, not its causes, says that the connection was lost.
+     * Returns whether an exception itself says that the connection was lost. An {@code SQLException} decides by its
+     * type or its state; one of Spring's resource failures, by the {@code SQLException} below it that has a state or
+     * is a JDBC connection exception type, and without one by its own type.
      *
      * @param exception the exception
      * @return whether it is a lost connection
      */
     public static boolean isLostConnection(Throwable exception) {
-        return exception instanceof DataAccessResourceFailureException
-                || exception instanceof TransientDataAccessResourceException
-                || exception instanceof CannotCreateTransactionException
-                || exception instanceof SQLNonTransientConnectionException
-                || exception instanceof SQLTransientConnectionException
-                || (exception instanceof SQLException sql && isLostConnection(sql.getSQLState()));
+        if (exception instanceof SQLException sql) {
+            return driverSaysLost(sql);
+        }
+        if (!isSpringResourceFailure(exception)) {
+            return false;
+        }
+        SQLException deciding = deciding(exception);
+        return deciding == null || driverSaysLost(deciding);
+    }
+
+    /**
+     * Returns the SQLState that decides what an exception itself says: its own, for an {@code SQLException}; for one of
+     * Spring's resource failures, the state of the {@code SQLException} below it that decides (see
+     * {@link #isLostConnection(Throwable)}), because Spring translates states of other classes than {@code 08} to its
+     * resource failures too.
+     *
+     * @param exception the exception
+     * @return the state, or {@code null} when it has none, or isn't one of these exceptions
+     */
+    public static @Nullable String state(Throwable exception) {
+        SQLException deciding = exception instanceof SQLException sql
+                ? sql
+                : isSpringResourceFailure(exception) ? deciding(exception) : null;
+        return deciding == null ? null : deciding.getSQLState();
     }
 
     /**
      * Returns whether a failure, or one of its first {@value CauseChain#MAX_DEPTH} causes, says that the connection was
-     * lost.
+     * lost, each by {@link #isLostConnection(Throwable)}: the rule the translator applies to every exception of the
+     * chain, so a commit the translator would report as a lost connection is never a retryable {@code UNAVAILABLE}.
+     * The translator's code can still be another one, without making a lost connection retryable: a class-{@code 53}
+     * failure alone is {@code UNAVAILABLE} without being a lost connection (the database answered, so nothing was
+     * committed), and a lost connection below an exception the translator maps first (a class-{@code 53} failure, a
+     * timeout, a duplicate key) gets that exception's code from the translator and an unknown outcome here.
      *
      * @param failure the failure
      * @return whether the failure is a lost connection
@@ -105,6 +136,32 @@ public final class LostConnections {
             current = current.getCause();
         }
         return false;
+    }
+
+    /** A JDBC connection exception type is the driver's own word for it, whatever its state (H2's is 90067). */
+    private static boolean driverSaysLost(SQLException sql) {
+        return sql instanceof SQLNonTransientConnectionException || sql instanceof SQLTransientConnectionException
+                || isLostConnection(sql.getSQLState());
+    }
+
+    private static boolean isSpringResourceFailure(Throwable exception) {
+        return exception instanceof DataAccessResourceFailureException
+                || exception instanceof TransientDataAccessResourceException
+                || exception instanceof CannotCreateTransactionException;
+    }
+
+    /** The first {@code SQLException} in the chain that has a state or is a JDBC connection exception type. */
+    private static @Nullable SQLException deciding(Throwable failure) {
+        Throwable current = failure;
+        for (int depth = 0; depth <= CauseChain.MAX_DEPTH && current != null; depth++) {
+            if (current instanceof SQLException sql && (sql.getSQLState() != null
+                    || sql instanceof SQLNonTransientConnectionException
+                    || sql instanceof SQLTransientConnectionException)) {
+                return sql;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     /**

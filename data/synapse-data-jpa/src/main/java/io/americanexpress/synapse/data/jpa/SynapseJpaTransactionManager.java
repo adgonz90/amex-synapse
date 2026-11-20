@@ -48,11 +48,11 @@ import io.americanexpress.synapse.data.internal.error.LostConnections;
  * like any statement's: nothing was committed, and the transaction completes as rolled back, so after-rollback
  * callbacks run. Any other flush failure is translated as the commit's own flush failure is.</li>
  * </ul>
- * A lost connection is what the data translator reports as {@code UNAVAILABLE} everywhere else: Spring's connection
- * exceptions, the JDBC connection exception types, and SQLState class 08 or PostgreSQL's 57P01-57P03 among the
- * failure's causes. Spring doesn't roll back after a commit that lost its connection, so the manager rolls the
- * connection back itself unless it is closed (as Hikari closes one that reported a lost connection): a pooled
- * connection never goes back with an open transaction.
+ * A lost connection follows the rule the data translator uses everywhere else: any of the failure's causes is a JDBC
+ * connection exception type, has a class-08 state or PostgreSQL's 57P01-57P03 or 57P05, or is one of Spring's
+ * connection exceptions without another state below it. Spring doesn't roll back after a commit that lost its
+ * connection, so the manager rolls the connection back itself unless it is closed (as Hikari closes one that reported
+ * a lost connection): a pooled connection never goes back with an open transaction.
  * <p>
  * Synapse builds one for every JPA store. It is the class to extend when a store class replaces its
  * {@code <prefix>TransactionManager}: a replacement that isn't one loses both, and the data stores' startup report

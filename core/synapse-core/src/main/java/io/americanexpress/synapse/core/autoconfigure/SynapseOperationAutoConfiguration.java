@@ -40,6 +40,8 @@ import org.springframework.core.env.Environment;
 
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
+import io.americanexpress.synapse.core.internal.binding.BindingParityCheck;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.pipeline.BusinessAdvisor;
 import io.americanexpress.synapse.core.internal.pipeline.ConstraintViolationTranslator;
@@ -55,8 +57,9 @@ import io.americanexpress.synapse.core.observability.OperationObservationConvent
 
 /**
  * Wires the invocation pipeline (BUILD.md §5.2) into the application: every {@code ServiceOperation} and
- * {@code BusinessOperation} bean becomes a class-based proxy that runs it. The advisors and the startup checks are not
- * replaceable, so no operation can silently run without the pipeline; the pipeline and its parts are.
+ * {@code BusinessOperation} bean becomes a class-based proxy that runs it. The advisors and the proxy checks are not
+ * replaceable, so no operation can silently run without the pipeline; the pipeline and its parts are. The bindings
+ * registry and the parity check between protocols are internal and back off only to a bean of the same name.
  *
  * <p>
  * This auto-configuration has no activation condition on purpose: switching it off would leave operations running
@@ -119,6 +122,32 @@ public final class SynapseOperationAutoConfiguration {
     }
 
     /**
+     * The bindings the API plugins compile, which they register while their beans are created. Internal: the bean
+     * backs off by name only.
+     *
+     * @return the registry
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseBindingDeclarations")
+    BindingDeclarations synapseBindingDeclarations() {
+        return new BindingDeclarations();
+    }
+
+    /**
+     * Fails startup when two protocols bind an operation with different {@code .notFound}, {@code .etag} or
+     * {@code .sortable} declarations, once every singleton (and so every compiled binding) exists. Internal: the bean
+     * backs off by name only.
+     *
+     * @param declarations the compiled bindings
+     * @return the check
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseBindingParityCheck")
+    BindingParityCheck synapseBindingParityCheck(BindingDeclarations declarations) {
+        return new BindingParityCheck(declarations);
+    }
+
+    /**
      * Counts in-flight operation calls, for draining at shutdown.
      *
      * @return the tracker
@@ -154,7 +183,7 @@ public final class SynapseOperationAutoConfiguration {
     }
 
     /**
-     * Translates {@code ConstraintViolationException} into {@code VALIDATION_FAILED}.
+     * Translates a {@code ConstraintViolationException} about the caller's own input into {@code VALIDATION_FAILED}.
      *
      * @return the translator
      */

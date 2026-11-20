@@ -38,9 +38,11 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.support.StaticMessageSource;
 import org.springframework.core.Ordered;
 
+import io.americanexpress.synapse.api.grpc.internal.conditional.GrpcPreconditions;
 import io.americanexpress.synapse.api.grpc.internal.edge.GrpcCallState;
 import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.error.ErrorMessages;
+import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.ContextScope;
@@ -185,6 +187,22 @@ class SynapseGrpcExceptionHandlerTest {
 
         StatusException checked = Status.FAILED_PRECONDITION.asException();
         assertThat(handler.handleException(checked)).isSameAs(checked);
+    }
+
+    @Test
+    void staleWriteFromAnOperationIsAborted() {
+        // What the unary handler throws when an operation reports STALE_VERSION on a request that sent an etag.
+        SynapseException stale = GrpcPreconditions.translate(true, new SynapseException(SynapseErrors.STALE_VERSION));
+        GrpcCallState state = state("c-1");
+        state.operationName("update-book");
+        AtomicReference<StatusException> handled = new AtomicReference<>();
+
+        List<ILoggingEvent> events = logged(() -> inCall(state, () -> handled.set(handler.handleException(stale))));
+
+        // AIP-154: a stale etag is ABORTED. The code is REST's 412 code, the same on both protocols.
+        assertThat(handled.get().getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
+        assertThat(errorInfo(handled.get()).getReason()).isEqualTo("PRECONDITION_FAILED");
+        assertThat(events).isEmpty();
     }
 
     @Test

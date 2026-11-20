@@ -29,8 +29,12 @@ import io.americanexpress.synapse.data.DataErrors;
 /**
  * Translates Spring's data access exceptions into Synapse errors: an optimistic lock failure into
  * {@code STALE_VERSION}, a unique-constraint violation into {@code ALREADY_EXISTS}, a query timeout into
- * {@code DEADLINE_EXCEEDED}, and a lost connection (see {@link LostConnections}: Spring's connection exceptions, the
- * JDBC connection exception types, and class-08 and session-ended states) into {@code UNAVAILABLE}. An unknown commit
+ * {@code DEADLINE_EXCEEDED}, and a lost connection (see {@link LostConnections}: the JDBC connection exception types,
+ * class-08 and session-ended states, and without either Spring's connection exceptions) into
+ * {@code UNAVAILABLE}. A state of class {@code 53} (insufficient resources, such as {@code 53300}
+ * too_many_connections) is {@code UNAVAILABLE} too, but it is never a lost connection: the database answered, so a
+ * commit it fails has a known outcome. Any other state under Spring's resource failures, class {@code 54} (program
+ * limit exceeded) for example, is left to the pipeline, because a retry fails the same way. An unknown commit
  * outcome comes first, anywhere in the chain: a {@link CommitOutcomeUnknownException}, which a store's transaction
  * manager throws for a commit that lost its connection, or an {@code SQLException} of state {@code 08007} (the SQL
  * standard's transaction_resolution_unknown), however Spring wrapped it. It is {@code COMMIT_OUTCOME_UNKNOWN}
@@ -50,6 +54,9 @@ public final class DataExceptionTranslator implements ExceptionTranslator, Order
 
     /** The translator's order: {@code Ordered.LOWEST_PRECEDENCE - 100}. */
     public static final int ORDER = Ordered.LOWEST_PRECEDENCE - 100;
+
+    /** SQLState class of insufficient resources (SQL standard), such as {@code 53300} too_many_connections. */
+    private static final String INSUFFICIENT_RESOURCES_CLASS = "53";
 
     @Override
     public @Nullable SynapseException translate(Throwable exception) {
@@ -74,9 +81,15 @@ public final class DataExceptionTranslator implements ExceptionTranslator, Order
         if (exception instanceof QueryTimeoutException) {
             return SynapseErrors.DEADLINE_EXCEEDED;
         }
-        if (LostConnections.isLostConnection(exception)) {
+        if (LostConnections.isLostConnection(exception) || insufficientResources(exception)) {
             return SynapseErrors.UNAVAILABLE;
         }
         return null;
+    }
+
+    /** Whether the exception's state is of class 53: the server lacks a resource for now, and answered. */
+    private static boolean insufficientResources(Throwable exception) {
+        String state = LostConnections.state(exception);
+        return state != null && state.startsWith(INSUFFICIENT_RESOURCES_CLASS);
     }
 }

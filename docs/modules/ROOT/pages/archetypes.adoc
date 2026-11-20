@@ -18,8 +18,12 @@ inherit xref:parent.adoc[`synapse-parent`] at the Synapse version the archetype 
 |`samples/reference-bookstore`
 |===
 
-The generated projects have no Maven Wrapper (`mvn wrapper:wrapper` adds one) and need JDK 21 or later. The quickstart
-needs Maven 3.6.3 or later, Spring Boot's minimum. The service needs Maven 3.9.6 or later: its contract module's
+The generated projects need JDK 21 or later. Each has the Maven Wrapper (`mvnw`, `mvnw.cmd` and
+`.mvn/wrapper/maven-wrapper.properties`, the same files as Synapse's own build), which downloads Maven 3.9.16, so their
+READMEs say `./mvnw`. The post-generation script makes `mvnw` executable on a file system with POSIX permissions,
+and prints a warning when it can't. Windows has no such bit, so a project committed from Windows needs
+`git update-index --chmod=+x mvnw` for `mvnw` to be executable where it is checked out on Linux. With a Maven of
+your own instead, the quickstart needs 3.6.3 or later, Spring Boot's minimum, and the service 3.9.6 or later: its contract module's
 `protobuf-maven-plugin` (5.1.11 with Spring Boot 4.1.2) requires it, and an older Maven fails in that module. The
 archetypes are built with `maven-archetype-plugin` 3.4.1. Each archetype's build has an integration test that
 generates a project and builds it with `verify`, so a release whose generated project doesn't build fails Synapse's
@@ -42,7 +46,7 @@ What it generates, under `greetings/`:
 
 * `pom.xml`, with `synapse-parent` as its parent and `synapse-api-rest`, `synapse-logging-log4j2`, Boot's
   OpenTelemetry starter, Actuator, and for tests `synapse-test-rest` and `spring-boot-starter-test`, without versions;
-  `.gitattributes` (LF in git).
+  `.gitattributes` (LF in git, CRLF for `mvnw.cmd`); and the Maven Wrapper.
 * `HelloApplication`, the operation `GetGreetingOperation` (`QueryOperation<GetGreetingRequest, Greeting>`), its
   records in `model`, and one `RestBindings` bean in `api.rest` (`+GET /greetings/{name}+`), each package with its
   `@NullMarked` `package-info.java`.
@@ -89,8 +93,9 @@ generate again.
 
 What it generates, under `orders/`:
 
-* An aggregator `pom.xml` with `synapse-parent` as its parent, `.gitattributes`, and `compose.yaml` with the
-  `orders-db` PostgreSQL container for `local` (its image pinned by digest, as `SynapseContainers.POSTGRES_IMAGE`).
+* An aggregator `pom.xml` with `synapse-parent` as its parent, `.gitattributes`, the Maven Wrapper, and `compose.yaml`
+  with the `orders-db` PostgreSQL container for `local` (its image pinned by digest, as
+  `SynapseContainers.POSTGRES_IMAGE`).
 * `contract-orders`: the records the operations take and return (`Item`, `CreateItemRequest`, `GetItemRequest`), the
   error codes (`ItemErrors.ITEM_NOT_FOUND`) and `orders/v1/orders.proto`, from which the gRPC classes are generated.
 * `data-orders`: the store, `@SynapseDataStore("orders")` on JPA and PostgreSQL, the entity on `AuditedEntity`, its

@@ -22,6 +22,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Function;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 import ch.qos.logback.classic.Level;
 import io.micrometer.common.KeyValue;
@@ -38,20 +41,26 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.ContextScope;
 import io.americanexpress.synapse.core.internal.context.InboundContext;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.BookErrors;
+import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.CardLabel;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.GetBookOperation;
+import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.SaveBookOperation;
 import io.americanexpress.synapse.core.observability.OperationObservationContext;
+import io.americanexpress.synapse.core.operation.BusinessOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.CLOCK;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.FAILURE_LOGGER;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.NOW;
+import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.SECRET;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.VALIDATOR;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.linesContaining;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.setLevel;
@@ -327,5 +336,154 @@ class NestedInvocationTest {
         TestObservationRegistryAssert
                 .assertThat(observations)
                 .forAllObservationsWithNameEqualTo("synapse.operation", observation -> observation.hasError(failure));
+    }
+
+    /** A business model the service builds itself. */
+    record ShelfLabel(@NotBlank String text) {
+    }
+
+    /** A business operation named {@code label-shelf}. */
+    static class LabelShelf implements BusinessOperation<ShelfLabel, String> {
+        @Override
+        public String execute(ShelfLabel input) {
+            return input.text();
+        }
+    }
+
+    record ShelfRequest(@NotBlank String id) {
+    }
+
+    /** A query named {@code count-shelf}. */
+    static class CountShelfOperation implements QueryOperation<ShelfRequest, String> {
+
+        private final Function<ShelfRequest, String> body;
+
+        CountShelfOperation(Function<ShelfRequest, String> body) {
+            this.body = body;
+        }
+
+        @Override
+        public String execute(ShelfRequest input) {
+            return body.apply(input);
+        }
+    }
+
+    /** A write whose version is required: the component is not {@code @Nullable} in a {@code @NullMarked} package. */
+    record MoveBook(String id, VersionCondition<Long> version) {
+    }
+
+    private static void assertInternalCausedBy(SynapseException failure, SynapseErrors cause) {
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.violations()).isEmpty();
+        assertThat(failure.getCause())
+                .isInstanceOfSatisfying(SynapseException.class,
+                        nested -> assertThat(nested.details()).isEqualTo(cause));
+    }
+
+    @Test
+    void nestedBusinessInputViolationIsInternalAtTheEdge(CapturedOutput output) {
+        LabelShelf label = pipeline.wrapBusiness(new LabelShelf());
+        GetShelfOperation outer = pipeline
+                .wrapOperation(new GetShelfOperation(in -> label.execute(new ShelfLabel(""))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute("x"));
+
+        assertInternalCausedBy(failure, SynapseErrors.VALIDATION_FAILED);
+        assertThat(linesContaining(output.getOut(), "failed with")).isEqualTo(1);
+        assertThat(output.getOut())
+                .contains(" ERROR ", "Operation get-shelf failed with INTERNAL (INTERNAL)",
+                        "violations=\"text: {jakarta.validation.constraints.NotBlank.message}\"");
+    }
+
+    @Test
+    void nestedOperationInputViolationIsInternal() {
+        CountShelfOperation inner = pipeline.wrapOperation(new CountShelfOperation(ShelfRequest::id));
+        GetShelfOperation outer = pipeline
+                .wrapOperation(new GetShelfOperation(in -> inner.execute(new ShelfRequest(""))));
+
+        assertInternalCausedBy(catchThrowableOfType(SynapseException.class, () -> outer.execute("x")),
+                SynapseErrors.VALIDATION_FAILED);
+        // Called first, the same operation's input is the caller's own.
+        SynapseException direct = catchThrowableOfType(SynapseException.class,
+                () -> inner.execute(new ShelfRequest("")));
+        assertThat(direct.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        assertThat(direct.violations()).extracting(Violation::field).containsExactly("id");
+    }
+
+    @Test
+    @SuppressWarnings("NullAway") // The case under test: a service passes null for a required condition.
+    void nestedMissingRequiredVersionIsInternal() {
+        SaveBookOperation<MoveBook> inner = pipeline.wrapOperation(new SaveBookOperation<>(MoveBook::id));
+        GetShelfOperation outer = pipeline
+                .wrapOperation(new GetShelfOperation(in -> inner.execute(new MoveBook(in, null))));
+
+        assertInternalCausedBy(catchThrowableOfType(SynapseException.class, () -> outer.execute("b1")),
+                SynapseErrors.PRECONDITION_REQUIRED);
+        assertThat(inner.calls).isZero();
+        SynapseException direct = catchThrowableOfType(SynapseException.class,
+                () -> inner.execute(new MoveBook("b1", null)));
+        assertThat(direct.details()).isEqualTo(SynapseErrors.PRECONDITION_REQUIRED);
+        assertThat(direct.violations()).extracting(Violation::field).containsExactly("version");
+    }
+
+    /** A group the pipeline never validates: an operation checks it by hand. */
+    interface Strict {
+    }
+
+    record CheckedShelf(@Size(max = 3, groups = Strict.class) String id) {
+    }
+
+    @Test
+    void nestedHandValidationOfItsInputIsInternal() {
+        OperationPipeline translating = OperationPipeline
+                .builder()
+                .clock(CLOCK)
+                .validator(VALIDATOR)
+                .observationRegistry(observations)
+                .contextBinder(binder)
+                .translators(List.of(new ConstraintViolationTranslator()))
+                .build();
+        SaveBookOperation<CheckedShelf> inner = translating.wrapOperation(new SaveBookOperation<>(in -> {
+            throw new ConstraintViolationException(VALIDATOR.validate(in, Strict.class));
+        }));
+        GetShelfOperation outer = translating
+                .wrapOperation(new GetShelfOperation(in -> inner.execute(new CheckedShelf(in))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute("long"));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.violations()).isEmpty();
+        // Sanitized: the cause names each path and message template, never the interpolated message.
+        assertThat(failure.getCause())
+                .isNotInstanceOf(ConstraintViolationException.class)
+                .hasMessageContaining("id: {jakarta.validation.constraints.Size.message}");
+        // Called first, its hand validation is of the caller's own input.
+        SynapseException direct = catchThrowableOfType(SynapseException.class,
+                () -> inner.execute(new CheckedShelf("long")));
+        assertThat(direct.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        assertThat(direct.violations()).extracting(Violation::field).containsExactly("id");
+    }
+
+    /** A business operation named {@code label-card}. */
+    static class LabelCard implements BusinessOperation<CardLabel, String> {
+        @Override
+        public String execute(CardLabel input) {
+            return input.number();
+        }
+    }
+
+    @Test
+    void aMaskedValueOfABusinessInputNeverReachesTheErrorLine(CapturedOutput output) {
+        LabelCard label = pipeline.wrapBusiness(new LabelCard());
+        GetShelfOperation outer = pipeline
+                .wrapOperation(new GetShelfOperation(in -> label.execute(new CardLabel(in))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute(SECRET));
+
+        assertInternalCausedBy(failure, SynapseErrors.VALIDATION_FAILED);
+        assertThat(output.getOut())
+                .contains(" ERROR ", "Operation get-shelf failed with INTERNAL",
+                        "violations=\"number: ${validatedValue} is too long\"")
+                .doesNotContain(SECRET);
     }
 }

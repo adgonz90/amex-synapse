@@ -28,8 +28,10 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonIncludeProperties;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.core.JsonParser;
 import tools.jackson.databind.BeanDescription;
 import tools.jackson.databind.DeserializationConfig;
+import tools.jackson.databind.DeserializationContext;
 import tools.jackson.databind.JavaType;
 import tools.jackson.databind.SerializationConfig;
 import tools.jackson.databind.ValueDeserializer;
@@ -40,6 +42,7 @@ import tools.jackson.databind.deser.bean.BuilderBasedDeserializer;
 import tools.jackson.databind.introspect.BeanPropertyDefinition;
 import tools.jackson.databind.introspect.ClassIntrospector;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.NullNode;
 import tools.jackson.databind.util.IgnorePropertiesUtil;
 
 /**
@@ -196,8 +199,14 @@ public final class JsonNames {
 
     /** Jackson's deserializer for the type, when it is a bean deserializer; {@code null} for any other. */
     private static @Nullable BeanDeserializerBase beanDeserializer(JsonMapper mapper, JavaType type) {
-        ValueDeserializer<Object> deserializer = mapper._deserializationContext().findRootValueDeserializer(type);
-        return deserializer instanceof BeanDeserializerBase bean ? bean : null;
+        // A parser's read context is a deserialization context of the mapper: the public way to have one. Jackson
+        // 3.1 builds treeAsTokens' parser so; ObjectReadContext doesn't promise it, and RequestBinderTest catches a
+        // change (a ClassCastException) at upgrade time.
+        try (JsonParser parser = mapper.treeAsTokens(NullNode.getInstance())) {
+            ValueDeserializer<Object> deserializer = ((DeserializationContext) parser.objectReadContext())
+                    .findRootValueDeserializer(type);
+            return deserializer instanceof BeanDeserializerBase bean ? bean : null;
+        }
     }
 
     /**

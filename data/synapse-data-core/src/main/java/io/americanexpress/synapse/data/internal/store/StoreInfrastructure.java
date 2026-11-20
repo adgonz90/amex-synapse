@@ -57,6 +57,18 @@ public interface StoreInfrastructure {
     }
 
     /**
+     * Returns the Boot bean types that the module's stores don't use, by class name, since a type's library may be
+     * absent. When a store uses the module, the data stores' startup report warns about each bean of a type whose class
+     * is present, naming the bean and its type. For Boot's {@code EntityScanPackages}, which {@code @EntityScan}
+     * registers, it warns once, naming the packages.
+     *
+     * @return the class names, none by default
+     */
+    default List<String> ignoredBeanTypes() {
+        return List.of();
+    }
+
+    /**
      * Returns the type of the transaction manager the module builds for its stores. When a store's
      * {@code <prefix>TransactionManager} is not one (or a subclass of it), the data stores' startup report warns that
      * the store loses what that manager adds.

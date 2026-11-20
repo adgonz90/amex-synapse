@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 import com.google.protobuf.Any;
 import com.google.protobuf.Empty;
@@ -78,6 +79,8 @@ import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.masking.Masked;
+import io.americanexpress.synapse.core.operation.BusinessOperation;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 
@@ -96,6 +99,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GrpcBindingsIT {
 
     private static final String SERVICE = "synapse.fixture.v1.CatalogService";
+
+    /** A value that must never reach the caller or the log. */
+    private static final String SECRET = "4111-SECRET-1111";
+
+    /** The prefix of a {@code Fail} code that the operation passes to the card rule. */
+    static final String CARD = "card:";
 
     private static final UUID KNOWN = UUID.fromString("0d4f1c9e-8a43-4a52-9a43-6f1e2b3c4d5e");
 
@@ -274,6 +283,29 @@ class GrpcBindingsIT {
     }
 
     @Test
+    void emptyRepeatedElementIsKeptAndValidated() throws InterruptedException {
+        // REST keeps an empty query, path or cookie list item too (RestRoutesIT), so List<@NotBlank String> answers
+        // VALIDATION_FAILED over both protocols.
+        Result<Item> result = call(stub -> stub
+                .createItem(CreateItemRequest
+                        .newBuilder()
+                        .setItem(Item
+                                .newBuilder()
+                                .setName("Emma")
+                                .setAuthor(Author.newBuilder().setName("Jane Austen").setCountryCode("GB"))
+                                .addTags("")
+                                .addTags("x"))
+                        .build()));
+
+        StatusRuntimeException e = result.error();
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+        assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("VALIDATION_FAILED");
+        assertThat(detail(e, BadRequest.class).getFieldViolationsList())
+                .extracting(BadRequest.FieldViolation::getField)
+                .containsExactly("item.tags");
+    }
+
+    @Test
     void readerViolationsNameTheProtoField() throws InterruptedException {
         Result<Item> result = call(stub -> stub.getItem(GetItemRequest.newBuilder().setId("not-a-uuid").build()));
 
@@ -411,6 +443,34 @@ class GrpcBindingsIT {
         }
     }
 
+    @Nested
+    @TestPropertySource(properties = "synapse.errors.include-detail=true")
+    class WithDetail {
+
+        @LocalGrpcServerPort
+        private int detailPort;
+
+        @Test
+        void rejectedBusinessInputIsInternalWithoutDetail(CapturedOutput output) throws InterruptedException {
+            Result<?> result = call(detailPort, channel -> CatalogServiceGrpc
+                    .newBlockingStub(channel)
+                    .withDeadlineAfter(10, TimeUnit.SECONDS)
+                    .fail(FailRequest.newBuilder().setCode(CARD + SECRET).build()));
+
+            // The service built the business input: its violation is the service's bug, never the caller's.
+            StatusRuntimeException e = result.error();
+            assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+            assertThat(e.getStatus().getDescription()).isEqualTo("An internal error occurred");
+            assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("INTERNAL");
+            assertThat(details(e).getDetailsList()).noneMatch(any -> any.is(BadRequest.class));
+            String everything = e.getStatus() + " " + details(e) + " " + result.trailers();
+            assertThat(everything).doesNotContain(SECRET).doesNotContain("number").doesNotContain("too long");
+            assertThat(output.getOut())
+                    .contains("Operation fail failed with INTERNAL", "number: ${validatedValue} is too long")
+                    .doesNotContain(SECRET);
+        }
+    }
+
     /** The fixture's error codes. */
     enum ItemErrors implements ErrorDetails {
 
@@ -457,7 +517,7 @@ class GrpcBindingsIT {
     }
 
     /** A new item. */
-    record NewItem(@NotBlank String name, @Valid NewAuthor author) {
+    record NewItem(@NotBlank String name, @Valid NewAuthor author, List<@NotBlank String> tags) {
     }
 
     /** The input of {@code CreateItem}. */
@@ -533,11 +593,36 @@ class GrpcBindingsIT {
         }
     }
 
-    /** Fails with an internal message that must never reach the caller. */
+    /** A card number: masked, with a constraint message that would show the rejected value. */
+    record Card(@Masked @Size(max = 3, message = "${validatedValue} is too long") String number) {
+    }
+
+    /** A business rule on a card, named {@code card-rule}. */
+    static class CardRule implements BusinessOperation<Card, String> {
+
+        @Override
+        public String execute(Card input) {
+            return input.number();
+        }
+    }
+
+    /**
+     * Fails with an internal message that must never reach the caller, or, for a code that starts with
+     * {@value #CARD}, passes the rest to the card rule as a card number, which the rule rejects as too long.
+     */
     static class FailOperation implements QueryOperation<FailInput, FailOutput> {
+
+        private final CardRule rule;
+
+        FailOperation(CardRule rule) {
+            this.rule = rule;
+        }
 
         @Override
         public FailOutput execute(FailInput input) {
+            if (input.code().startsWith(CARD)) {
+                return new FailOutput(rule.execute(new Card(input.code().substring(CARD.length()))));
+            }
             throw new IllegalStateException("database password=hunter2");
         }
     }
@@ -586,8 +671,13 @@ class GrpcBindingsIT {
         }
 
         @Bean
-        FailOperation failOperation() {
-            return new FailOperation();
+        CardRule cardRule() {
+            return new CardRule();
+        }
+
+        @Bean
+        FailOperation failOperation(CardRule cardRule) {
+            return new FailOperation(cardRule);
         }
 
         @Bean

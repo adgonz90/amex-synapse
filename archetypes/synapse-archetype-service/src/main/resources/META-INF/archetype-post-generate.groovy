@@ -17,8 +17,11 @@
 // prompt, not for -DserviceName=..., so this script applies the same rule to every value: serviceName is part of a
 // Java package (data.<serviceName>) and of environment variable names (SYNAPSE_DATA_STORES_<SERVICENAME>_URL), so it
 // is a lowercase Java identifier without a hyphen, and not a Java keyword. Keep the rule in step with the
-// validationRegex in archetype-metadata.xml. A failure here fails the generation; the files are already written.
+// validationRegex in archetype-metadata.xml. A failure here fails the generation; the files are already written. Then
+// it sets the Maven Wrapper's mvnw executable for everyone, as the repository's mvnw is: the generator writes
+// it without the bit. On a file system without POSIX permissions (Windows) there is nothing to set.
 
+def project = new File(request.outputDirectory as String, request.artifactId as String)
 def keywords = ['abstract', 'assert', 'boolean', 'break', 'byte', 'case', 'catch', 'char', 'class', 'const',
         'continue', 'default', 'do', 'double', 'else', 'enum', 'extends', 'false', 'final', 'finally', 'float', 'for',
         'goto', 'if', 'implements', 'import', 'instanceof', 'int', 'interface', 'long', 'native', 'new', 'null',
@@ -31,10 +34,16 @@ if (!(name ==~ /[a-z][a-z0-9]*/) || keywords.contains(name)) {
     if (!suggestion || keywords.contains(suggestion)) {
         suggestion = 'orders'
     }
-    def project = new File(request.outputDirectory as String, request.artifactId as String)
     throw new IllegalArgumentException("serviceName '${name}' is not valid: it must be a lowercase letter followed by "
             + "lowercase letters and digits, with no hyphen, and not a Java keyword, because it names the Java package "
             + "data.<serviceName> and the environment variables SYNAPSE_DATA_STORES_<SERVICENAME>_*. The project in "
             + "${project} was written but doesn't build: delete it and generate again with, for example, "
             + "-DserviceName=${suggestion}.")
+}
+
+def mvnw = new File(project, 'mvnw')
+// The generation still succeeds when the bit can't be set, but on a POSIX file system it says so.
+if (!mvnw.setExecutable(true, false)
+        && java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains('posix')) {
+    println "[WARNING] Could not make ${mvnw} executable: run chmod +x mvnw in ${project} before ./mvnw."
 }

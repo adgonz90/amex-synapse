@@ -44,9 +44,10 @@ service BookService {
   // GET /books (search-books), one page at a time (AIP-158).
   rpc SearchBooks(SearchBooksRequest) returns (SearchBooksResponse);
   // PUT /books/{id} (update-book). The etag is required: without one it is FAILED_PRECONDITION with the reason
-  // PRECONDITION_REQUIRED (REST 428), and with a stale or weak one FAILED_PRECONDITION with PRECONDITION_FAILED
-  // (REST 412). An ISBN another book has is ALREADY_EXISTS (REST 409), as on CreateBook. The response has no etag, as
-  // REST sends no ETag on PUT: read the book again for the new one.
+  // PRECONDITION_REQUIRED (REST 428). With a stale one it is ABORTED (AIP-154), and with a weak one
+  // FAILED_PRECONDITION, both with PRECONDITION_FAILED (REST 412). An ISBN another book has is ALREADY_EXISTS (REST
+  // 409), as on CreateBook. The response has no etag, as REST sends no ETag on PUT: read the book again for the new
+  // one.
   rpc UpdateBook(UpdateBookRequest) returns (Book);
   // DELETE /books/{id} (delete-book). The etag is required, as for UpdateBook. The response is empty, as REST's 204.
   rpc DeleteBook(DeleteBookRequest) returns (google.protobuf.Empty);

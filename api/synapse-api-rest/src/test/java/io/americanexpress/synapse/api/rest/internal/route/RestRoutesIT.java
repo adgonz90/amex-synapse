@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.api.rest.internal.route;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import jakarta.validation.constraints.NotBlank;
@@ -130,6 +131,19 @@ class RestRoutesIT {
         assertThat(result.status()).isEqualTo(400);
         assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
         assertThat(result.json().get("violations").get(0).get("field").asString()).isEqualTo("title");
+    }
+
+    @Test
+    void emptyQueryListItemIsKeptAndValidated() {
+        // A gRPC repeated string keeps an empty element too (GrpcBindingsIT), so List<@NotBlank String> answers
+        // VALIDATION_FAILED over both protocols.
+        Result result = call(client.get().uri("/tagged?tag=&tag=x"));
+
+        assertThat(result.status()).isEqualTo(400);
+        assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        assertThat(result.json().get("violations")).hasSize(1);
+        assertThat(result.json().get("violations").get(0).get("field").asString()).startsWith("tag[0]");
+        assertThat(call(client.get().uri("/tagged?tag=x")).json().get("tag").get(0).asString()).isEqualTo("x");
     }
 
     @Test
@@ -288,8 +302,13 @@ class RestRoutesIT {
         }
 
         @Bean
+        TaggedOperation taggedOperation() {
+            return new TaggedOperation();
+        }
+
+        @Bean
         RestBindings books(GetBookOperation getBook, CreateBookOperation createBook, UpdateBookOperation updateBook,
-                DeleteBookOperation deleteBook, LatestBookOperation latestBook) {
+                DeleteBookOperation deleteBook, LatestBookOperation latestBook, TaggedOperation tagged) {
             return RestBindings
                     .builder()
                     .get("/books/{id}", getBook)
@@ -299,6 +318,7 @@ class RestRoutesIT {
                     .put("/books/{id}", updateBook)
                     .delete("/books/{id}", deleteBook)
                     .get("/books/latest", latestBook)
+                    .get("/tagged", tagged)
                     .build();
         }
     }
@@ -313,6 +333,9 @@ class RestRoutesIT {
     }
 
     record UpdateBookRequest(long id, String title) {
+    }
+
+    record Tagged(List<@NotBlank String> tag) {
     }
 
     static class GetBookOperation implements QueryOperation<BookId, Optional<Book>> {
@@ -342,6 +365,13 @@ class RestRoutesIT {
         @Override
         public Book execute(UpdateBookRequest input) {
             return new Book(input.id(), input.title());
+        }
+    }
+
+    static class TaggedOperation implements QueryOperation<Tagged, Tagged> {
+        @Override
+        public Tagged execute(Tagged input) {
+            return input;
         }
     }
 

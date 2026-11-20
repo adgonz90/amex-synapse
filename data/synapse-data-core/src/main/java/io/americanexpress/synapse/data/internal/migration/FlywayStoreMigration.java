@@ -13,6 +13,8 @@
  */
 package io.americanexpress.synapse.data.internal.migration;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -21,12 +23,15 @@ import java.util.Objects;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
+import org.flywaydb.core.api.callback.Callback;
 import org.flywaydb.core.api.configuration.FluentConfiguration;
+import org.flywaydb.core.api.migration.JavaMigration;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties;
@@ -37,7 +42,8 @@ import io.americanexpress.synapse.data.internal.store.StoreSettings;
 /**
  * Migrates a store with Flyway, and builds each store's {@link Flyway}: on the store's own DataSource, from
  * {@code synapse.data.stores.<name>.migrations.locations} (default {@code classpath:db/migration/<name>}), with the
- * store's {@code migrations.flyway.*} settings passed to Flyway under its own names. Building opens no connection.
+ * store's {@code migrations.flyway.*} settings passed to Flyway under its own names, and the application's Flyway beans
+ * that apply to the store (see {@link FlywayStoreFactory#flyway(String)}). Building opens no connection.
  *
  * <p>
  * Flyway logs the database it migrates at INFO, as {@code Database: <url> (<product>)}, through its own logger
@@ -103,23 +109,33 @@ public final class FlywayStoreMigration implements StoreMigration {
     }
 
     /**
-     * Builds a store's Flyway, without opening a connection. The {@code migrations.flyway.*} keys are Flyway's own
-     * names without the {@code flyway.} prefix, in kebab case or camel case ({@code baseline-on-migrate} becomes
-     * {@code flyway.baselineOnMigrate}); the names after {@code placeholders.} and {@code jdbc-properties.} are kept as
-     * written. The store's DataSource and locations are applied last.
+     * Builds a store's Flyway, without opening a connection, in this order:
+     * <ol>
+     * <li>the {@code migrations.flyway.*} keys: Flyway's own names without the {@code flyway.} prefix, in kebab case or
+     * camel case ({@code baseline-on-migrate} becomes {@code flyway.baselineOnMigrate}); the names after
+     * {@code placeholders.} and {@code jdbc-properties.} are kept as written;</li>
+     * <li>the customizers, in the order given ({@code FlywayConfigurationCustomizer::customize} of each bean that
+     * applies to the store), so that a customizer replaces what a key set;</li>
+     * <li>the callbacks and Java migrations, added to those the keys and customizers set;</li>
+     * <li>the store's DataSource and locations, last, so that nothing replaces them.</li>
+     * </ol>
      *
      * @param store the store
      * @param dataSource the store's DataSource
      * @param properties the store's settings
      * @param classLoader the class loader Flyway loads migrations and plugins with
+     * @param customizers the customizers; each one's {@code toString()} is the name of its bean, which a failure names
+     * @param callbacks the callbacks
+     * @param javaMigrations the Java migrations
      * @return the Flyway
      * @throws SynapseConfigurationException when a {@code migrations.flyway} key would replace the store's
      *         {@code url}, {@code username}, {@code password} or {@code migrations.locations}, sets {@code init-sql},
-     *         two keys are spellings
-     *         of one Flyway setting, or Flyway rejects a key or its value; the failure names keys, never values
+     *         two keys are spellings of one Flyway setting, or Flyway rejects a key or its value; the failure names
+     *         keys, never values. Also when a customizer sets {@code initSql}, naming the customizer's bean
      */
     public static Flyway flyway(StoreDefinition store, DataSource dataSource, SynapseDataStoreProperties properties,
-            ClassLoader classLoader) {
+            ClassLoader classLoader, List<Consumer<FluentConfiguration>> customizers, List<Callback> callbacks,
+            List<JavaMigration> javaMigrations) {
         SynapseDataStoreProperties.Migrations migrations = properties.migrations();
         Map<String, String> configuration = new LinkedHashMap<>();
         // Flyway's names back to the keys as written, to name them in failures.
@@ -144,7 +160,35 @@ public final class FlywayStoreMigration implements StoreMigration {
             // the message nor the exception is kept.
             throw rejected(store.name(), ex, writtenKeys);
         }
+        for (Consumer<FluentConfiguration> customizer : customizers) {
+            String initSql = fluent.getInitSql();
+            customizer.accept(fluent);
+            if (!Objects.equals(initSql, fluent.getInitSql())) {
+                throw customizedInitSql(store.name(), String.valueOf(customizer));
+            }
+        }
+        if (!callbacks.isEmpty()) {
+            List<Callback> all = new ArrayList<>(Arrays.asList(fluent.getCallbacks()));
+            all.addAll(callbacks);
+            fluent.callbacks(all.toArray(Callback[]::new));
+        }
+        if (!javaMigrations.isEmpty()) {
+            List<JavaMigration> all = new ArrayList<>(Arrays.asList(fluent.getJavaMigrations()));
+            all.addAll(javaMigrations);
+            fluent.javaMigrations(all.toArray(JavaMigration[]::new));
+        }
         return fluent.dataSource(dataSource).locations(storeLocations).load();
+    }
+
+    /**
+     * Describes a customizer that sets {@code initSql}, as {@code migrations.flyway.init-sql} is described: SQL on each
+     * new connection could change the store's role or schema. It names the bean, never the SQL.
+     */
+    private static SynapseConfigurationException customizedInitSql(String store, String bean) {
+        return new SynapseConfigurationException("The FlywayConfigurationCustomizer bean " + bean + " sets initSql "
+                + "for the store '" + store + "', SQL that runs on each new connection and could change the role or "
+                + "schema the store uses.",
+                "Remove initSql from " + bean + ". Name the schema in " + StoreSettings.prefix(store) + ".url.");
     }
 
     /**

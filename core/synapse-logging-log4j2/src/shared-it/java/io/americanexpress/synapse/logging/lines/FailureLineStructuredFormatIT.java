@@ -17,6 +17,9 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Validator;
+import jakarta.validation.constraints.Size;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Tag;
@@ -40,6 +43,8 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.masking.Masked;
+import io.americanexpress.synapse.core.operation.BusinessOperation;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.data.CommitOutcomeUnknownException;
@@ -64,6 +69,9 @@ class FailureLineStructuredFormatIT {
     private static final String[] QUIET = {"--management.logging.export.otlp.enabled=false",
             "--management.tracing.export.otlp.enabled=false", "--management.otlp.metrics.export.enabled=false",
             "--spring.main.banner-mode=off"};
+
+    /** A value that must never appear in the output. */
+    private static final String SECRET = "4111-SECRET-1111";
 
     private static final JsonMapper JSON = JsonMapper
             .builder()
@@ -127,6 +135,32 @@ class FailureLineStructuredFormatIT {
             assertThat(line.at("/error/message").asString()).isEqualTo("An internal error occurred");
         }
         assertFields(format, line, "broken", "INTERNAL", "INTERNAL");
+    }
+
+    @ParameterizedTest
+    @EnumSource(Format.class)
+    void aMaskedValueOfARejectedBusinessInputIsNeverLogged(Format format, CapturedOutput output) {
+        run(format, context -> assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> context.getBean(ChargeOperation.class).execute(SECRET)));
+
+        JsonNode line = failureLine(output);
+        assertThat(line.at(format.level).asString()).isEqualTo("ERROR");
+        assertFields(format, line, "charge", "INTERNAL", "INTERNAL");
+        assertThat(format.field(line, "violations")).isEqualTo("number: ${validatedValue} is too long");
+        assertThat(line.at(format.stackTrace).asString()).contains("number: ${validatedValue} is too long");
+        assertThat(output.getOut()).doesNotContain(SECRET);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Format.class)
+    void aMaskedValueOfACollaboratorViolationIsNeverLogged(Format format, CapturedOutput output) {
+        run(format, context -> assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> context.getBean(CollaboratorOperation.class).execute(SECRET)));
+
+        JsonNode line = failureLine(output);
+        assertFields(format, line, "collaborator", "INTERNAL", "INTERNAL");
+        assertThat(format.field(line, "violations")).isEqualTo("number: ${validatedValue} is too long");
+        assertThat(output.getOut()).doesNotContain(SECRET);
     }
 
     @ParameterizedTest
@@ -307,6 +341,51 @@ class FailureLineStructuredFormatIT {
         CONTEXT_CORRELATION_ID.set(RequestContext.find().map(RequestContext::correlationId).orElse(null));
     }
 
+    /** A card number: masked, with a constraint message that would show the rejected value. */
+    record Card(@Masked @Size(max = 3, message = "${validatedValue} is too long") String number) {
+    }
+
+    /** A business rule on a card, named {@code card-rule}. */
+    static class CardRule implements BusinessOperation<Card, String> {
+
+        @Override
+        public String execute(Card input) {
+            return input.number();
+        }
+    }
+
+    /** Passes its input to the card rule as a card number, which the rule's validation rejects as too long. */
+    static class ChargeOperation implements CommandOperation<String, String> {
+
+        private final CardRule rule;
+
+        ChargeOperation(CardRule rule) {
+            this.rule = rule;
+        }
+
+        @Override
+        public String execute(String input) {
+            recordMdc();
+            return rule.execute(new Card(input));
+        }
+    }
+
+    /** Fails as a collaborator's method validation does: constraint violations of a card, not of its input. */
+    static class CollaboratorOperation implements CommandOperation<String, String> {
+
+        private final Validator validator;
+
+        CollaboratorOperation(Validator validator) {
+            this.validator = validator;
+        }
+
+        @Override
+        public String execute(String input) {
+            recordMdc();
+            throw new ConstraintViolationException(validator.validate(new Card(input)));
+        }
+    }
+
     /** Fails with a JVM exception, which the pipeline translates to {@code INTERNAL} (logged at ERROR). */
     static class BrokenOperation implements CommandOperation<String, String> {
 
@@ -373,6 +452,21 @@ class FailureLineStructuredFormatIT {
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {
+
+        @Bean
+        CardRule cardRule() {
+            return new CardRule();
+        }
+
+        @Bean
+        ChargeOperation charge(CardRule cardRule) {
+            return new ChargeOperation(cardRule);
+        }
+
+        @Bean
+        CollaboratorOperation collaborator(Validator validator) {
+            return new CollaboratorOperation(validator);
+        }
 
         @Bean
         BrokenOperation broken() {

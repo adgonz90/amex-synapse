@@ -14,12 +14,26 @@
 == SynapseOperations.invoke
 
 Runs an operation (or a `BusinessOperation`) through the pipeline around a plain instance, with no Spring context.
-Validation, deadline and exception translation apply. As in the application, a `ConstraintViolationException` thrown
-by the operation or a collaborator becomes `VALIDATION_FAILED`, unless a translator declares a lower order than that
-translator's `@Order(0)` (such as `@Order(-1)`), in tests and in the application alike. Translators added with
-`translator(...)` are tried in the order the application tries their beans: by `@Order` or `Ordered` first (Synapse's
-data translators declare one), then those that declare no order, in the order added. A lambda, anonymous, record or
-final operation class is rejected with an `IllegalArgumentException` that gives the reason.
+Validation, deadline and exception translation apply, as in the application. A `ConstraintViolationException` about
+the input itself (every violation's root bean is the input passed in, such as an operation validating it by hand)
+becomes `VALIDATION_FAILED`, unless a translator declares a lower order than that translator's `@Order(0)` (such as
+`@Order(-1)`). One thrown about anything else, by the operation or a collaborator, is `INTERNAL` before any
+translator runs (see xref:core.adoc#errors[Errors]). A business operation's input violation is `INTERNAL` too: assert
+it with `hasCode("INTERNAL")` and read the `VALIDATION_FAILED` and its violations from the cause:
+
+[source,java]
+----
+assertThatSynapseException(() -> SynapseOperations.invoke(new TitleRule(), new CreateBookRequest(" ")))
+        .hasCode("INTERNAL")
+        .satisfies(failure -> assertThat(((SynapseException) failure.getCause()).violations())
+                .extracting(Violation::field)
+                .containsExactly("title"));
+----
+
+Translators added with `translator(...)` are tried in the order the application tries their beans: by `@Order` or
+`Ordered` first (Synapse's data translators declare one), then those that declare no order, in the order added. A
+lambda, anonymous, record or final operation class is rejected with an `IllegalArgumentException` that gives the
+reason.
 
 [source,java]
 ----
@@ -471,7 +485,10 @@ transport status. A 304 has no gRPC form, so it stays in the REST slice test.
 * One client interface with an implementation per protocol (`RestBookstoreClient` on the JDK's HTTP client,
   `GrpcBookstoreClient` on the generated stub). Each turns its protocol's answer into an `Outcome`, and also asserts
   its own transport status for the code (REST 400, 404, 409, 412 or 428; gRPC `INVALID_ARGUMENT`, `NOT_FOUND`,
-  `ALREADY_EXISTS`, `ABORTED` or `FAILED_PRECONDITION`), so a wrong status fails that protocol's run.
+  `ALREADY_EXISTS`, `ABORTED` or `FAILED_PRECONDITION`), so a wrong status fails that protocol's run. A status that
+  depends on more than the code, such as gRPC's for `PRECONDITION_FAILED` (`ABORTED` for a stale `etag`,
+  `FAILED_PRECONDITION` for a weak one), is kept by the client (`GrpcBookstoreClient.lastStatus()`) and asserted by
+  the scenario that knows which case it sent, so the `Outcome` stays the same on both protocols.
 * An abstract scenario class whose tests are parameterized over the protocols and expect one `Outcome`, written
   once:
 +

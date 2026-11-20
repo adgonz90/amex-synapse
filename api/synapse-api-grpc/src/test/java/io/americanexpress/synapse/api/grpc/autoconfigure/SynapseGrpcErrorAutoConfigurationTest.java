@@ -43,21 +43,28 @@ import io.grpc.stub.ClientCalls;
 import io.grpc.stub.MetadataUtils;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.ssl.SslAutoConfiguration;
+import org.springframework.boot.context.annotation.Configurations;
 import org.springframework.boot.grpc.server.autoconfigure.GrpcServerAutoConfiguration;
 import org.springframework.boot.grpc.server.autoconfigure.GrpcServerServicesAutoConfiguration;
 import org.springframework.boot.grpc.server.autoconfigure.security.GrpcServerSecurityAutoConfiguration;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.support.StaticMessageSource;
+import org.springframework.core.annotation.Order;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.grpc.server.GrpcServerFactory;
 import org.springframework.grpc.server.ServerBuilderCustomizer;
+import org.springframework.grpc.server.advice.GrpcAdvice;
 import org.springframework.grpc.server.exception.GrpcExceptionHandler;
 import org.springframework.grpc.server.exception.GrpcExceptionHandlerInterceptor;
 import org.springframework.grpc.server.security.SecurityGrpcExceptionHandler;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.util.ClassUtils;
 
 import io.americanexpress.synapse.api.grpc.internal.error.GrpcErrorStatuses;
 import io.americanexpress.synapse.api.grpc.internal.error.GrpcStatusWriter;
@@ -74,6 +81,16 @@ import io.americanexpress.synapse.core.error.SynapseException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SynapseGrpcErrorAutoConfigurationTest {
+
+    /**
+     * Hides Boot's gRPC security auto-configuration from the auto-configuration sorter, which reads classes through
+     * the thread's context class loader, so that its {@code after = GrpcServerAutoConfiguration} edge can't order
+     * Synapse's error auto-configuration.
+     */
+    private static final FilteredClassLoader WITHOUT_SECURITY_AUTO_CONFIGURATION = new FilteredClassLoader(
+            new ClassPathResource(
+                    ClassUtils.convertClassNameToResourcePath(SynapseGrpcErrorAutoConfiguration.GRPC_SECURITY)
+                            + ClassUtils.CLASS_FILE_SUFFIX));
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(
@@ -252,6 +269,101 @@ class SynapseGrpcErrorAutoConfigurationTest {
                 });
     }
 
+    /**
+     * Without the security auto-configuration (here hidden from the auto-configuration sorter), only Synapse's own edge
+     * orders it after Boot's gRPC server, whose {@code @GrpcAdvice} handler must answer before Synapse's.
+     */
+    @Test
+    void grpcAdviceAnswersWithoutTheSecurityAutoConfiguration() {
+        runner
+                .withConfiguration(AutoConfigurations
+                        .of(SslAutoConfiguration.class, GrpcServerServicesAutoConfiguration.class,
+                                GrpcServerAutoConfiguration.class))
+                .withClassLoader(WITHOUT_SECURITY_AUTO_CONFIGURATION)
+                .withPropertyValues("spring.grpc.server.port=0")
+                .withBean("testService", BindableService.class,
+                        () -> () -> ServerServiceDefinition.builder("test.TestService").build())
+                .withUserConfiguration(RejectingAdvice.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    RecordingCall call = handled(context.getBean(GrpcExceptionHandlerInterceptor.class),
+                            new IllegalArgumentException("bad id"));
+
+                    Status closed = Objects.requireNonNull(call.closed);
+                    assertThat(closed.getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+                    assertThat(closed.getDescription()).isEqualTo("rejected by the advice");
+                });
+    }
+
+    /**
+     * A handler that another auto-configuration defines answers before Synapse's when it declares an order, with no
+     * edge: that auto-configuration's name sorts after Synapse's, so its handler is registered later.
+     */
+    @Test
+    void anOrderedHandlerFromAnotherAutoConfigurationAnswersFirst() {
+        assertStarterAnswers(OrderedStarterAutoConfiguration.class, Status.Code.UNIMPLEMENTED);
+    }
+
+    /**
+     * A handler that another auto-configuration defines answers before Synapse's, unordered, when that
+     * auto-configuration comes before Synapse's: the tie is broken by registration order.
+     */
+    @Test
+    void anUnorderedHandlerFromAnAutoConfigurationBeforeSynapsesAnswersFirst() {
+        assertStarterAnswers(EarlierStarterAutoConfiguration.class, Status.Code.UNIMPLEMENTED);
+    }
+
+    /**
+     * Without either, the handler ties with Synapse's and is registered after it, so Synapse's, which always
+     * answers, pre-empts it: the case the docs warn about.
+     */
+    @Test
+    void anUnorderedHandlerFromALaterAutoConfigurationIsPreEmpted() {
+        assertStarterAnswers(LaterStarterAutoConfiguration.class, Status.Code.INTERNAL);
+    }
+
+    /**
+     * Runs the starter's auto-configuration with Boot's gRPC server and Synapse's: its handler answers an
+     * {@code UnsupportedOperationException} with {@code UNIMPLEMENTED}, and Synapse's answers everything else.
+     */
+    private void assertStarterAnswers(Class<?> starter, Status.Code expected) {
+        runner
+                .withConfiguration(AutoConfigurations
+                        .of(SslAutoConfiguration.class, GrpcServerServicesAutoConfiguration.class,
+                                GrpcServerAutoConfiguration.class, starter))
+                .withPropertyValues("spring.grpc.server.port=0")
+                .withBean("testService", BindableService.class,
+                        () -> () -> ServerServiceDefinition.builder("test.TestService").build())
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    GrpcExceptionHandlerInterceptor interceptor = context
+                            .getBean(GrpcExceptionHandlerInterceptor.class);
+
+                    RecordingCall unsupported = handled(interceptor, new UnsupportedOperationException("starter"));
+                    assertThat(Objects.requireNonNull(unsupported.closed).getCode()).isEqualTo(expected);
+                    RecordingCall other = handled(interceptor, new SynapseException(SynapseErrors.NOT_FOUND));
+                    assertThat(Objects.requireNonNull(other.closed).getCode()).isEqualTo(Status.Code.NOT_FOUND);
+                    assertThat(reason(other)).isEqualTo("NOT_FOUND");
+                });
+    }
+
+    @Test
+    void synapseErrorAutoConfigurationSortsAfterTheServer() {
+        ClassLoader previous = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(WITHOUT_SECURITY_AUTO_CONFIGURATION);
+        try {
+            List<Class<?>> sorted = List
+                    .of(Configurations
+                            .getClasses(AutoConfigurations
+                                    .of(SynapseGrpcErrorAutoConfiguration.class, GrpcServerAutoConfiguration.class)));
+
+            assertThat(sorted)
+                    .containsExactly(GrpcServerAutoConfiguration.class, SynapseGrpcErrorAutoConfiguration.class);
+        } finally {
+            Thread.currentThread().setContextClassLoader(previous);
+        }
+    }
+
     @Test
     @SuppressWarnings("unchecked") // The bean is a customizer of any server builder.
     void fallbackHandlersAnswerUnknownMethods() {
@@ -379,6 +491,52 @@ class SynapseGrpcErrorAutoConfigurationTest {
     private static ErrorInfo errorInfo(StatusException written) throws Exception {
         com.google.rpc.Status status = Objects.requireNonNull(StatusProto.fromThrowable(written));
         return status.getDetails(0).unpack(ErrorInfo.class);
+    }
+
+    /** An application's advice; Spring gRPC calls it without making it accessible, so it is public. */
+    @GrpcAdvice
+    public static class RejectingAdvice {
+
+        @org.springframework.grpc.server.advice.GrpcExceptionHandler(IllegalArgumentException.class)
+        public Status rejected(IllegalArgumentException exception) {
+            return Status.INVALID_ARGUMENT.withDescription("rejected by the advice");
+        }
+    }
+
+    /** A starter's handler: {@code UNIMPLEMENTED} for an {@code UnsupportedOperationException}, nothing otherwise. */
+    private static GrpcExceptionHandler starterHandler() {
+        return failure -> failure instanceof UnsupportedOperationException ? Status.UNIMPLEMENTED.asException() : null;
+    }
+
+    /** A starter's auto-configuration with an ordered handler and no edge; its name sorts after Synapse's. */
+    @AutoConfiguration
+    static class OrderedStarterAutoConfiguration {
+
+        @Bean
+        @Order(0)
+        GrpcExceptionHandler starterExceptionHandler() {
+            return starterHandler();
+        }
+    }
+
+    /** A starter's auto-configuration ordered before Synapse's, with an unordered handler. */
+    @AutoConfiguration(before = SynapseGrpcErrorAutoConfiguration.class)
+    static class EarlierStarterAutoConfiguration {
+
+        @Bean
+        GrpcExceptionHandler starterExceptionHandler() {
+            return starterHandler();
+        }
+    }
+
+    /** A starter's auto-configuration with an unordered handler and no edge; its name sorts after Synapse's. */
+    @AutoConfiguration
+    static class LaterStarterAutoConfiguration {
+
+        @Bean
+        GrpcExceptionHandler starterExceptionHandler() {
+            return starterHandler();
+        }
     }
 
     /** A server call that records how it was closed. */

@@ -63,6 +63,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * empty on an update, as REST sends {@code ETag}. gRPC has no status for a created book or an empty answer: a
  * {@code CreateBook} response is {@link Outcome.Kind#CREATED}, and {@code google.protobuf.Empty} is
  * {@link Outcome.Kind#NO_CONTENT}.
+ *
+ * <p>
+ * The status of {@code PRECONDITION_FAILED} depends on more than the code: a stale {@code etag} is {@code ABORTED}
+ * (AIP-154), a weak one {@code FAILED_PRECONDITION}. So the client doesn't check it; it keeps the status of every call
+ * in {@link #lastStatus()}, and the scenario that sends the {@code etag} asserts it. The {@link Outcome} stays the
+ * same on both protocols.
  */
 public final class GrpcBookstoreClient implements BookstoreClient {
 
@@ -80,6 +86,8 @@ public final class GrpcBookstoreClient implements BookstoreClient {
 
     private final ManagedChannel channel;
 
+    private Status.@Nullable Code lastStatus;
+
     /**
      * Creates the client.
      *
@@ -88,6 +96,15 @@ public final class GrpcBookstoreClient implements BookstoreClient {
      */
     public GrpcBookstoreClient(String host, int port) {
         this.channel = Grpc.newChannelBuilderForAddress(host, port, InsecureChannelCredentials.create()).build();
+    }
+
+    /**
+     * Returns the status of this client's last call.
+     *
+     * @return the status the last call failed with, or {@code null} when it succeeded or no call was made
+     */
+    public Status.@Nullable Code lastStatus() {
+        return lastStatus;
     }
 
     @Override
@@ -113,7 +130,7 @@ public final class GrpcBookstoreClient implements BookstoreClient {
     }
 
     /** A GetBook on the stub. */
-    private static Outcome read(BookServiceGrpc.BookServiceBlockingStub stub, UUID id) {
+    private Outcome read(BookServiceGrpc.BookServiceBlockingStub stub, UUID id) {
         return call(() -> {
             Book book = stub.getBook(GetBookRequest.newBuilder().setId(id.toString()).build());
             assertThat(book.getEtag()).as("etag of GetBook").isNotEmpty();
@@ -174,6 +191,7 @@ public final class GrpcBookstoreClient implements BookstoreClient {
         if (sort != null) {
             request.setOrderBy(orderBy(sort));
         }
+        lastStatus = null;
         try {
             SearchBooksResponse page = books().searchBooks(request.build());
             List<BookView> books = page.getBooksList().stream().map(GrpcBookstoreClient::view).toList();
@@ -222,7 +240,8 @@ public final class GrpcBookstoreClient implements BookstoreClient {
         return BookServiceGrpc.newBlockingStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS);
     }
 
-    private static Outcome call(Supplier<Outcome> call) {
+    private Outcome call(Supplier<Outcome> call) {
+        lastStatus = null;
         try {
             return call.get();
         } catch (StatusRuntimeException e) {
@@ -230,8 +249,12 @@ public final class GrpcBookstoreClient implements BookstoreClient {
         }
     }
 
-    /** A failed call: its {@code ErrorInfo.reason}, its {@code BadRequest} fields and the status its code must have. */
-    private static Outcome failure(StatusRuntimeException e) {
+    /**
+     * A failed call: its {@code ErrorInfo.reason}, its {@code BadRequest} fields and the status its code must have
+     * (kept in {@link #lastStatus()}, and not checked for {@code PRECONDITION_FAILED}).
+     */
+    private Outcome failure(StatusRuntimeException e) {
+        lastStatus = e.getStatus().getCode();
         com.google.rpc.Status status = StatusProto.fromThrowable(e);
         assertThat(status).as("status details of %s", e.getStatus()).isNotNull();
         String code = null;
@@ -253,7 +276,10 @@ public final class GrpcBookstoreClient implements BookstoreClient {
         }
         assertThat(code).as("ErrorInfo of %s", e.getStatus()).isNotNull();
         Outcome failure = Outcome.failed(Objects.requireNonNull(code), violations);
-        assertThat(e.getStatus().getCode()).as("status of %s", code).isEqualTo(status(Outcome.details(code)));
+        ErrorDetails details = Outcome.details(code);
+        if (details != SynapseErrors.PRECONDITION_FAILED) {
+            assertThat(e.getStatus().getCode()).as("status of %s", code).isEqualTo(status(details));
+        }
         return failure;
     }
 

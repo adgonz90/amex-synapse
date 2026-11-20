@@ -18,6 +18,7 @@ import java.util.Set;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Validator;
+import jakarta.validation.constraints.Size;
 
 import ch.qos.logback.classic.Level;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -53,21 +54,27 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
+import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclaration;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
+import io.americanexpress.synapse.core.internal.binding.BindingParityCheck;
 import io.americanexpress.synapse.core.internal.pipeline.BusinessAdvisor;
 import io.americanexpress.synapse.core.internal.pipeline.ConstraintViolationTranslator;
 import io.americanexpress.synapse.core.internal.pipeline.InflightTracker;
 import io.americanexpress.synapse.core.internal.pipeline.OperationAdvisor;
 import io.americanexpress.synapse.core.internal.pipeline.OperationDrainLifecycle;
 import io.americanexpress.synapse.core.internal.pipeline.OperationPipeline;
+import io.americanexpress.synapse.core.internal.pipeline.OperationSettingsPrefix;
 import io.americanexpress.synapse.core.lifecycle.SynapseLifecyclePhases;
 import io.americanexpress.synapse.core.observability.DefaultOperationObservationConvention;
 import io.americanexpress.synapse.core.observability.OperationObservationContext;
 import io.americanexpress.synapse.core.observability.OperationObservationConvention;
+import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
 
@@ -158,10 +165,15 @@ class SynapseOperationAutoConfigurationTest {
             PriceBookBusiness business = context.getBean(PriceBookBusiness.class);
             assertThat(AopUtils.isCglibProxy(business)).isTrue();
             assertThat(business.execute(new PriceRequest(2))).isEqualTo(20);
+            // A business input is built by the service: its violations are INTERNAL, kept in the cause.
             assertThatThrownBy(() -> business.execute(new PriceRequest(0)))
                     .isInstanceOfSatisfying(SynapseException.class, failure -> {
-                        assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
-                        assertThat(failure.violations()).extracting(Violation::field).containsExactly("quantity");
+                        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+                        assertThat(failure.violations()).isEmpty();
+                        assertThat(failure.getCause())
+                                .isInstanceOfSatisfying(SynapseException.class, cause -> assertThat(cause.violations())
+                                        .extracting(Violation::field)
+                                        .containsExactly("quantity"));
                     });
         });
     }
@@ -284,12 +296,26 @@ class SynapseOperationAutoConfigurationTest {
     }
 
     @Test
-    void constraintViolationExceptionIsTranslated() {
+    void constraintViolationExceptionOfAnotherObjectIsInternal() {
         runner().withUserConfiguration(ConstraintViolatingOperation.class).run(context -> {
             assertThatThrownBy(() -> context.getBean(FailBookOperation.class).execute("x"))
                     .isInstanceOfSatisfying(SynapseException.class, failure -> {
+                        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+                        assertThat(failure.violations()).isEmpty();
+                        assertThat(failure.getCause())
+                                .isNotInstanceOf(ConstraintViolationException.class)
+                                .hasMessageContaining("id: {jakarta.validation.constraints.NotBlank.message}");
+                    });
+        });
+    }
+
+    @Test
+    void constraintViolationExceptionOfTheInputIsTranslated() {
+        runner().withUserConfiguration(HandValidatingOperation.class).run(context -> {
+            assertThatThrownBy(() -> context.getBean(CheckCodeOperation.class).execute(new CodeRequest("abcd")))
+                    .isInstanceOfSatisfying(SynapseException.class, failure -> {
                         assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
-                        assertThat(failure.violations()).extracting(Violation::field).containsExactly("id");
+                        assertThat(failure.violations()).extracting(Violation::field).containsExactly("code");
                         assertThat(failure.violations()).extracting(Violation::message).doesNotContainNull();
                     });
         });
@@ -357,6 +383,91 @@ class SynapseOperationAutoConfigurationTest {
     }
 
     @Test
+    void unknownRestOperationSettingsWarn(CapturedOutput output) {
+        runner()
+                .withUserConfiguration(Operations.class)
+                .withBean("synapseRestOperationSettingsPrefix", OperationSettingsPrefix.class,
+                        () -> new OperationSettingsPrefix("synapse.api.rest.operations"))
+                .withPropertyValues("synapse.api.rest.operations.no-such-op.errors.status.[X]=410",
+                        "synapse.api.rest.operations.get-book.errors.status.[X]=410",
+                        // No plugin contributes the gRPC prefix here, so its keys are not read.
+                        "synapse.api.grpc.operations.other-op.errors.status.[X]=NOT_FOUND")
+                .run(context -> assertThat(context).hasNotFailed());
+        assertThat(output.getOut().lines().filter(line -> line.contains("so their settings have no effect")))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains("WARN")
+                        .contains("under synapse.api.rest.operations")
+                        .contains(": [no-such-op]."));
+    }
+
+    @Test
+    void unknownGrpcOperationSettingsWarn(CapturedOutput output) {
+        runner()
+                .withUserConfiguration(Operations.class)
+                .withBean("synapseRestOperationSettingsPrefix", OperationSettingsPrefix.class,
+                        () -> new OperationSettingsPrefix("synapse.api.rest.operations"))
+                .withBean("synapseGrpcOperationSettingsPrefix", OperationSettingsPrefix.class,
+                        () -> new OperationSettingsPrefix("synapse.api.grpc.operations"))
+                .withPropertyValues("synapse.api.grpc.operations.no-such-op.errors.status.[X]=NOT_FOUND",
+                        "synapse.api.grpc.operations.[get-bok].errors.status.[X]=NOT_FOUND",
+                        "synapse.api.grpc.operations.save-book.errors.status.[X]=NOT_FOUND",
+                        "synapse.operations.get-bk.logging.payloads=true")
+                .run(context -> assertThat(context).hasNotFailed());
+        List<String> warnings = output
+                .getOut()
+                .lines()
+                .filter(line -> line.contains("so their settings have no effect"))
+                .toList();
+        // One WARN per prefix that has unknown names, in the core message's form; the REST prefix has none.
+        assertThat(warnings).hasSize(2);
+        assertThat(warnings)
+                .filteredOn(line -> line.contains("under synapse.api.grpc.operations"))
+                .singleElement()
+                .satisfies(line -> assertThat(line).contains("WARN").contains(": [get-bok, no-such-op]."));
+        assertThat(warnings)
+                .filteredOn(line -> line.contains("under synapse.operations,"))
+                .singleElement()
+                .satisfies(line -> assertThat(line).contains(": [get-bk]."));
+    }
+
+    @Test
+    void bindingParityBeansArePresent() {
+        runner().withUserConfiguration(Operations.class).run(context -> {
+            assertThat(context).hasSingleBean(BindingDeclarations.class);
+            assertThat(context).hasBean("synapseBindingDeclarations");
+            assertThat(context).hasSingleBean(BindingParityCheck.class);
+            assertThat(context).hasBean("synapseBindingParityCheck");
+        });
+    }
+
+    @Test
+    void bindingParityBeansBackOffByName() {
+        BindingDeclarations user = new BindingDeclarations();
+        runner()
+                .withUserConfiguration(Operations.class)
+                .withBean("synapseBindingDeclarations", BindingDeclarations.class, () -> user)
+                .withBean("synapseBindingParityCheck", Object.class, Object::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(BindingDeclarations.class)).isSameAs(user);
+                    assertThat(context).doesNotHaveBean(BindingParityCheck.class);
+                });
+    }
+
+    @Test
+    void bindingParityCheckFailsStartupOnAMismatch() {
+        runner()
+                .withUserConfiguration(Operations.class, MismatchedBindings.class)
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .isNotNull()
+                        .isInstanceOf(SynapseConfigurationException.class)
+                        .hasMessageContaining("Operation 'get-book' is bound differently over REST"));
+    }
+
+    @Test
     void scopedOperationRunsThePipeline() {
         runner().withUserConfiguration(ScopedOperation.class).run(context -> {
             assertThat(context).hasNotFailed();
@@ -400,6 +511,22 @@ class SynapseOperationAutoConfigurationTest {
                     .isInstanceOfSatisfying(SynapseException.class,
                             failure -> assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED));
         });
+    }
+
+    /** Registers two bindings of one operation that differ, as the plugins' compilers do while their beans are created. */
+    @Configuration(proxyBeanMethods = false)
+    static class MismatchedBindings {
+
+        @Bean
+        String compiledBindings(BindingDeclarations declarations) {
+            declarations
+                    .add(new BindingDeclaration("REST", "get-book", "GET /books/{id}", "BOOK_NOT_FOUND", null,
+                            null));
+            declarations
+                    .add(new BindingDeclaration("gRPC", "get-book", "bookstore.v1.Bookstore/GetBook", "NOT_FOUND",
+                            null, null));
+            return "compiled";
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -602,6 +729,41 @@ class SynapseOperationAutoConfigurationTest {
         @Bean
         FailBookOperation failBookOperation() {
             return new FailBookOperation(() -> new IllegalStateException("broken"));
+        }
+    }
+
+    /** A group the pipeline never validates: the operation checks it by hand. */
+    interface Strict {
+    }
+
+    record CodeRequest(@Size(max = 3, groups = Strict.class) String code) {
+    }
+
+    /** Validates its own input by hand, as an operation may for a rule the pipeline doesn't run. */
+    static class CheckCodeOperation implements CommandOperation<CodeRequest, String> {
+
+        private final Validator validator;
+
+        CheckCodeOperation(Validator validator) {
+            this.validator = validator;
+        }
+
+        @Override
+        public String execute(CodeRequest input) {
+            Set<ConstraintViolation<CodeRequest>> violations = validator.validate(input, Strict.class);
+            if (!violations.isEmpty()) {
+                throw new ConstraintViolationException(violations);
+            }
+            return input.code();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class HandValidatingOperation {
+
+        @Bean
+        CheckCodeOperation checkCodeOperation(Validator validator) {
+            return new CheckCodeOperation(validator);
         }
     }
 

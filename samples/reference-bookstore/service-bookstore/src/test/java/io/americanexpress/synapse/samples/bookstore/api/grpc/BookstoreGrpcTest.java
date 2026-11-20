@@ -225,14 +225,15 @@ class BookstoreGrpcTest {
     }
 
     @Test
-    void staleEtagIsFailedPrecondition() {
+    void staleEtagIsAborted() {
         willThrow(new SynapseException(SynapseErrors.STALE_VERSION)).given(updateBook).execute(any());
 
         StatusRuntimeException e = catchThrowableOfType(StatusRuntimeException.class,
                 () -> books().updateBook(update("\"1\"").build()));
 
         // The request named a version and it was stale: PRECONDITION_FAILED, as REST answers a stale If-Match 412.
-        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        // gRPC's status is ABORTED (AIP-154): the client re-reads the book and retries.
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
         assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("PRECONDITION_FAILED");
         then(updateBook)
                 .should()

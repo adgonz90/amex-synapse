@@ -25,9 +25,11 @@ import java.util.Objects;
  * <li>{@code @Nullable VersionCondition<V>}: the condition is optional, and {@code null} means the request has none (an
  * unconditional write);</li>
  * <li>{@code VersionCondition<V>}, not {@code @Nullable}: the condition is required. The operation never sees a request
- * without one: the API plugin answers it
- * {@link io.americanexpress.synapse.core.error.SynapseErrors#PRECONDITION_REQUIRED} before the operation runs.
- * {@code AnyVersion} counts as a condition.</li>
+ * without one: the pipeline answers a missing one
+ * {@link io.americanexpress.synapse.core.error.SynapseErrors#PRECONDITION_REQUIRED} before the operation runs, for
+ * every caller (an API plugin answers it first, while binding the request); in a nested operation call it is the
+ * service's bug, so the caller gets {@code INTERNAL}. {@code AnyVersion} counts as a
+ * condition.</li>
  * </ul>
  * In REST, it binds from {@code If-Match} or {@code If-None-Match}: {@code "5"} is {@code Version(5)}, {@code *} is
  * {@code AnyVersion}, and an absent header is {@code null} for an optional condition, or 428 for a required one.

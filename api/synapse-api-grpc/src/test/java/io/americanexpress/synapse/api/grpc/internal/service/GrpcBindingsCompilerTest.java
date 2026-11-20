@@ -15,6 +15,7 @@ package io.americanexpress.synapse.api.grpc.internal.service;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -22,15 +23,20 @@ import org.springframework.beans.factory.support.StaticListableBeanFactory;
 
 import io.americanexpress.synapse.api.grpc.GrpcBindings;
 import io.americanexpress.synapse.api.grpc.fixture.proto.CatalogServiceGrpc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.DocServiceGrpc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBookServiceGrpc;
 import io.americanexpress.synapse.api.grpc.internal.binding.fixture.BindingFixtures;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclaration;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
@@ -81,7 +87,7 @@ class GrpcBindingsCompilerTest {
     void compilesEachGrpcBindingsBean() {
         GrpcBindings bindings = byName();
         GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(Compilers.compiler()),
-                remainingOperations(), cursors(), paging());
+                remainingOperations(), cursors(), paging(), declarations());
 
         assertThat(postProcessor.postProcessAfterInitialization(bindings, "catalog")).isSameAs(bindings);
 
@@ -94,7 +100,7 @@ class GrpcBindingsCompilerTest {
         GrpcBindings bindings = byName();
         GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(
                 new StaticListableBeanFactory().getBeanProvider(ServiceCompiler.class), remainingOperations(),
-                cursors(), paging());
+                cursors(), paging(), declarations());
 
         postProcessor.postProcessAfterInitialization(bindings, "catalog");
 
@@ -110,7 +116,7 @@ class GrpcBindingsCompilerTest {
                 .bindAllByName()
                 .build();
         GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations(),
-                cursors(), paging());
+                cursors(), paging(), declarations());
 
         assertThatExceptionOfType(SynapseConfigurationException.class)
                 .isThrownBy(() -> postProcessor.postProcessAfterInitialization(bindings, "catalog"))
@@ -137,7 +143,7 @@ class GrpcBindingsCompilerTest {
         ObjectProvider<ServiceOperation<?, ?>> operations = mock(ObjectProvider.class);
         ObjectProvider<PageCursors> cursors = mock(ObjectProvider.class);
 
-        new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations, cursors, paging())
+        new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations, cursors, paging(), declarations())
                 .postProcessAfterInitialization(bindings, "catalog");
 
         assertThat(bindings.bindService().getMethods()).hasSize(6);
@@ -148,9 +154,105 @@ class GrpcBindingsCompilerTest {
     @Test
     void otherBeansPassThrough() {
         GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations(),
-                cursors(), paging());
+                cursors(), paging(), declarations());
         Object bean = new Object();
 
         assertThat(postProcessor.postProcessAfterInitialization(bean, "other")).isSameAs(bean);
+    }
+
+    @Test
+    void eachCompiledMethodIsRegisteredWithItsParityDeclarations() {
+        BindingDeclarations registry = new BindingDeclarations();
+        GrpcBindings catalog = GrpcBindings
+                .service(CatalogServiceGrpc.getServiceDescriptor())
+                .unary(CatalogServiceGrpc.getGetItemMethod(), new BindingFixtures.GetItemOperation())
+                .notFound(BindingFixtures.ItemErrors.ITEM_NOT_FOUND)
+                .unary(CatalogServiceGrpc.getCreateItemMethod(), new BindingFixtures.CreateItemOperation())
+                .context(BindingFixtures.CreateItem::channel, context -> "grpc")
+                .bindAllByName()
+                .build();
+
+        new GrpcBindingsCompiler(compiler(Compilers.compiler()), remainingOperations(), cursors(), paging(),
+                declarations(registry))
+                .postProcessAfterInitialization(catalog, "catalog");
+
+        assertThat(registry.forOperation("get-item"))
+                .containsExactly(new BindingDeclaration("gRPC", "get-item", SERVICE + "/GetItem", "ITEM_NOT_FOUND",
+                        null, null));
+        // A method .bindAllByName() binds declares nothing: NOT_FOUND, no etag, no sort keys.
+        assertThat(registry.forOperation("ping"))
+                .containsExactly(new BindingDeclaration("gRPC", "ping", SERVICE + "/Ping", "NOT_FOUND", null, null));
+        assertThat(registry.operationNames()).hasSize(6);
+    }
+
+    @Test
+    void theEtagComponentAndTheSortKeysAreRegistered() {
+        BindingDeclarations registry = new BindingDeclarations();
+        GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations(),
+                cursors(), paging(), declarations(registry));
+        GrpcBindings docs = GrpcBindings
+                .service(DocServiceGrpc.getServiceDescriptor())
+                .unary(DocServiceGrpc.getGetDocMethod(), new BindingFixtures.GetDocOperation())
+                .etag(BindingFixtures.DocView::version)
+                .unary(DocServiceGrpc.getCreateDocMethod(), new BindingFixtures.CreateDocOperation())
+                .unary(DocServiceGrpc.getUpdateDocMethod(), new BindingFixtures.UpdateDocOperation())
+                .unary(DocServiceGrpc.getDeleteDocMethod(), new BindingFixtures.DeleteDocOperation())
+                .build();
+        GrpcBindings books = GrpcBindings
+                .service(PagedBookServiceGrpc.getServiceDescriptor())
+                .unary(PagedBookServiceGrpc.getListBooksMethod(), new BindingFixtures.PagedBooksOperation())
+                .sortable(BindingFixtures.BookSort.class)
+                .unary(PagedBookServiceGrpc.getListTitlesMethod(), new BindingFixtures.PagedBooksOperation())
+                .unary(PagedBookServiceGrpc.getListAllMethod(), new BindingFixtures.ListAllBooksOperation())
+                .build();
+
+        postProcessor.postProcessAfterInitialization(docs, "docs");
+        postProcessor.postProcessAfterInitialization(books, "books");
+
+        assertThat(registry.forOperation("get-doc"))
+                .singleElement()
+                .satisfies(declaration -> assertThat(declaration.etagComponent()).isEqualTo("version"));
+        assertThat(registry.forOperation("paged-books"))
+                .extracting(BindingDeclaration::binding, BindingDeclaration::sortKeys)
+                .containsExactly(tuple("synapse.fixture.v1.PagedBookService/ListBooks", Set
+                        .of("TITLE",
+                                "PUBLISHED_YEAR")),
+                        tuple("synapse.fixture.v1.PagedBookService/ListTitles", null));
+    }
+
+    @Test
+    void bindingsThatFailToCompileRegisterNothing() {
+        BindingDeclarations registry = new BindingDeclarations();
+        GrpcBindings bindings = GrpcBindings
+                .service(CatalogServiceGrpc.getServiceDescriptor())
+                .unary(CatalogServiceGrpc.getGetItemMethod(), new BindingFixtures.GetItemOperation())
+                .bindAllByName()
+                .build();
+
+        // CreateItem has no operation to bind by name.
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> new GrpcBindingsCompiler(compiler(Compilers.compiler()), operations(), cursors(),
+                        paging(), declarations(registry)).postProcessAfterInitialization(bindings, "catalog"));
+        assertThat(registry.operationNames()).isEmpty();
+    }
+
+    @Test
+    void compilesWithoutARegistry() {
+        GrpcBindings bindings = byName();
+
+        new GrpcBindingsCompiler(compiler(Compilers.compiler()), remainingOperations(), cursors(), paging(),
+                new StaticListableBeanFactory().getBeanProvider(BindingDeclarations.class))
+                .postProcessAfterInitialization(bindings, "catalog");
+
+        assertThat(bindings.bindService().getMethods()).hasSize(6);
+    }
+
+    private static ObjectProvider<BindingDeclarations> declarations() {
+        return declarations(new BindingDeclarations());
+    }
+
+    private static ObjectProvider<BindingDeclarations> declarations(BindingDeclarations registry) {
+        return new StaticListableBeanFactory(Map.of("declarations", registry))
+                .getBeanProvider(BindingDeclarations.class);
     }
 }

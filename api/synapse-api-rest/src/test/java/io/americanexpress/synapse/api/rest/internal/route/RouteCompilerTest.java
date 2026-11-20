@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.api.rest.internal.route;
 
 import java.util.List;
+import java.util.Set;
 import jakarta.servlet.DispatcherType;
 
 import ch.qos.logback.classic.Level;
@@ -32,14 +33,20 @@ import org.springframework.web.servlet.function.ServerResponse;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
+import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.FindBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetBookOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetVersionedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.ListBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.PagedBooksOperation;
+import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.VersionedBook;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclaration;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
@@ -198,13 +205,97 @@ class RouteCompilerTest {
         assertThat(failed).isEmpty();
     }
 
+    @Test
+    void eachDeclaredRouteIsRegisteredWithItsParityDeclarations() {
+        BindingDeclarations declarations = new BindingDeclarations();
+        compiler(RouteFixtures.cursors(), declarations)
+                .compile(List
+                        .of(RestBindings
+                                .builder()
+                                .get("/books/{id}", new FindBookOperation())
+                                .notFound(RestErrors.ROUTE_NOT_FOUND)
+                                .get("/books/{id}", new FindBookOperation())
+                                .version("2")
+                                .get("/versioned/{id}", new GetVersionedBookOperation())
+                                .etag(VersionedBook::version)
+                                .get("/books", new PagedBooksOperation())
+                                .sortable("title", "year")
+                                .build()),
+                        List.of());
+
+        // The implicit HEAD routes are not registered: each is its GET route's.
+        assertThat(declarations.forOperation("find-book"))
+                .containsExactlyInAnyOrder(
+                        new BindingDeclaration("REST", "find-book", "GET /books/{id}", "ROUTE_NOT_FOUND", null, null),
+                        new BindingDeclaration("REST", "find-book", "GET /v2/books/{id}", "NOT_FOUND", null, null));
+        assertThat(declarations.forOperation("get-versioned-book"))
+                .containsExactly(new BindingDeclaration("REST", "get-versioned-book", "GET /versioned/{id}",
+                        "NOT_FOUND", "version", null));
+        assertThat(declarations.forOperation("paged-books"))
+                .containsExactly(new BindingDeclaration("REST", "paged-books", "GET /books", "NOT_FOUND", null,
+                        Set.of("title", "year")));
+    }
+
+    @Test
+    void anEnumsSortKeysAreRegisteredByConstantName() {
+        BindingDeclarations declarations = new BindingDeclarations();
+        compiler(RouteFixtures.cursors(), declarations)
+                .compile(List
+                        .of(RestBindings
+                                .builder()
+                                .get("/books", new PagedBooksOperation())
+                                .sortable(SortKey.class)
+                                .build()),
+                        List.of());
+
+        assertThat(declarations.forOperation("paged-books"))
+                .singleElement()
+                .satisfies(declaration -> assertThat(declaration.sortKeys())
+                        .containsExactly("PUBLISHED_AT", "TITLE"));
+    }
+
+    @Test
+    void aFailedCompileRegistersNothing() {
+        BindingDeclarations declarations = new BindingDeclarations();
+        RestBindings duplicate = RestBindings
+                .builder()
+                .get("/books/{id}", new GetBookOperation())
+                .get("/books/{bookId}", new GetBookOperation())
+                .build();
+
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> compiler(RouteFixtures.cursors(), declarations)
+                        .compile(List.of(duplicate),
+                                List.of()));
+        assertThat(declarations.operationNames()).isEmpty();
+    }
+
+    @Test
+    void compilesWithoutARegistry() {
+        RouterFunction<ServerResponse> routes = compiler(RouteFixtures.cursors(), null)
+                .compile(List.of(RestBindings.builder().get("/books/{id}", new GetBookOperation()).build()),
+                        List.of());
+
+        assertThat(operationFor(routes, "GET", "/books/7")).isEqualTo("get-book");
+    }
+
+    /** Sort keys whose wire names differ from the constant names the operation receives. */
+    enum SortKey {
+        TITLE, PUBLISHED_AT
+    }
+
     /** A compiler whose writer and handlers use the page cursors. */
     private static RouteCompiler compiler(PageCursors cursors) {
+        return compiler(cursors, new BindingDeclarations());
+    }
+
+    /** A compiler whose writer and handlers use the page cursors, registering its routes with the declarations. */
+    private static RouteCompiler compiler(PageCursors cursors, @Nullable BindingDeclarations declarations) {
         return new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
                 new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
                 new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), cursors, PagingSettings.defaults(),
                         RouteFixtures.etags()),
-                cursors, PagingSettings.defaults());
+                cursors, PagingSettings.defaults(), declarations);
     }
 
     /** Runs the action and returns the WARN lines it logged on Synapse's loggers (REST's and core's). */

@@ -107,7 +107,7 @@ public final class AppProcess implements AutoCloseable {
     public static Path packagedJar() {
         String jar = System.getProperty(JAR_PROPERTY);
         if (jar == null || !Files.isRegularFile(Path.of(jar))) {
-            throw new AssertionError("No jar at %s=%s: mvn verify packages it before the integration tests"
+            throw new AssertionError("No jar at %s=%s: ./mvnw verify packages it before the integration tests"
                     .formatted(JAR_PROPERTY, jar));
         }
         return Path.of(jar);

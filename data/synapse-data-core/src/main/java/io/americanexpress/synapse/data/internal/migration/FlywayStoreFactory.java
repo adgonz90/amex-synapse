@@ -13,13 +13,24 @@
  */
 package io.americanexpress.synapse.data.internal.migration;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Consumer;
 import javax.sql.DataSource;
 
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.callback.Callback;
+import org.flywaydb.core.api.configuration.FluentConfiguration;
+import org.flywaydb.core.api.migration.JavaMigration;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.core.env.Environment;
+import org.springframework.util.ClassUtils;
 
+import io.americanexpress.synapse.data.internal.store.BeanQualifiers;
 import io.americanexpress.synapse.data.internal.store.StoreBeans;
 import io.americanexpress.synapse.data.internal.store.StoreDefinition;
 import io.americanexpress.synapse.data.internal.store.StoreNames;
@@ -54,7 +65,17 @@ public final class FlywayStoreFactory implements StoreMigrations {
     }
 
     /**
-     * Builds a store's Flyway on its {@code <prefix>DataSource}, without opening a connection.
+     * Builds a store's Flyway on its {@code <prefix>DataSource}, without opening a connection, with the application's
+     * Flyway beans that apply to the store, as Boot's Flyway auto-configuration applies them to its Flyway:
+     * <ul>
+     * <li>Boot's {@code FlywayConfigurationCustomizer}s, when spring-boot-flyway is on the class path: the unqualified
+     * ones, then those qualified with the store's name, then the store's own
+     * {@code <prefix>FlywayConfigurationCustomizer}, each group in {@code @Order} order;</li>
+     * <li>{@link Callback}s and {@link JavaMigration}s qualified with the store's name, in {@code @Order} order; while
+     * the service has a single store, the unqualified ones before them. With several stores an unqualified one applies
+     * to none, and the data stores' startup report names it ({@link #unusedBeans}).</li>
+     * </ul>
+     * A bean with another qualifier is never used.
      *
      * @param store the store name
      * @return the Flyway
@@ -65,10 +86,68 @@ public final class FlywayStoreFactory implements StoreMigrations {
         StoreDefinition definition = beanFactory
                 .getBean(prefix + StoreDefinition.BEAN_SUFFIX, StoreDefinition.class);
         DataSource dataSource = StoreBeans.dependency(beanFactory, store, "DataSource", DataSource.class, BEAN_SUFFIX);
-        ClassLoader classLoader = beanFactory.getBeanClassLoader();
+        ClassLoader beanClassLoader = beanFactory.getBeanClassLoader();
+        ClassLoader classLoader = beanClassLoader != null ? beanClassLoader : FlywayStoreFactory.class.getClassLoader();
+        // The type is named only in BootFlywayCustomizers, which is used only when spring-boot-flyway is present.
+        List<Consumer<FluentConfiguration>> customizers = ClassUtils.isPresent(BootFlywayCustomizers.TYPE, classLoader)
+                ? BootFlywayCustomizers.forStore(beanFactory, store, BEAN_SUFFIX)
+                : List.of();
         return FlywayStoreMigration
-                .flyway(definition, dataSource, StoreSettings.bind(environment, store),
-                        classLoader != null ? classLoader : FlywayStoreFactory.class.getClassLoader());
+                .flyway(definition, dataSource, StoreSettings.bind(environment, store), classLoader, customizers,
+                        storeBeans(store, Callback.class), storeBeans(store, JavaMigration.class));
+    }
+
+    /**
+     * Returns a store's beans of a type that has no store-own bean: qualified with the store's name, and the unqualified
+     * ones too while there is a single store.
+     */
+    private <T> List<T> storeBeans(String store, Class<T> type) {
+        // No store has a <prefix>Flyway bean of these types, so the suffix leaves no application bean out.
+        if (storeCount(beanFactory) == 1) {
+            return StoreBeans.applicationBeans(beanFactory, store, type, BEAN_SUFFIX);
+        }
+        return StoreBeans.qualifiedApplicationBeans(beanFactory, store, type, BEAN_SUFFIX);
+    }
+
+    /**
+     * Describes each {@link Callback} and {@link JavaMigration} bean that no store's Flyway uses, without creating any
+     * bean: with several stores, an unqualified one; with any number, one whose qualifier names no store. The data
+     * stores' startup report logs each one as a WARN.
+     *
+     * @param beanFactory the bean factory
+     * @return one line per unused bean, sorted by type then name
+     */
+    public static List<String> unusedBeans(ConfigurableListableBeanFactory beanFactory) {
+        Set<String> stores = new TreeSet<>();
+        for (String name : beanFactory.getBeanNamesForType(StoreDefinition.class, false, false)) {
+            stores.add(beanFactory.getBean(name, StoreDefinition.class).name());
+        }
+        List<String> unused = new ArrayList<>();
+        if (stores.isEmpty()) {
+            return unused;
+        }
+        for (Class<?> type : List.of(Callback.class, JavaMigration.class)) {
+            String simpleName = type.getSimpleName();
+            for (String name : new TreeSet<>(Arrays.asList(beanFactory.getBeanNamesForType(type, true, false)))) {
+                String qualifier = BeanQualifiers.qualifier(beanFactory, name);
+                String bean = "The Flyway " + simpleName + " bean " + name + " is not used by any store: ";
+                if (qualifier == null && stores.size() > 1) {
+                    unused
+                            .add(bean + "with several stores, a " + simpleName + " applies only to the store its "
+                                    + "@Qualifier names, such as @Qualifier(\"" + stores.iterator().next() + "\").");
+                } else if (qualifier != null && !stores.contains(qualifier)) {
+                    unused
+                            .add(bean + (BeanQualifiers.ANOTHER_QUALIFIER.equals(qualifier)
+                                    ? "its qualifier isn't a @Qualifier, so it names no store."
+                                    : "its qualifier '" + qualifier + "' names no store."));
+                }
+            }
+        }
+        return unused;
+    }
+
+    private static int storeCount(ConfigurableListableBeanFactory beanFactory) {
+        return beanFactory.getBeanNamesForType(StoreDefinition.class, false, false).length;
     }
 
     /**

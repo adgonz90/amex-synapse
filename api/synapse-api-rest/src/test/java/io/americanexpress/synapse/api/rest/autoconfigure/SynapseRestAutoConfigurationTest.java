@@ -38,8 +38,12 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.boot.LazyInitializationBeanFactoryPostProcessor;
+import org.springframework.boot.LazyInitializationExcludeFilter;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
 import org.springframework.boot.http.converter.autoconfigure.HttpMessageConvertersAutoConfiguration;
@@ -52,11 +56,14 @@ import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.assertj.AssertableWebApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.webmvc.autoconfigure.WebMvcAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.support.AbstractApplicationContext;
 import org.springframework.context.support.StaticMessageSource;
 import org.springframework.core.Ordered;
 import org.springframework.core.ResolvableType;
@@ -123,10 +130,13 @@ import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclaration;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
 import io.americanexpress.synapse.core.internal.paging.AesGcmCursorCodec;
 import io.americanexpress.synapse.core.internal.paging.CursorKeys;
 import io.americanexpress.synapse.core.internal.paging.InputDigest;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.internal.pipeline.OperationSettingsPrefix;
 import io.americanexpress.synapse.core.operation.CommandOperation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.CursorCodec;
@@ -137,6 +147,7 @@ import io.americanexpress.synapse.test.time.MutableClock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.entry;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
@@ -573,6 +584,135 @@ class SynapseRestAutoConfigurationTest {
     }
 
     @Test
+    void operationSettingsPrefixIsPresentAndBacksOffByName() {
+        webRunner
+                .run(context -> assertThat(context.getBean("synapseRestOperationSettingsPrefix"))
+                        .isEqualTo(new OperationSettingsPrefix("synapse.api.rest.operations")));
+        OperationSettingsPrefix user = new OperationSettingsPrefix("user.operations");
+        webRunner
+                .withBean("synapseRestOperationSettingsPrefix", OperationSettingsPrefix.class, () -> user)
+                .run(context -> assertThat(context.getBeansOfType(OperationSettingsPrefix.class))
+                        .containsExactly(entry("synapseRestOperationSettingsPrefix", user)));
+    }
+
+    @Test
+    void compiledRoutesAreRegisteredForTheParityCheck() {
+        routesRunner.withUserConfiguration(Books.class).run(context -> {
+            BindingDeclarations declarations = context.getBean(BindingDeclarations.class);
+            assertThat(declarations.operationNames()).isNotEmpty();
+            assertThat(declarations.operationNames())
+                    .allSatisfy(name -> assertThat(declarations.forOperation(name))
+                            .allSatisfy(declaration -> assertThat(declaration.protocol()).isEqualTo("REST")));
+        });
+    }
+
+    @Test
+    void routesCompileDuringStartupUnderLazyInitialization() {
+        // A gRPC binding of the same operation, registered up front: the routes must register before the check runs.
+        lazy(routesRunner)
+                .withUserConfiguration(Books.class)
+                .withBean("synapseBindingDeclarations", BindingDeclarations.class, () -> grpcBinding("NOT_FOUND"))
+                .run(context -> assertThat(context).hasNotFailed());
+        lazy(routesRunner)
+                .withUserConfiguration(Books.class)
+                .withBean("synapseBindingDeclarations", BindingDeclarations.class,
+                        () -> grpcBinding("BOOK_NOT_FOUND"))
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .isInstanceOf(SynapseConfigurationException.class)
+                        .hasMessage("Operation 'get-plain-book' is bound differently over REST (GET /books/{id}) and "
+                                + "gRPC (test.v1.Books/GetPlainBook): notFound is NOT_FOUND over REST and "
+                                + "BOOK_NOT_FOUND over gRPC."));
+    }
+
+    private static BindingDeclarations grpcBinding(String notFound) {
+        BindingDeclarations declarations = new BindingDeclarations();
+        declarations
+                .add(new BindingDeclaration("gRPC", "get-plain-book", "test.v1.Books/GetPlainBook", notFound, null,
+                        null));
+        return declarations;
+    }
+
+    /**
+     * Under lazy initialization a binding mistake fails while the singletons are created, as without it. Without the
+     * filter (the control) the routes still compile during the refresh, but only when the refreshed event is published,
+     * after the singletons, and so after the parity check.
+     */
+    @Test
+    void aBindingMistakeFailsStartupUnderLazyInitialization() {
+        WebApplicationContextRunner duplicateRoutes = lazy(routesRunner)
+                .withBean(GetPlainBookOperation.class)
+                .withBean("duplicateRoutes", RestBindings.class,
+                        () -> RestBindings
+                                .builder()
+                                .get("/books/{id}", new GetPlainBookOperation())
+                                .get("/books/{bookId}", new GetPlainBookOperation())
+                                .build());
+        duplicateRoutes.run(context -> {
+            assertThat(context).hasFailed().getFailure().hasStackTraceContaining("same method and path");
+            assertThat(refreshPhases(context.getStartupFailure())).containsExactly("finishBeanFactoryInitialization");
+        });
+        duplicateRoutes
+                .withBean("synapseRestRoutesLazyInitializationExcludeFilter", LazyInitializationExcludeFilter.class,
+                        () -> (name, definition, type) -> false)
+                .run(context -> {
+                    assertThat(context).hasFailed().getFailure().hasStackTraceContaining("same method and path");
+                    assertThat(refreshPhases(context.getStartupFailure())).containsExactly("finishRefresh");
+                });
+    }
+
+    /** The phases of {@code AbstractApplicationContext.refresh()} that the root cause of a failure was thrown in. */
+    private static List<String> refreshPhases(@Nullable Throwable failure) {
+        Throwable root = Objects.requireNonNull(failure);
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        return Arrays
+                .stream(root.getStackTrace())
+                .filter(frame -> frame.getClassName().equals(AbstractApplicationContext.class.getName()))
+                .map(StackTraceElement::getMethodName)
+                .filter(name -> name.equals("finishBeanFactoryInitialization") || name.equals("finishRefresh"))
+                .toList();
+    }
+
+    @Test
+    void routesLazyInitializationExcludeFilterIsPresentAndBacksOffByName() {
+        webRunner.run(context -> {
+            LazyInitializationExcludeFilter filter = context
+                    .getBean("synapseRestRoutesLazyInitializationExcludeFilter", LazyInitializationExcludeFilter.class);
+            assertThat(filter.isExcluded("synapseRestRoutes", new RootBeanDefinition(), RouterFunction.class))
+                    .isTrue();
+            assertThat(filter.isExcluded("userRoutes", new RootBeanDefinition(), RouterFunction.class)).isFalse();
+        });
+        LazyInitializationExcludeFilter user = (name, definition, type) -> false;
+        webRunner
+                .withBean("synapseRestRoutesLazyInitializationExcludeFilter", LazyInitializationExcludeFilter.class,
+                        () -> user)
+                .run(context -> assertThat(context.getBean("synapseRestRoutesLazyInitializationExcludeFilter"))
+                        .isSameAs(user));
+    }
+
+    /** What {@code spring.main.lazy-initialization=true} does: every bean that no filter excludes becomes lazy. */
+    private static WebApplicationContextRunner lazy(WebApplicationContextRunner runner) {
+        return runner
+                .withInitializer(context -> context
+                        .addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor()));
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void unknownRestOperationSettingsAreReported(CapturedOutput output) {
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withPropertyValues("synapse.api.rest.operations.no-such-op.errors.status.[X]=410")
+                .run(context -> assertThat(context).hasNotFailed());
+        assertThat(output.getOut())
+                .contains("No operation bean has these names under synapse.api.rest.operations, so their settings "
+                        + "have no effect: [no-such-op].");
+    }
+
+    @Test
     void corsSourceBacksOffByName() {
         // Spring MVC's HandlerMappingIntrospector is a CorsConfigurationSource too; it doesn't make the source back off.
         routesRunner.withUserConfiguration(Books.class).run(context -> {
@@ -777,7 +917,8 @@ class SynapseRestAutoConfigurationTest {
         ResponseWriter writer = new ResponseWriter(mapper, conversions, cursors, PagingSettings.defaults(), etags);
         BindingValidator validator = new BindingValidator(PagingSettings.defaults());
         RequestBinder binder = new RequestBinder(mapper, conversions, PagingSettings.defaults());
-        RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors, PagingSettings.defaults());
+        RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors, PagingSettings.defaults(),
+                new BindingDeclarations());
         ExposureInventory inventory = new ExposureInventory(new StaticListableBeanFactory()
                 .getBeanProvider(
                         ResolvableType.forClassWithGenerics(RouterFunction.class, ServerResponse.class)));

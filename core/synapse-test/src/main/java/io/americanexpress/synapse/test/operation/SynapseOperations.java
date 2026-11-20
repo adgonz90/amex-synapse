@@ -106,7 +106,10 @@ public final class SynapseOperations {
          * that declare no order, in the order added. As in the application, where its
          * bean has {@code @Order(0)}, Synapse's translator of {@code ConstraintViolationException} into
          * {@code VALIDATION_FAILED} is tried first, unless a translator declares a lower order (such as
-         * {@code @Order(-1)}).
+         * {@code @Order(-1)}). Only a {@code ConstraintViolationException} that is the thrown exception itself, with
+         * every violation's root bean the input passed in (by identity), is tried with the translators. Any other one,
+         * thrown or in the cause chain (a collaborator's, an entity's wrapped by a commit, a copy of the input's, or one
+         * without violations), is {@code INTERNAL} before any translator is tried.
          *
          * @param translator the translator
          * @return this builder

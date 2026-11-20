@@ -35,7 +35,9 @@ A data module adds one access module and one vendor module:
 ----
 
 Flyway is optional in `synapse-data-core`. `synapse-data-postgres` brings `flyway-core` (through
-`flyway-database-postgresql`), so a PostgreSQL store has migrations, and `ddl-auto` defaults to `validate`.
+`flyway-database-postgresql`), so a PostgreSQL store has migrations, and `ddl-auto` defaults to `validate`. A
+PostgreSQL store without migrations sets `migrations.enabled: false`, and a service with no migrating store can
+exclude `flyway-database-postgresql` from `synapse-data-postgres`.
 
 [#declaring]
 == Declaring a store
@@ -52,7 +54,8 @@ public class BooksStore {
 
 * The name uses lowercase letters, digits and dashes, starting with a letter: `books`, `legacy-orders`.
 * The store's entities, aggregates and repositories are in the class's package and below. `@EntityScan` and
-  `@EnableJpaRepositories` are not used: the package comes from the store class.
+  `@EnableJpaRepositories` are not used: the package comes from the store class. An `@EntityScan` gets a startup WARN (see
+  <<boot-beans>>).
 * Two stores' packages must not overlap. A store in `com.example.data` and another in `com.example.data.legacy` fail
   startup.
 * The class is a `@Configuration` of the data module. The service picks it up like any of its configuration: by
@@ -359,6 +362,25 @@ Each store has its own Flyway, on its own pool:
   unknown key, a value Flyway rejects, or two spellings of one key fail startup, naming the key;
 * `migrations.enabled: false` skips the migrations, for teams that run them in a separate job.
 
+The application's Flyway beans apply to the stores, as Boot's Flyway auto-configuration applies them to its own
+Flyway:
+
+* `FlywayConfigurationCustomizer` (with `spring-boot-flyway` on the class path, as it is with Boot's Flyway starter):
+  every applicable one. An unqualified one applies to every store, also with several (unlike a `Callback`, below).
+  The unqualified ones run first, then those qualified with the store (`@Qualifier("books")`),
+  then the store's own `<p>FlywayConfigurationCustomizer` in the store class, each group in `@Order`. They run after
+  `migrations.flyway.*`, so a customizer replaces what a key set. The store's DataSource and `migrations.locations` are
+  applied after them, so a customizer can't move the store. A customizer that sets `initSql` fails startup, as
+  `migrations.flyway.init-sql` does: `The FlywayConfigurationCustomizer bean roleCustomizer sets initSql for the store 'books', SQL that runs on each new connection and could change the role or schema the store uses.`
+* Flyway `Callback` and `JavaMigration` beans: those qualified with the store, in `@Order`, added to any that
+  `migrations.flyway.callbacks` or a customizer set. With a single store, the unqualified ones apply too, before the
+  qualified ones. With several stores an unqualified one applies to none, and a startup WARN names it:
+  `The Flyway Callback bean auditCallback is not used by any store: with several stores, a Callback applies only to the store its @Qualifier names, such as @Qualifier("books").`
+  A bean whose qualifier names no store gets a WARN too.
+
+A bean with another qualifier is never used. The Boot beans a store uses, and those it doesn't, are listed in
+<<boot-beans>>.
+
 Migrations run in the store's `SmartLifecycle.start()`, in a phase before any inbound plugin starts, then the schema
 action runs. Nothing touches the database while beans are created. A store that sets `migrations.locations` or
 `migrations.flyway.*` without Flyway on the class path fails startup.
@@ -470,8 +492,10 @@ logs sets that logger's level.
 `SpringDataPages.from(Page)` or `from(Slice)` turns the result into a `PageResult` (see xref:core.adoc#paging[Paging]).
 The sort keys reach Spring Data as entity properties, unchanged. For keys declared with `.sortable(SortKey.class)`,
 they are the enum constants' names (`PUBLISHED_YEAR`), which Spring Data rejects unless the entity has a property of
-that name. Name the constants after the entity's properties, or map each key to its property before calling
-`pageable`, as the reference bookstore's `SearchBooksOperation` does. The mapping is shown in
+that name. Name the constants after the entity's properties, or pass a key mapper and tie-breakers to
+`SpringDataPages.pageable(PageQuery, Function<String, ? extends @Nullable String>, SortOrder...)`, as the reference
+bookstore's `SearchBooksOperation` does: the keys become entity properties, and each tie-breaker (the title, then the id) is
+appended unless its property is already sorted on, so every row has one place across pages. The call is shown in
 xref:core.adoc#paging[Paging].
 
 [#ids]
@@ -551,6 +575,49 @@ them. `@Table("name")` is case-sensitive (the name is quoted).
   several stores and none primary that fails startup, and with a primary store `@Sequence` ids come from the primary
   store's database.
 
+[#boot-beans]
+== Boot beans a store uses
+
+The aim is that a Spring developer's bean either works with the stores, or Synapse names it at startup with a WARN on
+the logger `io.americanexpress.synapse.data`, instead of silently doing nothing. The lists below say which beans get
+which. Some cases don't meet the aim yet, and whether they should WARN is an open question. Those known from the
+code are below; the list is not a guarantee that every other bean works or WARNs:
+
+* a bean that a store picks by its qualifier, when no store uses it because of that qualifier (it names no store,
+  names a store of another kind, or is a qualifier type other than `@Qualifier`), gets only a DEBUG line. These are
+  the JPA stores' `PhysicalNamingStrategy`, `ImplicitNamingStrategy` and `HibernatePropertiesCustomizer`, the JDBC
+  stores' `NamingStrategy` and `JdbcCustomConversions`, and every store's `FlywayConfigurationCustomizer`. Such a bean
+  of a kind no store has (a `HibernatePropertiesCustomizer` in a service with only JDBC stores) gets nothing;
+* Flyway beans for a store whose migrations are off (`migrations.enabled: false`): a customizer, a `Callback` or a
+  `JavaMigration` qualified with that store, or an unqualified one while it is the only store, has no effect and
+  gets no WARN;
+* `@EntityScan` in a service whose stores are all JDBC stores gets no WARN, although JDBC stores ignore it too;
+* an unqualified `JdbcConnectionDetails` bean (the last item below).
+
+Honoured:
+
+* `HibernatePropertiesCustomizer`, `PhysicalNamingStrategy` and `ImplicitNamingStrategy`, for JPA stores (see
+  <<jpa>>);
+* `FlywayConfigurationCustomizer`: the unqualified ones, those qualified with the store, and the store's own (see
+  <<migrations>>);
+* Flyway `Callback` and `JavaMigration` beans: those qualified with the store, and unqualified ones while the service
+  has a single store (see <<migrations>>).
+
+Not honoured, with a startup WARN while a JPA store exists. Synapse builds each JPA store's EntityManagerFactory
+itself, from the store's settings and package:
+
+* an `EntityManagerFactoryBuilderCustomizer` or `PersistenceUnitManager` bean, one WARN per bean:
+  `The EntityManagerFactoryBuilderCustomizer bean myCustomizer (org.springframework.boot.jpa.autoconfigure.EntityManagerFactoryBuilderCustomizer) is not used by any store: Synapse builds JPA stores without it.`
+  Use a `HibernatePropertiesCustomizer` or the store's `jpa.*` keys instead;
+* `@EntityScan`: `@EntityScan names com.acme, which no store uses: a JPA store's entities are those in and below its store class's package.`
+
+A Flyway `Callback` or `JavaMigration` bean that no store uses (an unqualified one with several stores, or one whose
+qualifier names no store) gets a WARN too (see <<migrations>>).
+
+Not honoured, decision pending: an unqualified `JdbcConnectionDetails` bean, such as the one `@ServiceConnection` or
+Boot's Docker Compose support creates. A store uses only a `JdbcConnectionDetails` qualified with its name; whether a
+single store should use an unqualified one is an open question.
+
 [#errors]
 == Error translation
 
@@ -558,7 +625,10 @@ Data access failures become Synapse errors (see xref:core.adoc#errors[Errors]). 
 to depth 10, so a failure wrapped at commit is still found. The caller sees the code, and the code's message only as
 the detail (`synapse.errors.include-detail`); the exception is logged on the server side. Core's
 `ConstraintViolationTranslator` (`@Order(0)`) runs first, then the data translator (`Ordered`,
-`LOWEST_PRECEDENCE - 100`), then the JPA one (`- 90`).
+`LOWEST_PRECEDENCE - 100`), then the JPA one (`- 90`). An entity that fails Bean Validation when Hibernate flushes it
+(a Jakarta `ConstraintViolationException`, such as a `@Size` column saved too long) is the service's bug, not the
+caller's: it is `INTERNAL` (500) without violations, with Synapse's transaction manager and with a replaced plain
+`JpaTransactionManager` alike (see xref:core.adoc#errors[Errors]).
 
 IMPORTANT: Changed behaviour. An application `ExceptionTranslator` bean that declares no order now runs after
 Synapse's data translators. It used to run before them (unordered beans ran in registration order, and an
@@ -573,10 +643,11 @@ name (`synapseDataExceptionTranslator`, `synapseJpaExceptionTranslator`).
 |Optimistic lock (`@Version`): Spring's `OptimisticLockingFailureException`, JPA's `OptimisticLockException`, Hibernate's `StaleStateException` |`STALE_VERSION`
 |Unique constraint: Spring's `DuplicateKeyException`, a Hibernate `ConstraintViolationException` of kind `UNIQUE` |`ALREADY_EXISTS`
 |Query timeout: Spring's, JPA's or Hibernate's `QueryTimeoutException` |`DEADLINE_EXCEEDED`
-|Connection failure, a transaction that can't begin: `DataAccessResourceFailureException`, `TransientDataAccessResourceException`, `CannotCreateTransactionException`, `SQLNonTransientConnectionException`, `SQLTransientConnectionException`, or an `SQLException` of SQLState class 08 or PostgreSQL's 57P01, 57P02 or 57P03 |`UNAVAILABLE`
+|Connection failure, a transaction that can't begin: `SQLNonTransientConnectionException` or `SQLTransientConnectionException`, an `SQLException` of SQLState class 08 or PostgreSQL's 57P01, 57P02, 57P03 or 57P05, or, with no such driver exception or state below it, `DataAccessResourceFailureException`, `TransientDataAccessResourceException` or `CannotCreateTransactionException` (see <<lost-connection>>) |`UNAVAILABLE`
+|Insufficient resources: SQLState class 53, such as 53300 (too_many_connections) or 53100 (disk_full) |`UNAVAILABLE`
 |A commit that lost its connection, which a store's transaction manager reports as a `CommitOutcomeUnknownException`, or SQLState 08007 anywhere in the causes (see <<commit-outcome-unknown>>) |`COMMIT_OUTCOME_UNKNOWN`
 |A rollback that failed after the application's failure: that failure alone decides (see <<lost-connection>>) |that failure's code
-|Anything else, such as a NOT NULL or foreign key violation, or a rollback that failed with no failure to replace |`INTERNAL`
+|Anything else, such as a NOT NULL or foreign key violation, SQLState class 54 (program limit exceeded, which a retry repeats), or a rollback that failed with no failure to replace |`INTERNAL`
 |===
 
 `ALREADY_EXISTS` and `STALE_VERSION` are `CONFLICT` (409 over REST). Observed on PostgreSQL 18.6 with PgJDBC 42.7.14:
@@ -618,16 +689,43 @@ without the failure it replaced, so a JPA store's transaction manager (Synapse's
 reports it as a `TransactionSystemException` too.
 
 The translators decide by the failure the rollback replaced alone. It is `UNAVAILABLE` (503 over REST, `UNAVAILABLE`
-over gRPC, with no detail) when it is a lost connection: a `DataAccessResourceFailureException`, or an `SQLException`
-of SQLState class 08 or PostgreSQL's 57P01, 57P02 or 57P03. Hikari's `Connection is closed` never counts, because
+over gRPC, with no detail) when it is a lost connection: when any exception in the causes is one.
+
+* A `SQLNonTransientConnectionException` or `SQLTransientConnectionException` is a lost connection whatever its state
+  (H2 reports its own, 90067).
+* Another `SQLException` is one when its state is of class 08 or PostgreSQL's 57P01, 57P02, 57P03 or 57P05 (idle
+  session timeout).
+* Spring's `DataAccessResourceFailureException`, `TransientDataAccessResourceException` and
+  `CannotCreateTransactionException` are decided by the first `SQLException` below them that has a state or is one of
+  the connection types; only without one (a pool timeout or an I/O error, say) is Spring's type a lost connection.
+  Spring translates SQLState classes 53, 54, 57 and 58 to a `DataAccessResourceFailureException` as well, but the
+  database answered those, so they are not lost connections: class 53 (insufficient resources) is still
+  `UNAVAILABLE`, and the others are `INTERNAL`.
+
+Hikari's `Connection is closed` never counts, because
 Hikari closes a connection on other states too, such as PostgreSQL's 0A000 (feature_not_supported), and after
 use-after-close: such a failure keeps its own code, or is `INTERNAL`. An operation's own `SynapseException` that the
 rollback replaced (a domain rejection, for example) keeps its code and arguments.
 
-Class 08 also covers failures to open a connection, some of them configuration errors rather than outages (08004,
-the server rejected the connection, for example). They happen when a connection is opened, which Spring reports as a
-`CannotCreateTransactionException` or a `DataAccessResourceFailureException`, so they are `UNAVAILABLE` either way. 08007 (transaction_resolution_unknown)
-is `COMMIT_OUTCOME_UNKNOWN` (see <<commit-outcome-unknown>>).
+A connection that can't be opened is decided by what the driver and the pool say, not by Spring's
+`CannotCreateTransactionException` or `CannotGetJdbcConnectionException` around it:
+
+* Class 08 covers failures to open a connection, some of them configuration errors rather than outages (08004, the
+  server rejected the connection, for example). They are `UNAVAILABLE`.
+* A configuration error with another state, such as PostgreSQL's 28P01 (wrong password) or 3D000 (no such database),
+  is `INTERNAL` when the driver's own exception is what Spring wraps (a data source without a pool): the state isn't a
+  lost connection, and a retry fails the same way.
+* Behind Hikari (Boot's default pool), once the pool has started, the same failure is `UNAVAILABLE` (a password
+  rotated after startup, for example). A running pool reports a connection it can't open as a
+  `SQLTransientConnectionException` (`Connection is not available, request timed out`), carrying the last failure's
+  state, and that type is a lost connection whatever its state: the pool can't tell a configuration error from a
+  database that is still starting. A pool that can't open its first connection passes the driver's own exception
+  through, so a wrong password or a missing database from the start is `INTERNAL`, as without a pool. A driver's
+  connection exception type is `UNAVAILABLE` whatever its state, H2's and MySQL's configuration errors included.
+* No statement ran in either case, so a retry can't apply a write twice; the only cost of the retryable code is
+  wasted retries.
+
+08007 (transaction_resolution_unknown) is `COMMIT_OUTCOME_UNKNOWN` (see <<commit-outcome-unknown>>).
 
 What the logs show for a connection lost in a statement:
 
@@ -648,16 +746,16 @@ applied the COMMIT and lost only its reply. A store's transaction manager (`Syna
 `io.americanexpress.synapse.data.CommitOutcomeUnknownException`, and the translator maps it to
 `DataErrors.COMMIT_OUTCOME_UNKNOWN`. Code that commits outside an operation (a `TransactionTemplate` in a scheduled
 job, say) catches that public type to recognise an unknown outcome. A lost connection
-is what the translator reports as `UNAVAILABLE` everywhere else (one shared rule): Spring's connection exceptions, the
-JDBC connection exception types, and SQLState class 08 or 57P01-57P03 anywhere in the causes. So no commit-phase
-failure is ever a retryable `UNAVAILABLE`.
+follows the rule the translator uses everywhere else (see <<lost-connection>>): any exception in the causes that is a
+JDBC connection exception type or has a class-08, 57P01, 57P02, 57P03 or 57P05 state, or one of Spring's connection
+exceptions without another state below it. The commit check and the translator apply that rule to every exception in
+the chain, so no commit that lost its connection is a retryable `UNAVAILABLE`.
 
-That rule is wider than a lost connection in one case: Spring also translates SQLState classes 53, 54, 57 and 58
-(insufficient resources, program limits, operator intervention, system errors) to a
-`DataAccessResourceFailureException`. So a commit that fails with, say, 53100 (disk full) is `COMMIT_OUTCOME_UNKNOWN`
-too, although the database answered and nothing was committed. One rule for both the translator and the commit check
-keeps the invariant that a commit-phase failure is never `UNAVAILABLE`; it over-reports such a commit, which only
-stops a retry.
+A commit the database rejected with another state has a known outcome: the database answered, and nothing was
+committed. Spring translates SQLState classes 53, 54, 57 and 58 (insufficient resources, program limits, operator
+intervention, system errors) to a `DataAccessResourceFailureException`, but the state, not that type, decides. So a
+commit that fails with 53100 (disk full) is rolled back and reported as `UNAVAILABLE`, which a retry may get past
+once the server has the resource again, and one that fails with a class 54 state is `INTERNAL`.
 
 * Its category is `INTERNAL`: REST 500, gRPC `INTERNAL`, logged at ERROR with the cause chain. The logged exception is
   the `SynapseException` (`The outcome of the request is unknown`); its first `Caused by:` says
@@ -717,7 +815,7 @@ A store joins the `readiness` group only with `health.readiness: true`, so a bus
 service out of rotation unless it opts in.
 
 To serve readiness at a load balancer's path, such as `/health` on the server's port, give the group an
-`additional-path` and also its `include`:
+`additional-path`:
 
 [source,yaml]
 ----
@@ -726,7 +824,6 @@ management:
     health:
       group:
         readiness:
-          include: readinessState
           additional-path: server:/health
 ----
 
@@ -735,9 +832,25 @@ Spring Boot 4.
 
 Setting a key of the `readiness` group defines the group, and Boot then keeps it instead of its own probe group, whose
 only member is `readinessState`. A group without `include` has every indicator, every store's included, so any store
-down would take the service out of rotation. With `include: readinessState`, the path serves Boot's readiness state
-and the stores that opt in. Boot's `probes.add-additional-paths: true` (`/livez`, `/readyz`) needs no `include`: it
-keeps Boot's probe groups.
+down would take the service out of rotation. So when you configure the readiness group, with any key of
+`management.endpoint.health.group.readiness` other than `include` (such as `additional-path`, in any file, a module's
+`META-INF/synapse/config.yaml` or an environment variable), Synapse (`synapse-core`) defaults its `include` to
+`readinessState` at lowest precedence, while Boot's probes are on: the path serves Boot's readiness state and the
+stores that opt in. An `include` you set replaces it, whether it is a list, indexed keys (`include[0]`) or a
+comma-separated value, and in any file, an environment's file included; list `readinessState` in it to keep Boot's
+readiness state. An `exclude` alone configures the group and keeps the default `include`. Boot's
+`probes.add-additional-paths: true` (`/livez`, `/readyz`) serves the group at `/readyz`.
+
+Without a key of the readiness group, Synapse sets no `include`, and Boot's own probe group keeps its settings (the
+stores that opt in still join it): it never shows its components and uses Boot's default status order and HTTP
+mapping. A group you configure is Boot's configured group
+instead, so unless it sets its own, it takes the health endpoint's `show-components`, `show-details`, `roles` and
+`status.*` settings; set them under `management.endpoint.health.group.readiness.*` to differ.
+
+Synapse decides when it prepares the environment, so a key added later (an `ApplicationContextInitializer`'s property
+source, `@DynamicPropertySource`) doesn't count. If you configure the group and also exclude Boot's
+`AvailabilityProbesAutoConfiguration`, there is no `readinessState` indicator, and Boot fails startup on the default
+`include`; set the group's `include` yourself.
 
 Limits:
 

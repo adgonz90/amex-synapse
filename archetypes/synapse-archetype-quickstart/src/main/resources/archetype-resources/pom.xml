@@ -35,7 +35,7 @@
     <description>A Synapse service: one greeting over REST.</description>
 
     <properties>
-        <!-- mvn spring-boot:run runs the local environment (application-local.yaml);
+        <!-- ./mvnw spring-boot:run runs the local environment (application-local.yaml);
              -Dspring-boot.run.profiles=<env> picks another. -->
         <spring-boot.run.profiles>local</spring-boot.run.profiles>
     </properties>

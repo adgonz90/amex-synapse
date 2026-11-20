@@ -75,7 +75,12 @@ Building the bindings only records them. They are checked and compiled when the 
 declared with `@Bean`: a `GrpcBindings` that Synapse never compiled throws
 `GrpcBindings for <service> was not compiled: declare it as a @Bean so synapse-api-grpc can bind it` when the server
 asks for it. Every method of the service must be bound, so a service with a streaming method is written by hand (see
-<<escape-hatch>>).
+<<escape-hatch>>). `GrpcBindings` beans stay eager under `spring.main.lazy-initialization=true`, so they compile, and
+a binding mistake fails startup, while the singletons are created, not when the server starts. That holds for a bean
+whose `@Bean` method declares the return type `GrpcBindings`: the filter that keeps them eager matches the declared
+type, so a `GrpcBindings` returned from a method declared as `BindableService` stays lazy under lazy initialization,
+compiles only when the server asks for it, and the REST/gRPC parity check (xref:core.adoc#parity[Parity]) doesn't
+see it.
 
 The operation must be the Synapse bean, so that its calls run through the pipeline (validation, deadline,
 observation, translation and failure logging).
@@ -191,6 +196,14 @@ Startup also fails, with the method named, when:
   not a boolean, an enum, a floating-point number or a `UUID`), or where another component also writes the response's
   `etag` field (see <<versions>>).
 
+Protocols must not differ in contract: when REST binds the same operation (see xref:rest.adoc[REST]), startup fails
+if a method and a REST route declare `.notFound`, `.etag` or `.sortable` differently, with
+`Operation '<name>' is bound differently over REST (<route>) and gRPC (<method>): <declaration> is <REST value> over
+REST and <gRPC value> over gRPC.` Each REST route is compared with the gRPC method, so while gRPC binds the operation
+every REST version must declare these alike. Versions may differ only for an operation that gRPC doesn't bind. A
+method `.bindAllByName()` binds has the defaults (`NOT_FOUND`, no entity tag, no sort
+keys), so its REST routes must have them too. See xref:core.adoc#parity[Parity].
+
 [#mapping]
 == Message mapping
 
@@ -220,6 +233,10 @@ relative to the message of the component's own record, dotted to reach a field o
 Enums match by name: a value matches the constant of the same name, or the constant named by the rest of the value
 after the enum's prefix, as the protobuf style guide names values (`GENRE_FICTION` in `enum Genre` is
 `Genre.FICTION`). A zero value named `*_UNSPECIFIED` or `*_UNKNOWN` is `null`. Every Java constant needs a value.
+
+A non-repeated field holds one value, so gRPC has no counterpart of REST's `must have a single value` for a repeated
+query parameter or header (see xref:rest.adoc#input[REST]). Protobuf's parser accepts a non-repeated field that
+appears twice on the wire and keeps the last value (a message field is merged), before Synapse sees the message.
 
 *Presence.* A `@Nullable` component needs a field with presence: a message, a wrapper, a proto3 `optional` field, a
 `oneof` member, or an enum whose zero value is unspecified. Otherwise "absent" would silently become `0` or `""`, and
@@ -389,11 +406,18 @@ preconditions on writes only.
 throwing `PRECONDITION_FAILED` when the condition is false.
 
 *Stale writes*, as over REST. The operation compares the version and writes with a compare-and-set, throwing
-`STALE_VERSION` when either fails. When the request sent an `etag` (`*` included), that is a failed precondition:
-`PRECONDITION_FAILED` (`FAILED_PRECONDITION`, REST's 412), with the `STALE_VERSION` as its cause. A write that sent no
-`etag` and lost a race stays `STALE_VERSION` (`ABORTED`, REST's 409), and so does one that sent only an
-`if_none_match`: REST's translation applies to `If-Match` only. AIP-154 answers a mismatch `ABORTED`;
-`synapse.api.grpc.errors.status.[PRECONDITION_FAILED]=ABORTED` gives that, for weak tags too.
+`STALE_VERSION` when either fails. When the request sent an `etag` (`*` included), that is a failed precondition: the
+code is `PRECONDITION_FAILED`, REST's 412 code, with the `STALE_VERSION` as its cause, and the status is `ABORTED`, as
+AIP-154 answers a stale etag: the client reads the resource again and retries. A write that sent no `etag` and lost a
+race stays `STALE_VERSION` (`ABORTED` too, REST's 409), and so does one that sent only an `if_none_match`: REST's
+translation applies to `If-Match` only. So a stale write is `ABORTED` either way, and the `ErrorInfo` reason says
+whether the request named the version. A weak or unbound tag, and a `PRECONDITION_FAILED` the operation throws itself
+(such as a create-only write's), stay `FAILED_PRECONDITION`: reading again doesn't fix them. The rule looks at the
+code and its direct cause only, so a `PRECONDITION_FAILED` an operation throws with a `STALE_VERSION` as its cause is
+`ABORTED` too.
+`synapse.api.grpc.errors.status.[PRECONDITION_FAILED]=FAILED_PRECONDITION`, for every operation or under
+`synapse.api.grpc.operations.<name>.errors.status` for one, makes a stale `etag` `FAILED_PRECONDITION` again. A
+`[STALE_VERSION]` status doesn't apply to it, since the code the caller sees is `PRECONDITION_FAILED`.
 
 *Response.* `.etag(Record::component)` writes an output component as the strong entity tag (`7` becomes `"7"`) to the
 response's `string etag` field, formatted as a version token, the same token REST sends as `ETag`; the component keeps
@@ -515,9 +539,10 @@ one, or with two), the token of the next page to `next_page_token`, its `hasNext
 * `bool has_next` is required, beyond AIP-158 (which allows extra fields), because REST always writes `hasNext`. It is
   the page's own `hasNext`, also when no token reaches the next page (below). A proto3 `optional bool has_next` is
   accepted too; it is always written.
-* `total_size` is `optional int32` or `optional int64`, so an unknown total stays unset. A total that an `int32` field
-  can't hold is left unset, as an unknown one; declare `int64` for larger totals. A response without `total_size`
-  doesn't carry the total.
+* `total_size` is `optional int32` or `optional int64`, so an unknown total stays unset. AIP-158 prescribes `int32`. A
+  total that an `int32` field can't hold is left unset, as an unknown one, and Synapse logs nothing about it; declare
+  `int64`, which holds any total, when totals can exceed 2,147,483,647. A response without `total_size` doesn't carry
+  the total.
 * `PageResult` must be the operation's direct output, as over REST. The page's own fields, its raw cursor included,
   are never written as a message.
 
@@ -531,6 +556,10 @@ one, or with two), the token of the next page to `next_page_token`, its `hasNext
   receives `PageQuery(null, offset, size, sort)`;
 * no token when the next offset would be past `synapse.paging.max-offset` (`has_next` is still true: page on by
   cursor), or when a page read by cursor returns no cursor.
+
+`has_next` is the only signal for the capped case: AIP-158's empty `next_page_token` would mean "end", although more
+items exist beyond `synapse.paging.max-offset`, so a client reads `has_next`, not the empty token, to know whether
+another page exists.
 
 === Page tokens
 
@@ -615,15 +644,18 @@ The status comes from the error's category:
 |`FORBIDDEN` |`PERMISSION_DENIED`
 |`NOT_FOUND` |`NOT_FOUND`
 |`CONFLICT` |`ABORTED` (the code `ALREADY_EXISTS`: `ALREADY_EXISTS`)
-|`PRECONDITION_FAILED` |`FAILED_PRECONDITION`
+|`PRECONDITION_FAILED` |`FAILED_PRECONDITION` (the code `PRECONDITION_FAILED` for a stale `etag`: `ABORTED`)
 |`RATE_LIMITED` |`RESOURCE_EXHAUSTED`
 |`UNAVAILABLE` |`UNAVAILABLE`
 |`TIMEOUT` |`DEADLINE_EXCEEDED`
 |`INTERNAL` |`INTERNAL`
 |===
 
-Core's `STALE_VERSION` is therefore `ABORTED`, unless the request sent an `etag`: then it is answered
-`PRECONDITION_FAILED` (`FAILED_PRECONDITION`), as REST answers a stale `If-Match` 412 (see <<versions>>).
+Core's `STALE_VERSION` is therefore `ABORTED`, unless the request sent an `etag`: then its code is
+`PRECONDITION_FAILED`, as REST answers a stale `If-Match` 412, and its status is still `ABORTED`, as AIP-154 answers a
+stale etag (see <<versions>>). Every other `PRECONDITION_FAILED` (a weak or unbound tag, or one an operation throws
+without a `STALE_VERSION` as its direct cause)
+is `FAILED_PRECONDITION`.
 
 Override the status of any code, for every operation or for one, with the code in brackets and a `Status.Code` name:
 
@@ -633,9 +665,12 @@ synapse.api.grpc.errors.status.[BOOK_NOT_FOUND]=FAILED_PRECONDITION
 synapse.api.grpc.operations.get-book.errors.status.[BOOK_NOT_FOUND]=OUT_OF_RANGE
 ----
 
-The first that applies wins: the operation's override, the global override, the fixed status of a built-in code
-(`ALREADY_EXISTS`, and `METHOD_NOT_FOUND`), the category's status. An override of `OK` fails startup with
-`<key>.[<code>] is OK, which is not an error status.`
+The first that applies wins: the operation's override, the global override, `ABORTED` for a stale `etag`, the fixed
+status of a built-in code (`ALREADY_EXISTS`, and `METHOD_NOT_FOUND`), the category's status. An override of `OK` fails startup with
+`<key>.[<code>] is OK, which is not an error status.` Names under `synapse.api.grpc.operations` that match no
+operation bean are listed in one WARN at startup,
+`No operation bean has these names under synapse.api.grpc.operations, so their settings have no effect: [<names>].
+Check the operation names for typos.`, as core lists those under `synapse.operations`.
 
 [#not-found]
 === Not found
@@ -685,8 +720,11 @@ id in the trailers and in `ErrorInfo`.
 === Exception handlers
 
 Synapse's `GrpcExceptionHandler` (`synapseGrpcExceptionHandler`) is ordered last, so your handlers, `@GrpcAdvice`
-classes and Spring Security's handler answer first; Spring gRPC uses the first answer. Synapse's handler always
-answers:
+classes and Spring Security's handler answer first; Spring gRPC uses the first answer. A handler that another
+auto-configuration defines, for example a company starter's, answers first only if it declares an `@Order` (any value
+below `Ordered.LOWEST_PRECEDENCE`) or its auto-configuration is
+`@AutoConfiguration(before = SynapseGrpcErrorAutoConfiguration.class)`: otherwise it ties with Synapse's handler, and
+the one registered first answers. Synapse's handler always answers:
 
 * a `StatusException` or `StatusRuntimeException` passes through unchanged (an escape hatch's explicit choice); the
   edge still adds the correlation id to the trailers;
@@ -912,7 +950,8 @@ every method reference created in that class. So:
 
 * write the method references in the class that declares the `@Bean` method, not in a helper class it calls;
 * declare the `@Bean` method's return type as `GrpcBindings`. A wider type (for example `BindableService`), or a
-  `GrpcBindings` bean not created by a `@Bean` factory method, gets no lambda hints. In the same way, an operation bean
+  `GrpcBindings` bean not created by a `@Bean` factory method, gets no lambda hints. A wider type also stays lazy
+  under lazy initialization, so the parity check doesn't see it (<<_bindings>>). In the same way, an operation bean
   declared with a wider type than its class (`ServiceOperation<?, ?>`) gets no hints for its input and output types,
   which core registers from the bean's declared type. The REST plugin has the same limitation.
 

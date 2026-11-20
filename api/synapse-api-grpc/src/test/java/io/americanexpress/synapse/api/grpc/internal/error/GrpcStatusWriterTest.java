@@ -87,6 +87,23 @@ class GrpcStatusWriterTest {
     }
 
     @Test
+    void anInternalCausedByViolationsShowsNoneOfThemEvenWithDetail() {
+        // The pipeline's answer for a business input, a nested call or an entity at flush (as REST's ProblemWriter).
+        SynapseException error = new SynapseException(SynapseErrors.INTERNAL, SynapseException
+                .ofViolations(SynapseErrors.VALIDATION_FAILED,
+                        List.of(new Violation("audit.internalLedgerCode", "must not be null"))));
+
+        StatusException written = writer(true).write(error, state("c-1"));
+
+        assertThat(written.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+        com.google.rpc.Status status = statusOf(written);
+        assertThat(status.getDetailsList()).hasSize(1);
+        assertThat(status.getDetails(0).is(ErrorInfo.class)).isTrue();
+        assertThat(status.toString()).doesNotContain("internalLedgerCode", "must not be null");
+        assertThat(String.valueOf(written.getStatus().getDescription())).doesNotContain("internalLedgerCode");
+    }
+
+    @Test
     void detailIsResolvedInTheCallersLocale() {
         messageSource.addMessage("BOOK_NOT_FOUND", Locale.FRENCH, "Livre {0} introuvable");
         GrpcCallState state = state("c-1");

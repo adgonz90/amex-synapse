@@ -21,6 +21,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 import jakarta.validation.ConstraintViolation;
@@ -37,10 +38,12 @@ import org.springframework.core.BridgeMethodResolver;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.ReflectionUtils;
 
+import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.CorrelationIdPolicy;
 import io.americanexpress.synapse.core.masking.LogMasking;
@@ -65,6 +68,9 @@ public final class OperationPipeline {
 
     private static final long DEFAULT_MAX_CONTEXT_BYTES = 4096;
 
+    private static final String VERSION_REQUIRED = "is required; pass the version read with the resource, or"
+            + " VersionCondition.any()";
+
     private static final Method SERVICE_EXECUTE = Objects
             .requireNonNull(ReflectionUtils.findMethod(ServiceOperation.class, "execute", Object.class));
 
@@ -78,6 +84,8 @@ public final class OperationPipeline {
     private final Map<Class<?>, Boolean> constrained = new ConcurrentHashMap<>();
 
     private final Map<Class<?>, List<Method>> pageAccessors = new ConcurrentHashMap<>();
+
+    private final Map<Class<?>, List<RecordComponent>> versionComponents = new ConcurrentHashMap<>();
 
     private final Map<Class<?>, OperationDescriptor> operations = new ConcurrentHashMap<>();
 
@@ -220,7 +228,9 @@ public final class OperationPipeline {
      * Validates the input: Jakarta constraints (only for constrained types), then the paging rules of a
      * {@link PageQuery} input or of the input record's {@code PageQuery} components.
      *
-     * @throws SynapseException {@code VALIDATION_FAILED} with every violation found
+     * @throws SynapseException {@code VALIDATION_FAILED} with every violation found; its cause is a
+     *         {@link SanitizedViolations} with each violation's path and message template, for the log of a
+     *         rejection that isn't the caller's (a business or nested input)
      */
     void validate(@Nullable Object input) {
         if (input == null) {
@@ -228,28 +238,46 @@ public final class OperationPipeline {
         }
         Class<?> type = input.getClass();
         List<Violation> violations = new ArrayList<>();
+        Set<ConstraintViolation<Object>> found = Set.of();
         if (constrained.computeIfAbsent(type, this::isConstrained)) {
+            found = validator.validate(input);
             List<Violation> constraints = new ArrayList<>();
-            for (ConstraintViolation<Object> violation : validator.validate(input)) {
+            for (ConstraintViolation<Object> violation : found) {
                 constraints.add(new Violation(violation.getPropertyPath().toString(), violation.getMessage()));
             }
             constraints.sort(Comparator.comparing(Violation::field).thenComparing(Violation::message));
             violations.addAll(constraints);
         }
+        List<Violation> paging = new ArrayList<>();
         if (input instanceof PageQuery page) {
-            violations.addAll(page.violations(maxPageSize));
+            paging.addAll(page.violations(maxPageSize));
         }
         for (Method accessor : pageAccessors.computeIfAbsent(type, OperationPipeline::pageAccessors)) {
             PageQuery page = (PageQuery) ReflectionUtils.invokeMethod(accessor, input);
             if (page != null) {
                 for (Violation violation : page.violations(maxPageSize)) {
-                    violations.add(new Violation(accessor.getName() + "." + violation.field(), violation.message()));
+                    paging.add(new Violation(accessor.getName() + "." + violation.field(), violation.message()));
                 }
             }
         }
+        violations.addAll(paging);
         if (!violations.isEmpty()) {
-            throw SynapseException.ofViolations(SynapseErrors.VALIDATION_FAILED, violations);
+            throw rejected(SynapseErrors.VALIDATION_FAILED, violations, found, paging);
         }
+    }
+
+    /** The pipeline's rejection, caused by its sanitized form: paging texts never repeat a value. */
+    private static SynapseException rejected(SynapseErrors error, List<Violation> violations,
+            Set<? extends ConstraintViolation<?>> constraints, List<Violation> fixed) {
+        SynapseException rejection = SynapseException.ofViolations(error, violations);
+        rejection
+                .initCause(SanitizedViolations
+                        .ofRejection(constraints,
+                                fixed
+                                        .stream()
+                                        .map(violation -> violation.field() + ": " + violation.message())
+                                        .toList()));
+        return rejection;
     }
 
     private boolean isConstrained(Class<?> type) {
@@ -270,6 +298,59 @@ public final class OperationPipeline {
             }
         }
         return List.copyOf(accessors);
+    }
+
+    /**
+     * Checks that a {@link ServiceOperation} input record carries every {@link VersionCondition} it requires: a
+     * component typed {@code VersionCondition} that isn't {@code @Nullable}, the rule the API plugins apply. It runs
+     * after {@link #validate(Object)}, so the operation never sees a request without a required condition, whoever
+     * calls it. {@link VersionCondition#any()} counts as a condition.
+     *
+     * @throws SynapseException {@code PRECONDITION_REQUIRED} with one violation per required component that is
+     *     {@code null}
+     */
+    void requirePreconditions(@Nullable Object input) {
+        if (input == null) {
+            return;
+        }
+        List<RecordComponent> required = requiredVersionComponents(input.getClass());
+        if (required.isEmpty()) {
+            return;
+        }
+        List<Violation> missing = new ArrayList<>();
+        for (RecordComponent component : required) {
+            if (ReflectionUtils.invokeMethod(component.getAccessor(), input) == null) {
+                missing.add(new Violation(component.getName(), VERSION_REQUIRED));
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw rejected(SynapseErrors.PRECONDITION_REQUIRED, missing, Set.of(), missing);
+        }
+    }
+
+    /**
+     * Returns the components of an input record that are a required {@link VersionCondition}, in declaration order.
+     * They are computed once per type, so every call for a type returns the same list.
+     *
+     * @return the components; empty for a type that isn't a record
+     */
+    List<RecordComponent> requiredVersionComponents(Class<?> type) {
+        return versionComponents.computeIfAbsent(type, OperationPipeline::findRequiredVersionComponents);
+    }
+
+    private static List<RecordComponent> findRequiredVersionComponents(Class<?> type) {
+        RecordComponent[] components = type.getRecordComponents();
+        if (components == null) {
+            return List.of();
+        }
+        List<RecordComponent> required = new ArrayList<>();
+        for (RecordComponent component : components) {
+            if (component.getType() == VersionCondition.class && !new ResolvedComponent(type, component).nullable()) {
+                ReflectionUtils.makeAccessible(component.getAccessor());
+                required.add(component);
+            }
+        }
+        return List.copyOf(required);
     }
 
     /**

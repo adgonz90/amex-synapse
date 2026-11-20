@@ -32,10 +32,13 @@ import io.americanexpress.synapse.core.error.SynapseException;
  * with a problem response instead of Boot's error page. It replaces Boot's {@code BasicErrorController}. The
  * dispatch's exception is classified as the exception resolver classifies it ({@link RestExceptionClassifier}), so it
  * gets the same code, status and log level; without an exception, the error follows the container's status.
+ * <p>
+ * It isn't final, as Boot's isn't: an application's aspect on every {@code @Controller} matches it too, and Spring
+ * proxies it by subclassing.
  */
 @Controller
 @RequestMapping("${server.error.path:${error.path:/error}}")
-public final class SynapseErrorController implements ErrorController {
+public class SynapseErrorController implements ErrorController {
 
     private final ProblemWriter writer;
 

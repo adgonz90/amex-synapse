@@ -44,6 +44,19 @@ class EnvironmentNameTest {
     private static final String SEVERAL_ACTION = "Keep one environment in spring.profiles.active and move feature "
             + "profiles to the environment's profile group, spring.profiles.group.<env>.";
 
+    private static final String AOT_ACTIVE = "During AOT processing the environment is the default profile 'build', but "
+            + "these profiles are active: %s. Boot ignores the default profile while any profile is active, so AOT "
+            + "processing would not read the build environment's files.";
+
+    private static final String INCLUDE_ACTION = "Move feature profiles from spring.profiles.include to each "
+            + "environment's profile group, spring.profiles.group.<env>, including the build environment's "
+            + "(spring.profiles.group.build).";
+
+    private static final String LIBRARY_ACTION = "Turn off, for AOT processing, what adds %s. A library that follows "
+            + "Boot's cloud platform detection, as spring-cloud-kubernetes does, is turned off by "
+            + "--spring.main.cloud-platform=none, for example with -Dspring-boot.aot.jvmArguments="
+            + "-Dspring.main.cloud-platform=none on the Maven command line.";
+
     private final StandardEnvironment environment = new StandardEnvironment();
 
     @Test
@@ -155,25 +168,64 @@ class EnvironmentNameTest {
                 });
     }
 
-    /** An active profile, such as one from spring.profiles.include, makes Boot ignore the default profile. */
+    /** An included profile is active, and an active profile makes Boot ignore the default profile. */
     @Test
-    void duringAotProcessingAnActiveProfileBesideTheDefaultFails() {
+    void anIncludedProfileBlamesTheInclude() {
         environmentVariables(Map.of());
         commandLine(Map.of("spring.profiles.active", "", "spring.profiles.default", "build"));
-        environment.setActiveProfiles("kafka", "metrics");
+        applicationYaml(Map.of("spring.profiles.include", "metrics"));
+        environment.setActiveProfiles("metrics");
         assertThatThrownBy(() -> EnvironmentName.resolve(environment, Set.of(), true))
                 .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
                     assertThat(ex.description())
-                            .isEqualTo("During AOT processing the environment is the default profile 'build', but "
-                                    + "these profiles are active: kafka, metrics. Boot ignores the default profile "
-                                    + "while any profile is active, whether spring.profiles.include set it or a library "
-                                    + "added it (as spring-cloud-kubernetes adds kubernetes inside a Kubernetes pod), so "
-                                    + "AOT processing would not read the build environment's files.");
+                            .isEqualTo(AOT_ACTIVE.formatted("metrics") + " spring.profiles.include activates metrics.");
+                    assertThat(ex.action()).isEqualTo(INCLUDE_ACTION);
+                });
+    }
+
+    /**
+     * A profile that no spring.profiles.include names was added by a library or the platform, as spring-cloud-kubernetes
+     * adds kubernetes inside a pod.
+     */
+    @Test
+    void aProfileNotFromIncludeBlamesALibrary() {
+        environmentVariables(Map.of());
+        commandLine(Map.of("spring.profiles.active", "", "spring.profiles.default", "build"));
+        environment.addActiveProfile("kubernetes");
+        assertThatThrownBy(() -> EnvironmentName.resolve(environment, Set.of(), true))
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description())
+                            .isEqualTo(AOT_ACTIVE.formatted("kubernetes") + " A library or the platform added "
+                                    + "kubernetes (as spring-cloud-kubernetes adds kubernetes when Boot detects "
+                                    + "Kubernetes).");
                     assertThat(ex.action())
-                            .isEqualTo("Move feature profiles from spring.profiles.include to each environment's "
-                                    + "profile group, spring.profiles.group.<env>, including the build environment's "
-                                    + "(spring.profiles.group.build). Turn off for AOT processing a library that adds "
-                                    + "a profile.");
+                            .isEqualTo(LIBRARY_ACTION.formatted("kubernetes"))
+                            .contains("--spring.main.cloud-platform=none")
+                            .doesNotContain("spring.profiles.include");
+                });
+    }
+
+    /**
+     * Boot adds up the includes of every source (here the command line's and application.yaml's) and expands their
+     * profile groups, so a group member of an included profile is the include's too.
+     */
+    @Test
+    void bothCausesAreNamedWithTheirOwnAction() {
+        environmentVariables(Map.of());
+        commandLine(Map
+                .of("spring.profiles.active", "", "spring.profiles.default", "build", "spring.profiles.include",
+                        "kafka"));
+        applicationYaml(Map.of("spring.profiles.include", "metrics", "spring.profiles.group.metrics", "prometheus"));
+        environment.setActiveProfiles("kafka", "metrics", "prometheus", "kubernetes", "cloud");
+        assertThatThrownBy(() -> EnvironmentName.resolve(environment, Set.of(), true))
+                .isInstanceOfSatisfying(SynapseConfigurationException.class, ex -> {
+                    assertThat(ex.description())
+                            .isEqualTo(AOT_ACTIVE.formatted("kafka, metrics, prometheus, kubernetes, cloud")
+                                    + " spring.profiles.include activates kafka, metrics, prometheus. A library or the "
+                                    + "platform added kubernetes, cloud (as spring-cloud-kubernetes adds kubernetes "
+                                    + "when Boot detects Kubernetes).");
+                    assertThat(ex.action())
+                            .isEqualTo(INCLUDE_ACTION + " " + LIBRARY_ACTION.formatted("kubernetes, cloud"));
                 });
     }
 

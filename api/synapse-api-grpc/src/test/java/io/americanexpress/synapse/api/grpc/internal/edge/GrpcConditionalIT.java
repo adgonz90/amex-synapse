@@ -74,7 +74,7 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * A {@code VersionCondition} over gRPC, through the real pipeline on the in-process server: the request's
  * {@code etag} field carries REST's entity tag token, a required one that is missing is {@code PRECONDITION_REQUIRED},
  * and a stale write follows REST's rule ({@code PRECONDITION_FAILED} when the request named a version, otherwise
- * {@code STALE_VERSION}).
+ * {@code STALE_VERSION}). Both are {@code ABORTED}; a weak or unbound tag is {@code FAILED_PRECONDITION}.
  */
 @SpringBootTest(classes = GrpcConditionalIT.TestApplication.class)
 @TestPropertySource(properties = {"spring.grpc.server.inprocess.name=synapse-grpc-conditional",
@@ -115,26 +115,27 @@ class GrpcConditionalIT {
     }
 
     @Test
-    void staleEtagIsFailedPreconditionPreconditionFailed() throws InterruptedException {
+    void staleEtagIsAbortedPreconditionFailed() throws InterruptedException {
         Doc doc = create("draft");
         assertThat(call(stub -> stub.updateDoc(update(doc.getId(), "first", "\"1\""))).getVersion()).isEqualTo(2);
 
         StatusRuntimeException e = failure(stub -> stub.updateDoc(update(doc.getId(), "second", "\"1\"")));
 
-        // As REST answers a stale If-Match 412: the request named a version, and the precondition failed.
-        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        // The code is REST's for a stale If-Match (412): the request named a version, and the precondition failed.
+        // The status is AIP-154's for a stale etag: ABORTED, so the client re-reads and retries.
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
         assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("PRECONDITION_FAILED");
         assertThat(store.find(doc.getId()).text()).isEqualTo("first");
     }
 
     @Test
-    void starOnAConcurrentlyChangedRowIsFailedPrecondition() throws InterruptedException {
+    void starOnAConcurrentlyChangedRowIsAborted() throws InterruptedException {
         Doc doc = create("draft");
         store.raceNext.set(true);
 
         StatusRuntimeException e = failure(stub -> stub.updateDoc(update(doc.getId(), "mine", "*")));
 
-        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
         assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("PRECONDITION_FAILED");
         assertThat(store.lastCondition.get()).isInstanceOf(AnyVersion.class);
     }
@@ -154,11 +155,12 @@ class GrpcConditionalIT {
     }
 
     @Test
-    void weakEtagIsFailedPreconditionAndTheOperationDoesNotRun() throws InterruptedException {
+    void weakEtagIsFailedPreconditionBeforeTheOperation() throws InterruptedException {
         Doc doc = create("draft");
 
         StatusRuntimeException e = failure(stub -> stub.updateDoc(update(doc.getId(), "mine", "W/\"1\"")));
 
+        // A weak tag never matches, so re-reading won't help: FAILED_PRECONDITION, not a stale etag's ABORTED.
         assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
         assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("PRECONDITION_FAILED");
         assertThat(store.updates.get()).isZero();

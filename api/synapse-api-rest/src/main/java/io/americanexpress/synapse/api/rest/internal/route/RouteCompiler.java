@@ -18,8 +18,10 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import jakarta.servlet.DispatcherType;
 
+import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpMethod;
 import org.springframework.web.servlet.function.RequestPredicate;
 import org.springframework.web.servlet.function.RequestPredicates;
@@ -32,11 +34,18 @@ import org.springframework.web.util.pattern.PathPatternParser;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.PagingRules;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
+import io.americanexpress.synapse.api.rest.internal.paging.SortKeys;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
+import io.americanexpress.synapse.core.error.ErrorDetails;
+import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclaration;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
+import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
 
 /**
@@ -49,7 +58,9 @@ import io.americanexpress.synapse.core.internal.paging.PageCursors;
  * {@link RequestPredicates#version} predicate, from which Spring MVC detects the supported versions. No route matches the servlet container's error dispatch, which belongs to the error
  * controller. Any binding mistake fails startup. The 405 and {@code OPTIONS} fallback is not part of the routes: it
  * is the {@link MethodNotAllowedMapping}, after the other handler mappings. Once the routes are checked, it reports a
- * cursor key generated at startup when a route returns {@code PageResult} ({@link PageCursors#reportGeneratedKey}).
+ * cursor key generated at startup when a route returns {@code PageResult} ({@link PageCursors#reportGeneratedKey}),
+ * and registers each declared route's {@code .notFound}, {@code .etag} and {@code .sortable} declarations with core's
+ * {@link BindingDeclarations}, which compares them with the other protocols' bindings once every singleton exists.
  */
 public final class RouteCompiler {
 
@@ -57,6 +68,9 @@ public final class RouteCompiler {
     private static final RequestPredicate NOT_ERROR_DISPATCH = request -> request
             .servletRequest()
             .getDispatcherType() != DispatcherType.ERROR;
+
+    /** The protocol a route's binding is registered under, as the parity failure names it. */
+    private static final String PROTOCOL = "REST";
 
     private final BindingValidator validator;
 
@@ -68,6 +82,8 @@ public final class RouteCompiler {
 
     private final PagingSettings paging;
 
+    private final @Nullable BindingDeclarations declarations;
+
     /**
      * Creates the compiler.
      *
@@ -76,14 +92,17 @@ public final class RouteCompiler {
      * @param writer writes the responses
      * @param cursors unwraps the cursor tokens, and reports a generated cursor key
      * @param paging the paging settings, for the cursor parameter name a rejected token names
+     * @param declarations core's registry of compiled bindings, which each compiled route is added to, or {@code null}
+     *     to register nothing
      */
     public RouteCompiler(BindingValidator validator, RequestBinder binder, ResponseWriter writer, PageCursors cursors,
-            PagingSettings paging) {
+            PagingSettings paging, @Nullable BindingDeclarations declarations) {
         this.validator = validator;
         this.binder = binder;
         this.writer = writer;
         this.cursors = cursors;
         this.paging = paging;
+        this.declarations = declarations;
     }
 
     /**
@@ -116,7 +135,23 @@ public final class RouteCompiler {
         if (routes.stream().anyMatch(RouteDefinition::pagedOutput)) {
             cursors.reportGeneratedKey();
         }
+        // The declared routes only: an implicit HEAD route is its GET route's.
+        BindingDeclarations registry = declarations;
+        if (registry != null) {
+            routes.forEach(route -> registry.add(declaration(route)));
+        }
         return builder.build();
+    }
+
+    /** What a resolved route declares that must be the same over every protocol. */
+    private static BindingDeclaration declaration(RouteDefinition route) {
+        ErrorDetails notFound = route.response().notFound();
+        ResolvedComponent etag = route.conditional().etag();
+        PagingRules paging = route.paging();
+        SortKeys sortKeys = paging == null ? null : paging.sortKeys();
+        return new BindingDeclaration(PROTOCOL, route.operationName(), route.method().name() + " " + route.path(),
+                (notFound != null ? notFound : SynapseErrors.NOT_FOUND).code(), etag == null ? null : etag.name(),
+                sortKeys == null ? null : Set.copyOf(sortKeys.wireToProperty().values()));
     }
 
     /** Sorts the routes by template specificity; the sort is stable, so equally specific routes keep their order. */

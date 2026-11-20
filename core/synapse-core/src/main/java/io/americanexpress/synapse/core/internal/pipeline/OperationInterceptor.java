@@ -18,7 +18,11 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -35,6 +39,7 @@ import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ExceptionTranslator;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.ContextScope;
 import io.americanexpress.synapse.core.internal.context.InboundContext;
@@ -47,8 +52,8 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 /**
  * Runs the operation pipeline around {@code ServiceOperation.execute}, outermost step first: observation, context,
- * in-flight tracking (outermost call on the thread only), deadline, validation, payload logging, execution, then
- * translation and failure logging (outermost call on the thread only).
+ * in-flight tracking (outermost call on the thread only), deadline, validation, required version conditions, payload
+ * logging, execution, then translation and failure logging (outermost call on the thread only).
  *
  * <p>
  * Admission while draining: an outermost call that finds no request context (the pipeline opens one, as for
@@ -169,7 +174,14 @@ final class OperationInterceptor implements MethodInterceptor {
                 throw new SynapseException(SynapseErrors.DEADLINE_EXCEEDED);
             }
 
-            pipeline.validate(input);
+            try {
+                pipeline.validate(input);
+                pipeline.requirePreconditions(input);
+            } catch (SynapseException rejected) {
+                // Only the outermost call's input is the caller's own. A nested call's input is built by the service,
+                // so rejecting it is the service's bug: INTERNAL, with the rejection kept as the logged cause.
+                throw outermost ? rejected : new SynapseException(SynapseErrors.INTERNAL, rejected);
+            }
 
             boolean logPayloads = PAYLOADS.isDebugEnabled() && payloadLogging.test(name);
             if (logPayloads) {
@@ -187,7 +199,7 @@ final class OperationInterceptor implements MethodInterceptor {
             observation.error(error);
             throw error;
         } catch (Throwable thrown) {
-            SynapseException failure = translate(thrown);
+            SynapseException failure = translate(thrown, outermost ? input : null);
             observation.error(failure);
             if (outermost) {
                 logFailure(name, correlationId, failure);
@@ -243,9 +255,33 @@ final class OperationInterceptor implements MethodInterceptor {
         }
     }
 
-    private SynapseException translate(Throwable thrown) {
+    /**
+     * Translates a failure. A {@link ConstraintViolationException} reaches the translators only when it is the
+     * failure itself and every violation is of the caller's own input, by identity, such as an operation validating
+     * its input by hand. Any other one, thrown or in the cause chain (a collaborator's method validation, an entity
+     * at flush or at commit, a nested call's input, or one without violations), is the service's bug and becomes
+     * {@code INTERNAL} before any translator runs, with no violations. Its cause is a {@link SanitizedViolations}
+     * that names each violation by its path and message template, not by the interpolated message; a template that a
+     * custom validator built with the value, or a map or iterable key in a path, can still hold a value (see
+     * core.adoc, <em>Masking</em>).
+     * <p>
+     * The search covers the failure and its causes, {@value SanitizedViolations#MAX_DEPTH} exceptions in all, and no
+     * suppressed exception: one deeper or suppressed isn't found, so the failure goes to the translators as it is. A
+     * {@code SynapseException} is returned as it is, so a {@code ConstraintViolationException} it holds as its cause is
+     * kept, and logged, as it is.
+     *
+     * @param thrown the failure
+     * @param input the caller's own input: the outermost call's input, or {@code null} in a nested call
+     */
+    private SynapseException translate(Throwable thrown, @Nullable Object input) {
         if (thrown instanceof SynapseException synapse) {
             return synapse;
+        }
+        ConstraintViolationException violations = SanitizedViolations.find(thrown);
+        @SuppressWarnings("ReferenceEquality") // Only the thrown exception itself can be the caller's rejection.
+        boolean itself = violations == thrown;
+        if (violations != null && !(itself && ofTheInput(violations, input))) {
+            return new SynapseException(SynapseErrors.INTERNAL, SanitizedViolations.replacing(thrown, violations));
         }
         for (ExceptionTranslator translator : translators) {
             try {
@@ -263,10 +299,29 @@ final class OperationInterceptor implements MethodInterceptor {
         return new SynapseException(SynapseErrors.INTERNAL, thrown);
     }
 
+    /** Tells whether the exception has violations and every one is of the input itself. */
+    @SuppressWarnings("ReferenceEquality") // R6: the root bean must be the input itself, not an equal copy.
+    private static boolean ofTheInput(ConstraintViolationException exception, @Nullable Object input) {
+        Set<ConstraintViolation<?>> violations = exception.getConstraintViolations();
+        if (input == null || violations == null || violations.isEmpty()) {
+            return false;
+        }
+        for (ConstraintViolation<?> violation : violations) {
+            if (violation.getRootBean() != input) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * Logs the failure: ERROR with the stack trace for {@code INTERNAL}; WARN with the cause's stack trace for
      * {@code UNAVAILABLE} and {@code TIMEOUT} when a translator kept a cause (a downstream fault, not the caller's);
-     * WARN without a stack trace otherwise, which includes the pipeline's own drain rejection and deadline check.
+     * WARN without a stack trace otherwise, which includes the pipeline's own drain rejection and deadline check. An
+     * {@code INTERNAL} caused by rejected constraints (a business or nested input, a collaborator, an entity) names
+     * them in the {@code violations} key by path and message template, not by the interpolated message; a template
+     * that a custom validator built with the value, or a map or iterable key in a path, is written as it is (see
+     * core.adoc, <em>Masking</em>).
      * <p>
      * The code and category keys have no dot: Spring Boot's ECS format nests dotted keys, and it writes the logged
      * throwable as the {@code error} object, so a key under {@code error.} would be a second {@code error} member and
@@ -281,6 +336,17 @@ final class OperationInterceptor implements MethodInterceptor {
         LoggingEventBuilder event;
         if (category == ErrorCategory.INTERNAL) {
             event = FAILURES.atError().setCause(failure);
+            SanitizedViolations sanitized = SanitizedViolations.in(failure);
+            if (sanitized != null) {
+                // Rejected constraints: paths and message templates, not interpolated messages. A template or a path
+                // can still hold a value (see core.adoc, Masking).
+                event = event.addKeyValue("violations", sanitized.violations());
+            } else if (cause instanceof SynapseException rejected && !rejected.violations().isEmpty()) {
+                // Another rejection kept as the cause: its fields only, since its messages aren't known to be safe.
+                event = event
+                        .addKeyValue("violations",
+                                rejected.violations().stream().map(Violation::field).collect(Collectors.joining(", ")));
+            }
         } else if ((category == ErrorCategory.UNAVAILABLE || category == ErrorCategory.TIMEOUT) && cause != null) {
             event = FAILURES.atWarn().setCause(cause);
         } else {

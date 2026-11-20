@@ -29,9 +29,10 @@ import io.americanexpress.synapse.data.internal.error.LostConnections;
 /**
  * A JDBC store's transaction manager: Spring's {@link JdbcTransactionManager}, except that a commit that loses its
  * connection is reported as the data module's {@code COMMIT_OUTCOME_UNKNOWN} (category {@code INTERNAL}), not as a
- * retryable {@code UNAVAILABLE}. A lost connection is what the data translator reports as {@code UNAVAILABLE}
- * everywhere else: Spring's connection exceptions, the JDBC connection exception types, and SQLState class 08 or
- * PostgreSQL's 57P01-57P03 among the failure's causes.
+ * retryable {@code UNAVAILABLE}. A lost connection follows the rule the data translator uses everywhere else: any of
+ * the failure's causes is a JDBC connection exception type, has a class-08 state or PostgreSQL's 57P01-57P03 or
+ * 57P05, or is one of Spring's connection exceptions without another state below it. A commit the database rejected
+ * with another state, such as 53100 (disk full), has a known outcome and is reported as before.
  * <p>
  * The commit is the one step whose outcome a lost connection leaves unknown: the database may have applied the COMMIT
  * and lost only its reply. {@code JdbcTransactionManager} reports that failure as a {@code DataAccessException}, then

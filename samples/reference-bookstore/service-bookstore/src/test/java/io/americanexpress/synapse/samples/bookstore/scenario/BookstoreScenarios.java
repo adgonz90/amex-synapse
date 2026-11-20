@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
+import io.grpc.Status;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -163,10 +164,12 @@ public abstract class BookstoreScenarios {
         Outcome created = client(protocol).create(isbn, "Planet of Exile", AUTHOR, 1966);
         UUID id = idOf(created);
 
-        // The book is at version 0; the request names version 7. REST 412, gRPC FAILED_PRECONDITION.
+        // The book is at version 0; the request names version 7. REST 412, gRPC ABORTED (AIP-154), with the same code.
         assertThat(client(protocol).update(id, "\"7\"", isbn, "Changed", AUTHOR, null))
                 .isEqualTo(Outcome.failed(SynapseErrors.PRECONDITION_FAILED));
+        assertGrpcStatus(protocol, Status.Code.ABORTED);
         assertThat(client(protocol).delete(id, "\"7\"")).isEqualTo(Outcome.failed(SynapseErrors.PRECONDITION_FAILED));
+        assertGrpcStatus(protocol, Status.Code.ABORTED);
         assertThat(client(protocol).get(id)).isEqualTo(Outcome.ok(created.book(), "\"0\""));
     }
 
@@ -207,9 +210,11 @@ public abstract class BookstoreScenarios {
         Outcome created = client(protocol).create(isbn, "The Farthest Shore", AUTHOR, 1972);
         UUID id = idOf(created);
 
-        // A weak tag never matches for a write (RFC 9110 13.1.1), whatever its value.
+        // A weak tag never matches for a write (RFC 9110 13.1.1), whatever its value. Re-reading won't fix it, so gRPC
+        // answers FAILED_PRECONDITION, not a stale etag's ABORTED.
         assertThat(client(protocol).update(id, "W/\"0\"", isbn, "Changed", AUTHOR, null))
                 .isEqualTo(Outcome.failed(SynapseErrors.PRECONDITION_FAILED));
+        assertGrpcStatus(protocol, Status.Code.FAILED_PRECONDITION);
         assertThat(client(protocol).get(id)).isEqualTo(Outcome.ok(created.book(), "\"0\""));
     }
 
@@ -346,7 +351,7 @@ public abstract class BookstoreScenarios {
 
     /**
      * Review Focus 1: the {@code ETag} of a REST read, sent verbatim as the gRPC {@code etag}, updates the book; the
-     * same value again is stale, which gRPC answers {@code FAILED_PRECONDITION} with REST's code.
+     * same value again is stale, which gRPC answers {@code ABORTED} with REST's code.
      */
     @Test
     void etagFromRestUpdatesOverGrpc() {
@@ -358,6 +363,7 @@ public abstract class BookstoreScenarios {
                 .isEqualTo(Outcome.ok(new BookView(id, isbn, "Voices", AUTHOR, 2007, 1), null));
         assertThat(grpc.update(id, restEtag, isbn, "Voices, again", AUTHOR, 2007))
                 .isEqualTo(Outcome.failed(SynapseErrors.PRECONDITION_FAILED));
+        assertThat(grpc.lastStatus()).isEqualTo(Status.Code.ABORTED);
         assertThat(grpc.get(id).etag()).isEqualTo("\"1\"");
     }
 
@@ -427,6 +433,20 @@ public abstract class BookstoreScenarios {
             case REST -> rest;
             case GRPC -> grpc;
         };
+    }
+
+    /**
+     * Over gRPC, asserts the status the last call failed with; over REST, does nothing. The {@link Outcome} is the
+     * same on both protocols, but the gRPC status of {@code PRECONDITION_FAILED} depends on why the precondition
+     * failed, so the scenario that sends the {@code etag} says which ({@link GrpcBookstoreClient#lastStatus()}).
+     *
+     * @param protocol the protocol of the last call
+     * @param expected the gRPC status it must have failed with
+     */
+    protected void assertGrpcStatus(Protocol protocol, Status.Code expected) {
+        if (protocol == Protocol.GRPC) {
+            assertThat(grpc.lastStatus()).as("gRPC status").isEqualTo(expected);
+        }
     }
 
     /** Adds one book per title for the author, over the protocol, and returns their ids ordered by title, then id. */

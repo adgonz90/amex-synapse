@@ -127,6 +127,19 @@ class ProblemWriterTest {
     }
 
     @Test
+    void anInternalCausedByViolationsShowsNoneOfThemEvenWithDetail() {
+        // What the pipeline answers for a business input, a nested call or an entity at flush (as gRPC's writer).
+        JsonNode body = write(writer(true, null), new SynapseException(SynapseErrors.INTERNAL, SynapseException
+                .ofViolations(SynapseErrors.VALIDATION_FAILED,
+                        List.of(new Violation("audit.internalLedgerCode", "must not be null")))));
+
+        assertThat(response.getStatus()).isEqualTo(500);
+        assertThat(body.get("code").asString()).isEqualTo("INTERNAL");
+        assertThat(body.has("violations")).isFalse();
+        assertThat(body.toString()).doesNotContain("internalLedgerCode", "must not be null");
+    }
+
+    @Test
     void violationsAlwaysIncluded() {
         JsonNode body = write(writer(false, null), SynapseException
                 .ofViolations(SynapseErrors.VALIDATION_FAILED, List.of(new Violation("title", "must not be blank"))));

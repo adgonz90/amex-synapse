@@ -1,4 +1,4 @@
-# The local environment: ENV=local java -jar ..., or mvn spring-boot:run in this module once the contract and data
+# The local environment: ENV=local java -jar ..., or ../mvnw spring-boot:run in this module once the contract and data
 # modules are installed (the pom sets spring-boot.run.profiles=local). Only local conveniences belong here. The
 # ${serviceName} store's local connection is in data-${serviceName}'s config-local.yaml: the ${serviceName}-db container
 # of compose.yaml (docker compose up -d).

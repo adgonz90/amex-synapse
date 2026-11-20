@@ -13,8 +13,13 @@
  */
 package io.americanexpress.synapse.core.paging;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.function.Function;
 
+import org.jspecify.annotations.Nullable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
@@ -63,24 +68,65 @@ public final class SpringDataPages {
      * Returns an offset-based {@link Pageable} for the query. The offset is exact, not rounded to a page boundary.
      * Each {@link SortOrder#property()} is passed to Spring Data unchanged, as an entity property. For keys declared
      * with {@code .sortable(SortKey.class)} that is the enum constant's name, so name the constants after the
-     * entity's properties, or map the keys to them before calling this method.
+     * entity's properties, or map the keys to them with {@link #pageable(PageQuery, Function, SortOrder...)}, which
+     * also appends tie-breakers.
      *
      * @param query the query
      * @return the pageable
      * @throws IllegalArgumentException if the query uses a cursor
      */
     public static Pageable pageable(PageQuery query) {
+        return pageable(query, Function.identity());
+    }
+
+    /**
+     * As {@link #pageable(PageQuery)}, with each key mapped to an entity property by {@code property}, then each
+     * {@code then} order appended unless its property is already sorted on. The tie-breakers give every item one
+     * place, so pages neither skip nor repeat an item while the data doesn't change:
+     *
+     * <pre>{@code
+     * SpringDataPages.pageable(query, key -> property(SortKey.valueOf(key)),
+     *         new SortOrder("title", SortOrder.Direction.ASC), new SortOrder("id", SortOrder.Direction.ASC));
+     * }</pre>
+     *
+     * A {@code then} property is compared with the mapped properties, so a caller who sorts on the title keeps their
+     * direction, and the title tie-breaker is skipped. The {@code then} properties are entity properties already, and
+     * are not mapped.
+     *
+     * @param query the query
+     * @param property maps a sort key, such as an enum constant's name, to an entity property; null or blank for a key it
+     *        can't map
+     * @param then the tie-breakers, in order
+     * @return the pageable
+     * @throws IllegalArgumentException if the query uses a cursor, or {@code property} returns null or blank for a key
+     *         (the message names the key)
+     */
+    public static Pageable pageable(PageQuery query, Function<String, ? extends @Nullable String> property,
+            SortOrder... then) {
         if (query.cursor() != null) {
             throw new IllegalArgumentException("A cursor query cannot be converted to an offset-based Pageable");
         }
         Long offset = query.offset();
-        List<Sort.Order> orders = query
-                .sort()
-                .stream()
-                .map(order -> order.direction() == SortOrder.Direction.DESC
-                        ? Sort.Order.desc(order.property())
-                        : Sort.Order.asc(order.property()))
-                .toList();
+        List<Sort.Order> orders = new ArrayList<>();
+        Set<String> sorted = new HashSet<>();
+        for (SortOrder key : query.sort()) {
+            @Nullable
+            String mapped = property.apply(key.property());
+            if (mapped == null || mapped.isBlank()) {
+                throw new IllegalArgumentException("The sort key '" + key.property() + "' maps to no entity property");
+            }
+            orders.add(order(mapped, key.direction()));
+            sorted.add(mapped);
+        }
+        for (SortOrder tieBreaker : then) {
+            if (sorted.add(tieBreaker.property())) {
+                orders.add(order(tieBreaker.property(), tieBreaker.direction()));
+            }
+        }
         return new OffsetPageable(offset == null ? 0 : offset, query.size(), Sort.by(orders));
+    }
+
+    private static Sort.Order order(String property, SortOrder.Direction direction) {
+        return direction == SortOrder.Direction.DESC ? Sort.Order.desc(property) : Sort.Order.asc(property);
     }
 }

@@ -14,13 +14,21 @@
 package io.americanexpress.synapse.data.internal.migration;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
 import org.flywaydb.core.api.Location;
+import org.flywaydb.core.api.callback.Callback;
+import org.flywaydb.core.api.callback.Context;
+import org.flywaydb.core.api.callback.Event;
+import org.flywaydb.core.api.configuration.FluentConfiguration;
+import org.flywaydb.core.api.migration.BaseJavaMigration;
+import org.flywaydb.core.api.migration.JavaMigration;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -177,7 +185,8 @@ class FlywayStoreMigrationTest {
     void theStoresDataSourceIsUsed() {
         try (HikariDataSource dataSource = unreachable()) {
             Flyway flyway = FlywayStoreMigration
-                    .flyway(BOOKS, dataSource, properties(null, Map.of()), getClass().getClassLoader());
+                    .flyway(BOOKS, dataSource, properties(null, Map.of()), getClass().getClassLoader(),
+                            List.of(), List.of(), List.of());
 
             assertThat(flyway.getConfiguration().getDataSource()).isSameAs(dataSource);
         }
@@ -187,7 +196,8 @@ class FlywayStoreMigrationTest {
     void loadingOpensNoConnection() {
         try (HikariDataSource dataSource = unreachable()) {
             Flyway flyway = FlywayStoreMigration
-                    .flyway(BOOKS, dataSource, properties(null, Map.of()), getClass().getClassLoader());
+                    .flyway(BOOKS, dataSource, properties(null, Map.of()), getClass().getClassLoader(),
+                            List.of(), List.of(), List.of());
 
             assertThat(flyway).isNotNull();
             assertThat(dataSource.getHikariPoolMXBean()).isNull();
@@ -232,7 +242,8 @@ class FlywayStoreMigrationTest {
         try (HikariDataSource dataSource = unreachable()) {
             dataSource.setConnectionTimeout(250);
             Flyway flyway = FlywayStoreMigration
-                    .flyway(BOOKS, dataSource, properties(null, Map.of()), getClass().getClassLoader());
+                    .flyway(BOOKS, dataSource, properties(null, Map.of()), getClass().getClassLoader(),
+                            List.of(), List.of(), List.of());
             FlywayStoreMigration migration = new FlywayStoreMigration("books", flyway);
 
             assertThat(migration.store()).isEqualTo("books");
@@ -243,10 +254,119 @@ class FlywayStoreMigrationTest {
         }
     }
 
+    /** A customizer runs after the migrations.flyway keys, so it replaces what a key set. */
+    @Test
+    void aCustomizerRunsAfterTheFlywayKeys() {
+        List<String> seen = new ArrayList<>();
+        Consumer<FluentConfiguration> customizer = configuration -> {
+            seen.add(configuration.getTable());
+            configuration.table("customized_history");
+        };
+        Flyway flyway = flyway(properties(null, Map.of("table", "keys_history")), List.of(customizer), List.of(),
+                List.of());
+
+        assertThat(seen).containsExactly("keys_history");
+        assertThat(flyway.getConfiguration().getTable()).isEqualTo("customized_history");
+    }
+
+    /** Callbacks and Java migrations are added to those a customizer set, not put in their place. */
+    @Test
+    void callbacksAndJavaMigrationsAreAddedToTheCustomizers() {
+        Callback first = callback();
+        Callback second = callback();
+        JavaMigration firstMigration = new V2__First();
+        JavaMigration secondMigration = new V3__Second();
+        Consumer<FluentConfiguration> customizer = configuration -> configuration
+                .callbacks(first)
+                .javaMigrations(firstMigration);
+        Flyway flyway = flyway(properties(null, Map.of()), List.of(customizer), List.of(second),
+                List.of(secondMigration));
+
+        assertThat(flyway.getConfiguration().getCallbacks()).containsExactly(first, second);
+        assertThat(flyway.getConfiguration().getJavaMigrations()).containsExactly(firstMigration, secondMigration);
+    }
+
+    /** A failure names the customizer by its toString(), which is its bean's name, and never the SQL. */
+    @Test
+    void aCustomizerThatSetsInitSqlIsNamed() {
+        Consumer<FluentConfiguration> customizer = new Consumer<>() {
+
+            @Override
+            public void accept(FluentConfiguration configuration) {
+                configuration.initSql("SET ROLE " + SECRET);
+            }
+
+            @Override
+            public String toString() {
+                return "roleCustomizer";
+            }
+        };
+        SynapseConfigurationException failure = catchThrowableOfType(SynapseConfigurationException.class,
+                () -> flyway(properties(null, Map.of()), List.of(customizer), List.of(), List.of()));
+
+        assertThat(failure.description())
+                .isEqualTo("The FlywayConfigurationCustomizer bean roleCustomizer sets initSql for the store 'books', "
+                        + "SQL that runs on each new connection and could change the role or schema the store uses.");
+        assertThat(failure.action())
+                .isEqualTo("Remove initSql from roleCustomizer. Name the schema in synapse.data.stores.books.url.");
+        assertThat(failure.description() + failure.action()).doesNotContain(SECRET);
+    }
+
+    private static Flyway flyway(SynapseDataStoreProperties properties, List<Consumer<FluentConfiguration>> customizers,
+            List<Callback> callbacks, List<JavaMigration> javaMigrations) {
+        try (HikariDataSource dataSource = unreachable()) {
+            return FlywayStoreMigration
+                    .flyway(BOOKS, dataSource, properties, FlywayStoreMigrationTest.class.getClassLoader(), customizers,
+                            callbacks, javaMigrations);
+        }
+    }
+
+    private static Callback callback() {
+        return new Callback() {
+
+            @Override
+            public boolean supports(Event event, Context context) {
+                return false;
+            }
+
+            @Override
+            public boolean canHandleInTransaction(Event event, Context context) {
+                return true;
+            }
+
+            @Override
+            public void handle(Event event, Context context) {
+                // Never called: it supports no event.
+            }
+
+            @Override
+            public String getCallbackName() {
+                return "unused";
+            }
+        };
+    }
+
+    static class V2__First extends BaseJavaMigration {
+
+        @Override
+        public void migrate(org.flywaydb.core.api.migration.Context context) {
+            // Never run: the tests only build Flyway.
+        }
+    }
+
+    static class V3__Second extends BaseJavaMigration {
+
+        @Override
+        public void migrate(org.flywaydb.core.api.migration.Context context) {
+            // Never run: the tests only build Flyway.
+        }
+    }
+
     private static Flyway flyway(StoreDefinition store, SynapseDataStoreProperties properties) {
         try (HikariDataSource dataSource = unreachable()) {
             return FlywayStoreMigration
-                    .flyway(store, dataSource, properties, FlywayStoreMigrationTest.class.getClassLoader());
+                    .flyway(store, dataSource, properties, FlywayStoreMigrationTest.class.getClassLoader(), List.of(),
+                            List.of(), List.of());
         }
     }
 

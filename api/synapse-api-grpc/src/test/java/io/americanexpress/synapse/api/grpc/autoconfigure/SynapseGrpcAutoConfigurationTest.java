@@ -44,7 +44,10 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.boot.LazyInitializationBeanFactoryPostProcessor;
+import org.springframework.boot.LazyInitializationExcludeFilter;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.ssl.SslAutoConfiguration;
 import org.springframework.boot.grpc.server.GrpcServletRegistration;
@@ -64,6 +67,7 @@ import org.springframework.grpc.server.exception.GrpcExceptionHandlerInterceptor
 
 import io.americanexpress.synapse.api.grpc.GrpcBindings;
 import io.americanexpress.synapse.api.grpc.fixture.proto.CatalogServiceGrpc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.DocServiceGrpc;
 import io.americanexpress.synapse.api.grpc.internal.aot.ReflectionAotCheck;
 import io.americanexpress.synapse.api.grpc.internal.binding.fixture.BindingFixtures;
 import io.americanexpress.synapse.api.grpc.internal.edge.GrpcConcurrencyLimit;
@@ -78,10 +82,14 @@ import io.americanexpress.synapse.api.grpc.internal.service.ServiceCompiler;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
+import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclaration;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.internal.pipeline.OperationSettingsPrefix;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -401,6 +409,99 @@ class SynapseGrpcAutoConfigurationTest {
     }
 
     @Test
+    void bindingsCompileDuringStartupUnderLazyInitialization() {
+        // A REST binding of the same operation, registered up front: the gRPC method must register before the check
+        // runs. No gRPC server here, so nothing else would ask for the bindings during startup.
+        lazyWithoutServer()
+                .withBean("synapseBindingDeclarations", BindingDeclarations.class, () -> restBinding(null))
+                .withBean("docs", GrpcBindings.class, SynapseGrpcAutoConfigurationTest::docs)
+                .run(context -> assertThat(context).hasNotFailed());
+        lazyWithoutServer()
+                .withBean("synapseBindingDeclarations", BindingDeclarations.class, () -> restBinding("version"))
+                .withBean("docs", GrpcBindings.class, SynapseGrpcAutoConfigurationTest::docs)
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .isInstanceOf(SynapseConfigurationException.class)
+                        .hasMessage("Operation 'get-doc' is bound differently over REST (GET /docs/{id}) and gRPC "
+                                + "(synapse.fixture.v1.DocService/GetDoc): etag is version over REST and none over "
+                                + "gRPC."));
+    }
+
+    @Test
+    void aBindingMistakeFailsStartupUnderLazyInitialization() {
+        lazyWithoutServer()
+                .withBean("unbound", GrpcBindings.class, () -> GrpcBindings
+                        .service(DocServiceGrpc.getServiceDescriptor())
+                        .unary(DocServiceGrpc.getGetDocMethod(), new BindingFixtures.GetDocOperation())
+                        .build())
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .hasStackTraceContaining("no operation is bound"));
+    }
+
+    @Test
+    void bindingsLazyInitializationExcludeFilterIsPresentAndBacksOffByName() {
+        runner.run(context -> {
+            LazyInitializationExcludeFilter filter = context
+                    .getBean("synapseGrpcBindingsLazyInitializationExcludeFilter",
+                            LazyInitializationExcludeFilter.class);
+            assertThat(filter.isExcluded("docs", new RootBeanDefinition(), GrpcBindings.class)).isTrue();
+            assertThat(filter.isExcluded("other", new RootBeanDefinition(), BindableService.class)).isFalse();
+        });
+        LazyInitializationExcludeFilter user = (name, definition, type) -> false;
+        runner
+                .withBean("synapseGrpcBindingsLazyInitializationExcludeFilter", LazyInitializationExcludeFilter.class,
+                        () -> user)
+                .run(context -> assertThat(context.getBean("synapseGrpcBindingsLazyInitializationExcludeFilter"))
+                        .isSameAs(user));
+    }
+
+    /**
+     * The plugin and core's parity check under {@code spring.main.lazy-initialization=true}, without Boot's gRPC
+     * server, which would otherwise ask for the bindings when it starts.
+     */
+    private static ApplicationContextRunner lazyWithoutServer() {
+        return new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations
+                        .of(SynapseCoreAutoConfiguration.class, SynapseContextAutoConfiguration.class,
+                                SynapseOperationAutoConfiguration.class, SynapseGrpcAutoConfiguration.class,
+                                SynapseGrpcErrorAutoConfiguration.class))
+                .withBean(ErrorMessages.class, () -> new ErrorMessages(new StaticMessageSource()))
+                .withInitializer(context -> context
+                        .addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor()));
+    }
+
+    private static BindingDeclarations restBinding(@Nullable String etag) {
+        BindingDeclarations declarations = new BindingDeclarations();
+        declarations.add(new BindingDeclaration("REST", "get-doc", "GET /docs/{id}", "NOT_FOUND", etag, null));
+        return declarations;
+    }
+
+    private static GrpcBindings docs() {
+        return GrpcBindings
+                .service(DocServiceGrpc.getServiceDescriptor())
+                .unary(DocServiceGrpc.getGetDocMethod(), new BindingFixtures.GetDocOperation())
+                .unary(DocServiceGrpc.getCreateDocMethod(), new BindingFixtures.CreateDocOperation())
+                .unary(DocServiceGrpc.getUpdateDocMethod(), new BindingFixtures.UpdateDocOperation())
+                .unary(DocServiceGrpc.getDeleteDocMethod(), new BindingFixtures.DeleteDocOperation())
+                .build();
+    }
+
+    @Test
+    void operationSettingsPrefixIsPresentAndBacksOffByName() {
+        runner
+                .run(context -> assertThat(context.getBean("synapseGrpcOperationSettingsPrefix"))
+                        .isEqualTo(new OperationSettingsPrefix("synapse.api.grpc.operations")));
+        OperationSettingsPrefix user = new OperationSettingsPrefix("user.operations");
+        runner
+                .withBean("synapseGrpcOperationSettingsPrefix", OperationSettingsPrefix.class, () -> user)
+                .run(context -> assertThat(context.getBeansOfType(OperationSettingsPrefix.class))
+                        .containsExactly(Map.entry("synapseGrpcOperationSettingsPrefix", user)));
+    }
+
+    @Test
     void servletCheckBacksOffToAUserBean() {
         SmartInitializingSingleton user = () -> {
         };
@@ -622,7 +723,8 @@ class SynapseGrpcAutoConfigurationTest {
         GrpcBindingsCompiler postProcessor = new GrpcBindingsCompiler(
                 new StaticListableBeanFactory().getBeanProvider(ServiceCompiler.class),
                 operations(), new StaticListableBeanFactory().getBeanProvider(PageCursors.class),
-                new StaticListableBeanFactory().getBeanProvider(SynapsePagingProperties.class));
+                new StaticListableBeanFactory().getBeanProvider(SynapsePagingProperties.class),
+                new StaticListableBeanFactory().getBeanProvider(BindingDeclarations.class));
         ExposureInventory inventory = new ExposureInventory(
                 new StaticListableBeanFactory().getBeanProvider(GrpcBindings.class));
         runner

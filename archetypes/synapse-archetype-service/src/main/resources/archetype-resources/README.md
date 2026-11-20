@@ -41,7 +41,9 @@ or output is never a persistence entity, so the operations map one to the other 
 
 ```
 ${rootArtifactId}/
-  .gitattributes                            LF line endings in git
+  .gitattributes                            LF line endings in git (CRLF for mvnw.cmd)
+  .mvn/wrapper/                             the Maven Wrapper's settings: Maven 3.9.16
+  mvnw, mvnw.cmd                            the Maven Wrapper, for POSIX shells and for Windows
   pom.xml                                   aggregator, parent synapse-parent; the three modules
   compose.yaml                              ${serviceName}-db (5432), postgres:18.6-alpine by digest
   contract-${serviceName}/
@@ -98,12 +100,14 @@ compose only*; no other file holds a credential.
 
 #[[## Run it]]#
 
-You need JDK 21 or later, Maven 3.9.6 or later, and Docker for the database and the integration tests. Maven 3.9.6 is
-the minimum of the contract module's `protobuf-maven-plugin` (5.1.11 with Spring Boot 4.1.2); an older Maven fails in
-that first module. The project has no Maven Wrapper; `mvn wrapper:wrapper` adds one if you want every build to use the
-same Maven. On Windows without long paths (`LongPathsEnabled`), keep the path of this directory under about 75
-characters, less the length of the service name: the deepest file the build writes, under `contract-*/target` (the
-protobuf plugin's extracted imports), is 184 characters below it with a one-letter name. With `-Paot` it is 232
+You need JDK 21 or later, and Docker for the database and the integration tests. The project has the Maven Wrapper,
+so every build uses the same Maven: the wrapper downloads Maven 3.9.16 the first time it runs. The commands are for Git
+Bash on Windows or any POSIX shell; in PowerShell or cmd, `.\mvnw.cmd` takes the place of `./mvnw` (and `..\mvnw.cmd`
+of `../mvnw`). If you commit the project from Windows, run `git update-index --chmod=+x mvnw` after `git add`, so
+that `mvnw` is executable where the repository is checked out on Linux (CI, a container build). On Windows without
+long paths (`LongPathsEnabled`), keep the path of this directory under about 75 characters, less the length of the
+service name: the deepest file the build writes, under `contract-*/target` (the protobuf plugin's extracted imports),
+is 184 characters below it with a one-letter name. With `-Paot` it is 232
 (Spring's generated classes under `service-*/target/spring-aot`), which leaves about 27 characters, less the length of
 the service name (20 for `example`): few directories are that short, so enable long paths for
 `-Paot`. Maven and the JVM cope with longer paths; other tools that read `target/` may not.
@@ -114,12 +118,12 @@ and run it:
 ```bash
 docker compose down -v
 docker compose up -d
-mvn package -DskipTests
+./mvnw package -DskipTests
 ENV=local java -jar service-${serviceName}/target/service-${serviceName}-${version}.jar
 ```
 
-`mvn package` builds the three modules without running the tests (`mvn verify` runs them; see [Tests](#tests)). The
-last command runs the `local` environment. `mvn install -DskipTests`, then `mvn spring-boot:run` in
+`./mvnw package` builds the three modules without running the tests (`./mvnw verify` runs them; see [Tests](#tests)).
+The last command runs the `local` environment. `./mvnw install -DskipTests`, then `../mvnw spring-boot:run` in
 `service-${serviceName}`, runs it too (the pom sets `spring-boot.run.profiles=local`).
 
 The service listens on port 8080 (REST) and 9090 (gRPC) and logs ECS JSON, one object per line. These are the lines
@@ -270,7 +274,11 @@ grpcurl -plaintext host.docker.internal:9090 grpc.health.v1.Health/Check
 
 `/health` is the readiness group (`additional-path: server:/health` in `application.yaml`): Boot's `readinessState`
 and the `${serviceName}` store, which opts in with `health.readiness: true` in data-${serviceName}'s `config.yaml`, so
-while the database is down the service answers 503 and the platform stops sending it traffic.
+while the database is down the service answers 503 and the platform stops sending it traffic. Configuring the
+readiness group defines it, and a group includes every indicator unless it lists its members, so when an application
+configures the group, as `application.yaml` does with `additional-path`, Synapse defaults its `include` to
+`readinessState` (an `include` of yours replaces it; without a key of the group, Boot's probe group keeps its
+settings, and the stores that opt in still join it) and adds the stores that opt in.
 
 #[[## Tests]]#
 
@@ -295,8 +303,8 @@ entity tag). Each client also checks its own protocol's statuses. A subclass say
 process, on free ports, waits for `/health`, and stops.
 
 ```bash
-mvn verify
-mvn -Paot verify
+./mvnw verify
+./mvnw -Paot verify
 ```
 
 run them (`*Test` in the `test` phase, `*IT` in `verify`; the integration tests need Docker). The first leaves out
@@ -305,8 +313,8 @@ stays in `target/` until `clean`, so a later build without `-Paot` would still p
 and in the next section start with `clean` for that reason. To run one test class:
 
 ```bash
-mvn clean test -pl service-${serviceName} -am -Dtest=ItemGrpcTest -Dsurefire.failIfNoSpecifiedTests=false
-mvn clean verify -pl service-${serviceName} -am -Dit.test=ServiceJvmIT -Dtest=NONE \
+./mvnw clean test -pl service-${serviceName} -am -Dtest=ItemGrpcTest -Dsurefire.failIfNoSpecifiedTests=false
+./mvnw clean verify -pl service-${serviceName} -am -Dit.test=ServiceJvmIT -Dtest=NONE \
   -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false
 ```
 
@@ -315,23 +323,23 @@ mvn clean verify -pl service-${serviceName} -am -Dit.test=ServiceJvmIT -Dtest=NO
 Both need the build environment's files, `service-${serviceName}/src/main/resources/application-build.yaml` and
 data-${serviceName}'s `config-build.yaml`, which this project has (comments, and a store url on a closed port).
 
-* **Spring AOT** is opt-in, with `synapse-parent`'s `aot` profile: `mvn -Paot package` runs `process-aot` in the
-  build environment and puts the generated code in the jar; `java -Dspring.aot.enabled=true -jar ...` runs it. What
-  the build decided can't change at run time: the build keeps the OpenAPI document and gRPC reflection off, so the
-  AOT-processed jar runs in `dev`, but a run in `local`, which turns both on, fails at startup naming both.
-  `mvn -Paot verify` checks both with `ServiceAotIT`.
+* **Spring AOT** is opt-in, with `synapse-parent`'s `aot` profile: `./mvnw -Paot package` runs `process-aot` in
+  the build environment and puts the generated code in the jar; `java -Dspring.aot.enabled=true -jar ...` runs it.
+  What the build decided can't change at run time: the build keeps the OpenAPI document and gRPC reflection off, so
+  the AOT-processed jar runs in `dev`, but a run in `local`, which turns both on, fails at startup naming both.
+  `./mvnw -Paot verify` checks both with `ServiceAotIT`.
 * **A container image** with the `Dockerfile`, on a digest-pinned Temurin 25.0.5+8 JRE:
 
   ```bash
-  mvn clean package -DskipTests
+  ./mvnw clean package -DskipTests
   docker build -t ${serviceName}:dockerfile service-${serviceName}
   ```
 
   Its training run starts the jar in `build`, records the classes it loads into an AOT cache (JEP 483) and exits once
   the context has refreshed, with no database to reach; `ServiceExitOnRefreshIT` checks that run in every build. The
   collector is pinned to G1 in the training run and in every run, so a small pod still loads the cache.
-* **Or with Paketo**: `mvn -Pimage clean package` builds the image `service-${serviceName}:${version}` with
-  `synapse-parent`'s buildpack settings, with the same training run. The `image` profile first checks for
+* **Or with Paketo**: `./mvnw -Pimage clean package` builds the image `service-${serviceName}:${version}`
+  with `synapse-parent`'s buildpack settings, with the same training run. The `image` profile first checks for
   `application-build.yaml` and fails in `validate` without it. Keep one way to build the image.
 
 Run either image in `dev`, with the store's connection from the variables a platform sets:
@@ -356,9 +364,9 @@ ENV=local java -javaagent:service-${serviceName}/target/otel/opentelemetry-javaa
   -jar service-${serviceName}/target/service-${serviceName}-${version}.jar
 ```
 
-`mvn spring-boot:run -Potel-agent` in `service-${serviceName}` does the same with every exporter off. `ServiceAgentIT`
-runs the jar under the agent in every build, so an upgrade of Synapse or of the agent that breaks the recipe fails
-the build, not a deployment. The recipe is in
+`../mvnw spring-boot:run -Potel-agent` in `service-${serviceName}` does the same with every exporter off.
+`ServiceAgentIT` runs the jar under the agent in every build, so an upgrade of Synapse or of the agent that breaks the
+recipe fails the build, not a deployment. The recipe is in
 [`opentelemetry-agent.adoc`](https://github.com/americanexpress/synapse/blob/main/docs/modules/ROOT/pages/opentelemetry-agent.adoc).
 
 #[[## Make it yours]]#

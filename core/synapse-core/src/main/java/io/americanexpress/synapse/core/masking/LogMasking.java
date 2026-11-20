@@ -14,6 +14,8 @@
 package io.americanexpress.synapse.core.masking;
 
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.core.internal.masking.MaskingModule;
@@ -23,6 +25,8 @@ import io.americanexpress.synapse.core.internal.masking.MaskingModule;
  * from a base mapper, so masking never reaches API responses or any other use of the base mapper.
  */
 public final class LogMasking {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(LogMasking.class);
 
     private final JsonMapper mapper;
 
@@ -49,13 +53,16 @@ public final class LogMasking {
      *
      * @param value the value, possibly {@code null}
      * @return the JSON, or {@code "<unserializable ClassName>"} when the value cannot be serialized (no message or
-     * value is included, because either may contain unmasked data)
+     * value is included, because either may contain unmasked data); the failure's class name is logged at DEBUG
      */
     public String toJson(@Nullable Object value) {
         try {
             return mapper.writeValueAsString(value);
         } catch (RuntimeException | StackOverflowError e) {
-            return "<unserializable " + (value == null ? "null" : value.getClass().getSimpleName()) + ">";
+            String type = value == null ? "null" : value.getClass().getSimpleName();
+            // The failure's class only: its message may hold the value.
+            LOGGER.debug("{} was logged as <unserializable {}>: {}", type, type, e.getClass().getName());
+            return "<unserializable " + type + ">";
         }
     }
 }

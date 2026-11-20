@@ -14,8 +14,17 @@
 package io.americanexpress.synapse.api.rest.autoconfigure;
 
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.RequestDispatcher;
 
+import org.aopalliance.intercept.MethodInterceptor;
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.Advisor;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.aop.support.DefaultPointcutAdvisor;
+import org.springframework.aop.support.annotation.AnnotationMatchingPointcut;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
 import org.springframework.boot.autoconfigure.context.MessageSourceAutoConfiguration;
@@ -35,6 +44,13 @@ import org.springframework.boot.webmvc.autoconfigure.error.ErrorMvcAutoConfigura
 import org.springframework.boot.webmvc.error.ErrorController;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Role;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.stereotype.Controller;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.servlet.function.RouterFunction;
 
 import io.americanexpress.synapse.api.rest.internal.error.BookErrors;
@@ -139,6 +155,79 @@ class SynapseRestErrorAutoConfigurationTest {
                 .withUserConfiguration(UserWriter.class)
                 .run(context -> assertThat(context.getBean(ProblemWriter.class))
                         .isSameAs(context.getBean(UserWriter.class).writer));
+    }
+
+    /**
+     * An application aspect on every {@code @Controller} matches the error controller too: Spring proxies it by
+     * subclassing (Boot's {@code spring.aop.proxy-target-class=true}), and the proxy still answers the error dispatch.
+     */
+    @Test
+    void aControllerAspectDoesNotBreakStartup() {
+        webRunner
+                .withUserConfiguration(ControllerAspect.class)
+                .withPropertyValues("spring.aop.proxy-target-class=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed().hasSingleBean(SynapseErrorController.class);
+                    SynapseErrorController controller = context.getBean(SynapseErrorController.class);
+                    assertThat(AopUtils.isCglibProxy(controller)).isTrue();
+                    MockHttpServletRequest request = new MockHttpServletRequest("GET", "/error");
+                    request.setDispatcherType(DispatcherType.ERROR);
+                    request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 404);
+                    MockHttpServletResponse response = new MockHttpServletResponse();
+
+                    controller.error(request, response);
+
+                    assertThat(context.getBean(ControllerAspect.class).advised).hasValue(1);
+                    assertThat(response.getStatus()).isEqualTo(404);
+                    assertThat(response.getContentType()).startsWith("application/problem+json");
+                    assertThat(response.getContentAsString()).contains("\"code\":\"ROUTE_NOT_FOUND\"");
+                });
+    }
+
+    /** Spring MVC maps the error path to the proxied controller: an error dispatch goes through the aspect. */
+    @Test
+    void theErrorDispatchReachesTheProxiedController() {
+        webRunner
+                .withUserConfiguration(ControllerAspect.class)
+                .withPropertyValues("spring.aop.proxy-target-class=true")
+                .run(context -> {
+                    assertThat(AopUtils.isCglibProxy(context.getBean(SynapseErrorController.class))).isTrue();
+                    MockMvc mvc = MockMvcBuilders.webAppContextSetup(context).build();
+
+                    MockHttpServletResponse response = mvc
+                            .perform(MockMvcRequestBuilders.get("/error").with(request -> {
+                                request.setDispatcherType(DispatcherType.ERROR);
+                                request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 404);
+                                return request;
+                            }))
+                            .andReturn()
+                            .getResponse();
+
+                    assertThat(context.getBean(ControllerAspect.class).advised).hasValue(1);
+                    assertThat(response.getStatus()).isEqualTo(404);
+                    assertThat(response.getContentType()).startsWith("application/problem+json");
+                    assertThat(response.getContentAsString()).contains("\"code\":\"ROUTE_NOT_FOUND\"");
+                });
+    }
+
+    /**
+     * Counts the calls to every {@code @Controller}, as an application's {@code @Around("@within(Controller)")} aspect
+     * would: an advisor on the class annotation, applied by Boot's auto-proxy creator.
+     */
+    @Configuration(proxyBeanMethods = false)
+    static class ControllerAspect {
+
+        final AtomicInteger advised = new AtomicInteger();
+
+        @Bean
+        @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+        Advisor countingControllerAdvisor() {
+            return new DefaultPointcutAdvisor(AnnotationMatchingPointcut.forClassAnnotation(Controller.class),
+                    (MethodInterceptor) call -> {
+                        advised.incrementAndGet();
+                        return call.proceed();
+                    });
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

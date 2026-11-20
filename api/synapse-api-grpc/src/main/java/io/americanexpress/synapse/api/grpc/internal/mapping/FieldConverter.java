@@ -127,11 +127,49 @@ interface FieldConverter {
             try {
                 return converter.read(value, this, path);
             } catch (ConversionException | IllegalArgumentException | DateTimeException | ArithmeticException e) {
-                // The conversion's message may repeat the value; it stays in the server's debug log.
-                LOG.debug("The value of {} could not be read", path, e);
-                invalid(path);
-                return FAILED;
+                return rejected(path, e);
             }
+        }
+
+        /**
+         * Converts an element of a {@code repeated} field as {@link #convert} does, but builds its path,
+         * {@code parentPath[index]}, only when it records a violation or logs, so a valid element costs no string.
+         * The converter is given the parent's path, so this is only for converters that record no violation under the
+         * path they're given: every element converter but a message's, whose fields need the element's path.
+         *
+         * @param converter the element converter
+         * @param value the protobuf element
+         * @param parentPath the {@code repeated} field's proto path
+         * @param index the element's index
+         * @return the Java value, {@code null}, or {@link #FAILED}
+         * @throws Full when the violation limit is reached
+         */
+        @Nullable
+        Object convertElement(FieldConverter converter, Object value, String parentPath, int index) {
+            try {
+                return converter.read(value, this, parentPath);
+            } catch (ConversionException | IllegalArgumentException | DateTimeException | ArithmeticException e) {
+                return rejected(elementPath(parentPath, index), e);
+            }
+        }
+
+        /** Records a value a converter rejected, for {@link #convert} and {@link #convertElement}. */
+        private Object rejected(String path, RuntimeException e) {
+            // The conversion's message may repeat the value; it stays in the server's debug log.
+            LOG.debug("The value of {} could not be read", path, e);
+            invalid(path);
+            return FAILED;
+        }
+
+        /**
+         * Returns the path of an element of a {@code repeated} field.
+         *
+         * @param parentPath the field's proto path
+         * @param index the element's index
+         * @return {@code parentPath[index]}
+         */
+        static String elementPath(String parentPath, int index) {
+            return parentPath + "[" + index + "]";
         }
 
         void invalid(String path) {

@@ -51,11 +51,11 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.function.ServerRequest;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.JsonParser;
+import tools.jackson.databind.DeserializationContext;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectReader;
 import tools.jackson.databind.PropertyName;
-import tools.jackson.databind.deser.DeserializationContextExt;
 import tools.jackson.databind.deser.SettableBeanProperty;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -82,8 +82,9 @@ import io.americanexpress.synapse.core.paging.PageQuery;
  *
  * <ul>
  * <li>Path variables, query parameters, headers and cookies are converted with the {@link ConversionService}. Query
- * parameters come from the query string only, never from a form body; a repeated one gives a {@code List} component
- * all its values.</li>
+ * parameters come from the query string only, never from a form body. A component that is not a collection or an
+ * array takes one value: a repeated query parameter or header line is a violation. A collection or array component
+ * takes every value of a query parameter, each one item, and splits a header's lines on commas.</li>
  * <li>{@code If-Match} and {@code If-None-Match} are parsed as entity tags. A {@code VersionCondition} component binds
  * {@code AnyVersion} for {@code *}, {@code Version(v)} for one tag (its opaque value converted to the version type) and
  * {@code null} without the header; a plain component (on a read) binds the converted value, and {@code null} for
@@ -107,6 +108,9 @@ import io.americanexpress.synapse.core.paging.PageQuery;
  * constructor message.
  */
 public final class RequestBinder {
+
+    /** The violation of a repeated value for a single-valued component or paging parameter. */
+    public static final String SINGLE_VALUE = "must have a single value";
 
     private static final Logger LOG = LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
 
@@ -442,11 +446,12 @@ public final class RequestBinder {
 
     /** Reads one JSON value with the creator property Jackson uses for that component. */
     private @Nullable Object deserialize(SettableBeanProperty property, JsonNode node) {
-        DeserializationContextExt context = bodyMapper._deserializationContext();
-        try (JsonParser parser = node.traverse(context)) {
-            context.assignParser(parser);
+        // The parser's read context is a deserialization context of the mapper, bound to that parser. Jackson 3.1
+        // builds treeAsTokens' parser so; ObjectReadContext doesn't promise it, and RequestBinderTest catches a
+        // change (a ClassCastException) at upgrade time.
+        try (JsonParser parser = bodyMapper.treeAsTokens(node)) {
             parser.nextToken();
-            return property.deserialize(parser, context);
+            return property.deserialize(parser, (DeserializationContext) parser.objectReadContext());
         }
     }
 
@@ -531,6 +536,27 @@ public final class RequestBinder {
 
     private static List<String> single(@Nullable String value) {
         return value == null ? List.of() : List.of(value);
+    }
+
+    /**
+     * How a source's values become the items of a collection or array component. Only a list header drops empty
+     * items: RFC 9110 §5.6.1.2 asks that of a list-valued field. Every other source keeps them, as a gRPC
+     * {@code repeated} field does, so a constraint on the items, such as {@code List<@NotBlank String>}, gets the same
+     * answer over both protocols.
+     */
+    private enum Items {
+
+        /** A query value is one item, never split, so an encoded comma ({@code %2C}) stays in it. */
+        QUERY,
+
+        /** Path variable and cookie values are split on commas, each item trimmed, and empty items kept. */
+        COMMA_LIST,
+
+        /**
+         * A list header's lines are split on commas, each item trimmed, and empty items dropped: HTTP defines a list
+         * header's lines as equal to one line of their values joined with commas.
+         */
+        HEADER
     }
 
     /**
@@ -698,10 +724,10 @@ public final class RequestBinder {
             ResolvedComponent component = source.component();
             return switch (source) {
                 case InputSource.Path path -> convert(component, single(request.pathVariables().get(path.variable())));
-                case InputSource.Query query -> convert(component, parameter(query.parameter()));
+                case InputSource.Query query -> convertQuery(component, parameter(query.parameter()));
                 case InputSource.QueryRecord query -> queryRecord(query);
                 case InputSource.Header header -> header(header);
-                case InputSource.Cookie cookie -> convert(component, single(cookie(cookie.name())));
+                case InputSource.Cookie cookie -> convert(component, cookies(cookie.name()));
                 case InputSource.Context context -> context.value().apply(RequestContext.current());
                 case InputSource.Custom custom -> custom.value().apply(request);
                 case InputSource.BodyComponent whole -> read(component, body);
@@ -723,7 +749,7 @@ public final class RequestBinder {
             ResolvedComponent component = source.component();
             if (values.isEmpty() || !(HttpHeaders.IF_MATCH.equalsIgnoreCase(name)
                     || HttpHeaders.IF_NONE_MATCH.equalsIgnoreCase(name))) {
-                return convert(component, values);
+                return convertHeader(component, values);
             }
             EntityTags.Parsed parsed;
             try {
@@ -742,7 +768,7 @@ public final class RequestBinder {
             }
             String opaque = list.tags().getFirst().opaque();
             if (!condition) {
-                return convert(component, List.of(opaque));
+                return convertHeader(component, List.of(opaque));
             }
             // The version token codec every protocol shares, never MVC's formatters: a token gRPC wrote reads the same.
             Class<?> versionType = Objects.requireNonNull(BindingValidator.versionType(component)).toClass();
@@ -769,27 +795,71 @@ public final class RequestBinder {
             return query().getOrDefault(name, List.of());
         }
 
-        private @Nullable String cookie(String name) {
-            Cookie cookie = request.cookies().getFirst(name);
-            return cookie == null ? null : cookie.getValue();
+        /** The values of every cookie of that name, in the order the request sent them. */
+        private List<String> cookies(String name) {
+            return request.cookies().getOrDefault(name, List.of()).stream().map(Cookie::getValue).toList();
         }
 
+        /** Converts path variable or cookie values; a list component splits each on commas and keeps empty items. */
         private @Nullable Object convert(ResolvedComponent component, List<String> values) {
-            return convert(component, target(component), values);
+            return convert(component, values, Items.COMMA_LIST);
         }
 
-        private @Nullable Object convert(ResolvedComponent component, TypeDescriptor target, List<String> values) {
+        /** Converts the values of a query parameter, each one item of a list component, never split. */
+        private @Nullable Object convertQuery(ResolvedComponent component, List<String> values) {
+            return convert(component, values, Items.QUERY);
+        }
+
+        /** Converts header lines; a list component splits them on commas and drops empty items. */
+        private @Nullable Object convertHeader(ResolvedComponent component, List<String> values) {
+            return convert(component, values, Items.HEADER);
+        }
+
+        /**
+         * Converts a source's values to the component. A component that is not a collection or an array takes one
+         * value: more (a repeated query parameter, header line or cookie) is the violation
+         * {@value RequestBinder#SINGLE_VALUE}, never a chosen or joined one. A collection or array component takes
+         * every value, read into items as {@link Items} says: only a list header drops empty items.
+         */
+        private @Nullable Object convert(ResolvedComponent component, List<String> values, Items mode) {
             if (values.isEmpty()) {
                 return null;
             }
+            TypeDescriptor target = target(component);
+            boolean many = target.isCollection() || target.isArray();
+            if (values.size() > 1 && !many) {
+                violations.add(new Violation(component.name(), SINGLE_VALUE));
+                return FAILED;
+            }
             try {
-                return values.size() == 1
-                        ? conversionService.convert(values.getFirst(), STRING, target)
-                        : conversionService.convert(values, STRINGS, target);
+                if (!many) {
+                    return conversionService.convert(values.getFirst(), STRING, target);
+                }
+                return conversionService.convert(items(values, mode), STRINGS, target);
             } catch (ConversionFailedException e) {
                 violations.add(new Violation(component.name(), INVALID));
                 return FAILED;
             }
+        }
+
+        /**
+         * The items of a list component's values, as {@link Items} says. A split value has the items of Spring's
+         * comma-delimited list, so a whole empty value has none, and {@code ",x"} has {@code ""} and {@code x}.
+         */
+        private static List<String> items(List<String> values, Items mode) {
+            if (mode == Items.QUERY) {
+                return values;
+            }
+            List<String> items = new ArrayList<>();
+            for (String value : values) {
+                for (String item : StringUtils.commaDelimitedListToStringArray(value)) {
+                    String trimmed = item.trim();
+                    if (mode == Items.COMMA_LIST || !trimmed.isEmpty()) {
+                        items.add(trimmed);
+                    }
+                }
+            }
+            return items;
         }
 
         private @Nullable Object queryRecord(InputSource.QueryRecord source) {
@@ -803,7 +873,7 @@ public final class RequestBinder {
             boolean failed = false;
             for (int i = 0; i < components.size(); i++) {
                 ResolvedComponent component = components.get(i);
-                Object value = convert(component, parameter(component.name()));
+                Object value = convertQuery(component, parameter(component.name()));
                 if (value == FAILED) {
                     failed = true;
                 } else if (value == null && !component.nullable()) {

@@ -18,8 +18,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.core.paging.PageQuery;
@@ -27,6 +33,7 @@ import io.americanexpress.synapse.core.paging.PageResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(OutputCaptureExtension.class)
 class LogMaskingTest {
 
     record Address(String street) {
@@ -115,6 +122,23 @@ class LogMaskingTest {
     @Test
     void neverThrows() {
         assertThat(LogMasking.standard().toJson(new Exploding())).isEqualTo("<unserializable Exploding>");
+    }
+
+    /** Why a value fell back is at DEBUG, by the failure's class alone: its message may hold unmasked data. */
+    @Test
+    void theFallbackIsLoggedAtDebugWithoutTheMessage(CapturedOutput output) {
+        Logger logger = (Logger) LoggerFactory.getLogger(LogMasking.class);
+        Level previous = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        try {
+            LogMasking.standard().toJson(new Exploding());
+        } finally {
+            logger.setLevel(previous);
+        }
+
+        assertThat(output)
+                .contains(" DEBUG ", "Exploding was logged as <unserializable Exploding>: tools.jackson.")
+                .doesNotContain("4111");
     }
 
     @Test

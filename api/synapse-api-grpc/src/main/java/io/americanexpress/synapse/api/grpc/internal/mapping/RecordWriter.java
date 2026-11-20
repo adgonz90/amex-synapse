@@ -110,8 +110,8 @@ public final class RecordWriter {
      * Writes a page. The page's own {@code nextCursor}, the operation's raw cursor, is never written: the caller
      * passes the token of the next page. {@code has_next} is the page's own {@code hasNext}, as REST writes it, even
      * when no token reaches the next page (an offset past {@code synapse.paging.max-offset}). A total that an
-     * {@code int32 total_size} can't hold is left unset, as an unknown total is; an {@code int64} one holds any. A
-     * {@code null} page is the empty message, as a {@code null} output is.
+     * {@code int32 total_size} (AIP-158's type) can't hold is left unset, as an unknown total is, without a log line;
+     * an {@code int64} one holds any. A {@code null} page is the empty message, as a {@code null} output is.
      *
      * @param result the operation's page, or {@code null}
      * @param nextPageToken the token of the next page, or {@code null} to leave {@code next_page_token} empty

@@ -127,7 +127,7 @@ public final class GrpcStatusWriter {
 
     private StatusException build(SynapseException error, @Nullable GrpcCallState state,
             @Nullable Duration retryDelay) {
-        Status.Code code = statuses.statusFor(error.details(), state == null ? null : state.operationName());
+        Status.Code code = statuses.statusFor(error, state == null ? null : state.operationName());
         Locale locale = state == null ? null : state.locale();
         String message = properties.includeDetail() ? messages.detail(describedAs(error), locale) : "";
         com.google.rpc.Status.Builder status = com.google.rpc.Status

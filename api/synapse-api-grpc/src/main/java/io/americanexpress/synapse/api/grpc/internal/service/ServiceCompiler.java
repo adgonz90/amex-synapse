@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import com.google.protobuf.Descriptors.Descriptor;
@@ -53,7 +54,9 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * the names and the generated schema descriptors that server reflection reads;</li>
  * <li>binds one {@link UnaryOperationHandler} per method;</li>
  * <li>when a method returns {@code PageResult}, reports a cursor key generated at startup
- * ({@link PageCursors#reportGeneratedKey}, at most once per application context, whichever plugins page).</li>
+ * ({@link PageCursors#reportGeneratedKey}, at most once per application context, whichever plugins page);</li>
+ * <li>hands each method's binding to the caller's consumer, if any, which the {@link GrpcBindingsCompiler} registers
+ * for core's parity check between protocols.</li>
  * </ol>
  * Every problem is a {@link SynapseConfigurationException} whose description names the method and the operation.
  */
@@ -122,13 +125,29 @@ public final class ServiceCompiler {
      * @throws SynapseConfigurationException on the first problem, with the method named
      */
     public ServerServiceDefinition compile(ServiceDeclaration declaration, List<ServiceOperation<?, ?>> operations) {
+        return compile(declaration, operations, method -> {
+        });
+    }
+
+    /**
+     * Compiles the bindings, and hands each method's binding (its {@code .unary} declaration, or the one
+     * {@code .bindAllByName()} made) to {@code compiled} once the whole service compiled, in the service's order.
+     *
+     * @param declaration the bindings as declared
+     * @param operations the operations {@code .bindAllByName()} chooses from; ignored without it
+     * @param compiled receives each method's binding; called for none when the service fails to compile
+     * @return the service
+     * @throws SynapseConfigurationException on the first problem, with the method named
+     */
+    public ServerServiceDefinition compile(ServiceDeclaration declaration, List<ServiceOperation<?, ?>> operations,
+            Consumer<MethodDeclaration> compiled) {
         BindingChecks.check(declaration);
         List<MethodDeclaration> methods = bind(declaration, operations);
         ServiceDescriptor generated = declaration.service();
         ServiceDescriptor.Builder service = ServiceDescriptor
                 .newBuilder(generated.getName())
                 .setSchemaDescriptor(generated.getSchemaDescriptor());
-        List<Compiled> compiled = new ArrayList<>();
+        List<Compiled> handlers = new ArrayList<>();
         for (MethodDeclaration method : methods) {
             MethodDescriptor<?, ?> original = method.method();
             Descriptor input = messageType(method, original.getRequestMarshaller(), "request");
@@ -145,17 +164,19 @@ public final class ServiceCompiler {
                     .toBuilder(RawBytesMarshaller.INSTANCE, new DynamicMessageMarshaller(output))
                     .build();
             service.addMethod(copy);
-            compiled.add(new Compiled(copy, handler));
+            handlers.add(new Compiled(copy, handler));
         }
         ServerServiceDefinition.Builder definition = ServerServiceDefinition.builder(service.build());
-        for (Compiled method : compiled) {
+        for (Compiled method : handlers) {
             definition.addMethod(method.descriptor(), ServerCalls.asyncUnaryCall(method.handler()));
         }
+        ServerServiceDefinition built = definition.build();
         // Once every method compiled, as REST's RouteCompiler reports it: a failed startup reports nothing.
         if (methods.stream().anyMatch(MethodDeclaration::pagedOutput)) {
             cursors.reportGeneratedKey();
         }
-        return definition.build();
+        methods.forEach(compiled);
+        return built;
     }
 
     /**

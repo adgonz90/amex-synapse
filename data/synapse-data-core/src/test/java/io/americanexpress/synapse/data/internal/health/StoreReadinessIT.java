@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.actuate.endpoint.SecurityContext;
 import org.springframework.boot.actuate.endpoint.web.AdditionalPathsMapper;
 import org.springframework.boot.actuate.endpoint.web.WebServerNamespace;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -126,13 +127,12 @@ class StoreReadinessIT {
 
     /**
      * The setup the docs prescribe for a load balancer's path: the readiness group's own {@code additional-path}
-     * ({@code server:/health}) and {@code include: readinessState}. Setting a key of the group defines it, and Boot
-     * then keeps the application's group instead of its probe group, so the {@code include} is what keeps every other
+     * ({@code server:/health}) alone. Setting a key of the group defines it, and Boot then keeps the application's
+     * group instead of its probe group, so Synapse's default {@code include: readinessState} is what keeps every other
      * indicator out. The path then serves Boot's readiness state and the stores that opt in, nothing else.
      */
     @Nested
     @TestPropertySource(properties = {"synapse.data.stores.books.health.readiness=true",
-            "management.endpoint.health.group.readiness.include=readinessState",
             "management.endpoint.health.group.readiness.additional-path=server:/health"})
     class AtTheGroupsAdditionalPath {
 
@@ -157,6 +157,35 @@ class StoreReadinessIT {
             assertThat(components(health, "readiness")).containsOnlyKeys("db", "readinessState");
             assertThat(components(health, "readiness", "db")).containsOnlyKeys("books");
             assertThat(status(health, "readiness")).isEqualTo(Status.UP);
+        }
+    }
+
+    /**
+     * Without a key of the readiness group, Synapse sets no {@code include}, so the readiness probe stays Boot's own
+     * group: it ignores the endpoint's {@code show-components} and its HTTP mapping. Here the endpoint maps only a
+     * custom status, so the endpoint answers 200 for {@code DOWN}; the readiness probe still answers 503.
+     */
+    @Nested
+    @TestPropertySource(properties = {"management.endpoint.health.show-components=always",
+            "management.endpoint.health.status.http-mapping.fatal=503"})
+    class WithoutAReadinessKey {
+
+        @Autowired
+        private HealthEndpointGroups groups;
+
+        @Autowired
+        private ApplicationContext context;
+
+        @Test
+        void theReadinessProbeIsBootsOwnGroup() {
+            HealthEndpointGroup readiness = Objects.requireNonNull(groups.get("readiness"));
+
+            assertThat(context.getEnvironment().containsProperty("management.endpoint.health.group.readiness.include"))
+                    .isFalse();
+            assertThat(readiness.showComponents(SecurityContext.NONE)).isFalse();
+            assertThat(groups.getPrimary().showComponents(SecurityContext.NONE)).isTrue();
+            assertThat(readiness.getHttpCodeStatusMapper().getStatusCode(Status.DOWN)).isEqualTo(503);
+            assertThat(groups.getPrimary().getHttpCodeStatusMapper().getStatusCode(Status.DOWN)).isEqualTo(200);
         }
     }
 

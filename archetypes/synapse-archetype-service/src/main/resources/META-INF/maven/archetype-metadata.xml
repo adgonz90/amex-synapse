@@ -20,9 +20,9 @@
     its headings: #[[## …]]#). In a path, __serviceName__ is replaced. In a module, ${artifactId} is the module's id as
     written here, before ${serviceName} is replaced, so the module poms spell their artifactIds out. The template
     pom.xml files are always generated; their synapse-parent version was filled in when this archetype was built.
-    Every fileSet is filtered, including those with nothing to replace: the generator writes a filtered file with the
-    platform's line separator and copies an unfiltered one as is, so this keeps a project generated on Windows on one
-    line ending. The generated .gitattributes then normalizes them to LF in git.
+    Every fileSet but the Maven Wrapper's is filtered, including those with nothing to replace: the generator writes a
+    filtered file with the platform's line separator and copies an unfiltered one as is, so this keeps a project
+    generated on Windows on one line ending. The generated .gitattributes then normalizes them to LF in git.
 -->
 <archetype-descriptor xmlns="https://maven.apache.org/plugins/maven-archetype-plugin/archetype-descriptor/1.1.0"
                       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -45,6 +45,18 @@
                 <include>.gitattributes</include>
                 <include>README.md</include>
                 <include>compose.yaml</include>
+            </includes>
+        </fileSet>
+        <!-- The Maven Wrapper: the repository's mvnw, mvnw.cmd and maven-wrapper.properties, byte for byte (the
+             archetype-drift build-rules test checks it). Unfiltered, for two reasons: Velocity would read the scripts'
+             ${...} and # lines as its own, and an unfiltered file is copied as is, so mvnw keeps LF and mvnw.cmd keeps
+             CRLF on every platform. The post-generation script sets mvnw executable. -->
+        <fileSet filtered="false">
+            <directory></directory>
+            <includes>
+                <include>mvnw</include>
+                <include>mvnw.cmd</include>
+                <include>.mvn/wrapper/maven-wrapper.properties</include>
             </includes>
         </fileSet>
     </fileSets>

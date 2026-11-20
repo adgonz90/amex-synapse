@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -115,11 +116,11 @@ class BookstoreJvmIT extends BookstoreScenarios {
      * Another request changes the book after the operation read it and before it writes: JPA's {@code @Version} makes
      * the write's flush find no row at the version read, which is {@code STALE_VERSION}. The request carried a version
      * (the book's own etag, or {@code *}), so both protocols answer {@code PRECONDITION_FAILED} (REST 412, gRPC
-     * {@code FAILED_PRECONDITION}), and the book keeps the other request's change. Without a version the same race
-     * would be {@code STALE_VERSION} (409, {@code ABORTED}), but the bookstore's writes always carry one: a write
-     * without one is {@code PRECONDITION_REQUIRED} before the operation runs. The other request is a JDBC update,
-     * committed on its own connection from another thread while the operation's transaction is open, so the race
-     * happens every time, without waiting.
+     * {@code ABORTED}, as AIP-154 answers a stale etag), and the book keeps the other request's change. Without a
+     * version the same race would be {@code STALE_VERSION} (409, {@code ABORTED}), but the bookstore's writes always
+     * carry one: a write without one is {@code PRECONDITION_REQUIRED} before the operation runs. The other request is a
+     * JDBC update, committed on its own connection from another thread while the operation's transaction is open, so
+     * the race happens every time, without waiting.
      */
     @ParameterizedTest
     @EnumSource(Protocol.class)
@@ -142,7 +143,9 @@ class BookstoreJvmIT extends BookstoreScenarios {
 
         assertThat(client(protocol).update(id, created.etag(), isbn, "Changed", "Ursula K. Le Guin", null))
                 .isEqualTo(Outcome.failed(SynapseErrors.PRECONDITION_FAILED));
+        assertGrpcStatus(protocol, Status.Code.ABORTED);
         assertThat(client(protocol).delete(id, "*")).isEqualTo(Outcome.failed(SynapseErrors.PRECONDITION_FAILED));
+        assertGrpcStatus(protocol, Status.Code.ABORTED);
 
         // Each attempt lost to one other change: the book is at version 2, with its title, and still there.
         assertThat(jdbc.sql("SELECT version FROM book WHERE id = ?").param(id).query(Long.class).single())

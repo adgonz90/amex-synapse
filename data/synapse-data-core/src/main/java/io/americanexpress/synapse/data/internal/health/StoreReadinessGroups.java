@@ -41,9 +41,11 @@ import org.springframework.boot.health.actuate.endpoint.StatusAggregator;
  * group (member {@code readinessState}) only when the application doesn't define one, and otherwise keeps the
  * application's group as it is. Setting any {@code management.endpoint.health.group.readiness.*} key, such as an
  * {@code additional-path} of {@code server:/health}, defines the group, and a group without {@code include} has every
- * indicator, every store's included. So that setup needs {@code include: readinessState} too; the stores that opt in
- * are then added to it here. The groups it returns keep the additional paths, such as {@code /readyz} or
- * {@code /health}.
+ * indicator, every store's included. So when an application configures the group, synapse-core's
+ * {@code HealthDefaultsEnvironmentPostProcessor} defaults its {@code include} to {@code readinessState} at lowest
+ * precedence (an application's {@code include} replaces it); otherwise Boot's probe group is untouched. Either way,
+ * the stores that opt in are added to it here. The groups it returns keep the additional paths, such as
+ * {@code /readyz} or {@code /health}.
  */
 public final class StoreReadinessGroups implements HealthEndpointGroupsPostProcessor {
 

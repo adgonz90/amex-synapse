@@ -16,6 +16,7 @@ package io.americanexpress.synapse.api.rest.internal.binding.fixture;
 import java.io.Serializable;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -281,6 +282,24 @@ public final class BindingFixtures {
     public static class CodedOperation implements CommandOperation<CodedRequest, BookResult> {
         @Override
         public BookResult execute(CodedRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Reads a string in upper case. */
+    public static class UpperCaseDeserializer extends ValueDeserializer<String> {
+        @Override
+        public String deserialize(JsonParser parser, DeserializationContext context) {
+            return parser.getString().toUpperCase(Locale.ROOT);
+        }
+    }
+
+    public record ShoutedRequest(@JsonDeserialize(using = UpperCaseDeserializer.class) String code, String title) {
+    }
+
+    public static class ShoutedOperation implements CommandOperation<ShoutedRequest, BookResult> {
+        @Override
+        public BookResult execute(ShoutedRequest input) {
             return BOOK;
         }
     }
@@ -1074,6 +1093,22 @@ public final class BindingFixtures {
         @Override
         public PageResult<PageResult<String>> execute(PageQuery input) {
             return PageResult.of(List.of(), false);
+        }
+    }
+
+    /** Single and list values, from the query string and from headers, for the one-value rule. */
+    public record RepeatedRequest(@Nullable Long id, @Nullable String q, @Nullable List<String> tag,
+            @Nullable Long requestId, @Nullable List<String> labels, @Nullable IdFilter filter) {
+    }
+
+    /** A query record with a single-valued component. */
+    public record IdFilter(@Nullable Long owner) {
+    }
+
+    public static class RepeatedOperation implements QueryOperation<RepeatedRequest, List<BookResult>> {
+        @Override
+        public List<BookResult> execute(RepeatedRequest input) {
+            return List.of(BOOK);
         }
     }
 }

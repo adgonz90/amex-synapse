@@ -61,15 +61,26 @@ Steps for a `ServiceOperation`, outermost first:
 . *In-flight tracking and admission* (outermost call only), see <<shutdown>>.
 . *Deadline.* If the deadline has passed, the call fails with `DEADLINE_EXCEEDED` without running.
 . *Validation* of the input: Jakarta Validation (skipped for types without constraints) and the paging rules for a
-  `PageQuery`. Failure is `VALIDATION_FAILED` with violations.
+  `PageQuery`. Failure is `VALIDATION_FAILED` with violations, then a missing required `VersionCondition` is
+  `PRECONDITION_REQUIRED` (see <<version-condition>>). Only the outermost call's input is the caller's own: in a
+  nested call (an operation calling another on the same thread) either failure is `INTERNAL`, with it as the logged
+  cause. "Outermost" is per thread: an operation run on another thread (an executor, `@Async`) is outermost there, so
+  its rejection is `VALIDATION_FAILED` or `PRECONDITION_REQUIRED` with its own model's violations. That reaches the
+  caller as a 400 only if the calling operation unwraps it from the `Future` (or `CompletionException`) and rethrows
+  it; a wrapper it rethrows as is becomes `INTERNAL`.
 . *Payload logging* (opt-in, DEBUG, masked).
 . *Execute.* A `@Transactional` boundary sits inside the Synapse advisor; Synapse never opens transactions.
 . *Translation.* A `SynapseException` passes through; other exceptions go through the `ExceptionTranslator` beans in
-  order, and anything left becomes `INTERNAL`. JVM `Error`s are never translated.
+  order, and anything left becomes `INTERNAL`. A `ConstraintViolationException` reaches them only when it is thrown
+  itself and every violation is of the outermost call's input (see <<errors>>); any other one is `INTERNAL`. JVM
+  `Error`s are never translated.
 . *Failure logging* by the outermost call on the thread only.
 
 A `BusinessOperation` gets a reduced pipeline: validation and a `synapse.business` observation. It has no context,
-deadline, translation or logging step, and exceptions propagate unchanged. Business beans never call operations.
+deadline, translation or logging step, and its exceptions propagate unchanged, except a rejected input: the service
+builds a business operation's input, so a violation is the service's bug and is `INTERNAL`, with the
+`VALIDATION_FAILED` and its violations as the cause. The outermost operation logs it at ERROR, with the violations in
+the `violations` key; the caller sees none of them. Business beans never call operations.
 
 == Request context and inbound trust
 
@@ -153,9 +164,9 @@ The framework's own `SynapseErrors`:
 
 Throw `STALE_VERSION` when a write finds the resource at another version than the one it expects: a version check
 or a compare-and-set failed. Over REST it is 409, or 412 `PRECONDITION_FAILED` when the request sent a bound
-`If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]); over gRPC it is `ABORTED`, or
-`FAILED_PRECONDITION` with `PRECONDITION_FAILED` when the request sent an `etag` (see
-xref:grpc.adoc#versions[Versions and entity tags]).
+`If-Match` (see xref:rest.adoc#conditional-requests[Conditional requests]); over gRPC it is `ABORTED` either way, with
+the code `PRECONDITION_FAILED` when the request sent an `etag` (see xref:grpc.adoc#versions[Versions and entity
+tags]).
 
 Throw `ALREADY_EXISTS` when a resource with the same identity exists, such as when a create finds it already there.
 The data modules use it for unique-constraint violations (see xref:data.adoc#errors[Data error translation]). Over
@@ -163,7 +174,30 @@ REST it is 409, like every `CONFLICT`; over gRPC it is `ALREADY_EXISTS` rather t
 xref:grpc.adoc#errors[gRPC errors]).
 
 Register `ExceptionTranslator` beans to map exceptions of libraries you use. Modules contribute their own; core has
-no data or security dependency. `ConstraintViolationException` is translated to `VALIDATION_FAILED`.
+no data or security dependency.
+
+Only the caller's own input is the caller's fault. A `ConstraintViolationException` whose every violation has the
+operation's input as its root bean (by identity), such as an operation validating its input by hand, is
+`VALIDATION_FAILED` with its violations (Synapse's `ConstraintViolationTranslator`, `@Order(0)`). Any other one,
+thrown or found in the cause chain (10 deep), is a bug in the service and is `INTERNAL` (500) before any translator
+runs, so no `ExceptionTranslator` sees it, whatever its order: a collaborator's Spring method validation, a JPA
+entity that fails Bean Validation at flush or at commit, violations of a copy of the input, or an exception without
+violations. So are a business operation's rejected input and a nested call's (see <<_the_pipeline>>). The caller
+gets no violations and no property path, whatever `synapse.errors.include-detail` says (its detail is `INTERNAL`'s
+own message). The outermost operation logs the failure at ERROR, with a stack trace, where a `VALIDATION_FAILED`
+was a WARN without one. Spring method validation of an operation's own `execute` parameter (`@Validated` on the
+operation class, for a validation group or a method-level constraint) is not the caller's input by this rule (its
+violations' root bean is the operation, not the input), so the caller gets a 500 or `INTERNAL`: from the pipeline,
+or from the edge if Spring's validation interceptor runs outside it (which one hasn't been tested). Constraints in the
+default group need none of it, since the pipeline checks them (<<_the_pipeline>>); validate other groups by hand on
+the input, which keeps them the caller's.
+
+For a `ConstraintViolationException` the pipeline finds (the failure itself or one of its first 9 causes, not a
+suppressed exception), the logged cause doesn't carry a constraint's interpolated message, since that can repeat the
+rejected value (see <<_masking>>). The exception and its wrappers are replaced by one that names the chain's classes
+and each violation by its path and message template, with the stack trace of the violations' exception:
+`ConstraintViolationException: title: {jakarta.validation.constraints.Size.message}`. The ERROR line has the same
+list in its `violations` key.
 
 [#paging]
 == Paging
@@ -180,18 +214,25 @@ page converted with `from(Page)` has a next page when `offset + elements < total
 declared with `.sortable(SortKey.class)`, on any protocol, that property is the enum constant's name (`TITLE`,
 `PUBLISHED_YEAR`), which is not an entity property unless the entity has a field of that name: Spring Data then fails
 the first sorted request, and the caller gets an `INTERNAL` error. Either name the constants after the entity's
-properties, or map each key to its property before calling `pageable`, as the reference bookstore's
-`SearchBooksOperation` does:
+properties, or map each key to its property with
+`pageable(PageQuery, Function<String, ? extends @Nullable String>, SortOrder...)`. The function maps a key to an
+entity property. When it returns null (a map lookup such as `PROPERTIES::get` for a key it doesn't have) or a blank
+name, `pageable` throws an `IllegalArgumentException` that names the key. The `SortOrder`s after it are tie-breakers, already entity
+properties: each is appended unless its property is already sorted on, so a caller who sorts by the title keeps their
+direction. The reference bookstore's `SearchBooksOperation` sorts by the caller's keys, then the title, then the id,
+so every book has one place and the pages neither skip nor repeat one:
 
 [source,java]
 ----
-List<SortOrder> orders = page.sort().stream()
-        .map(order -> new SortOrder(switch (SortKey.valueOf(order.property())) {
-            case TITLE -> "title";
-            case PUBLISHED_YEAR -> "publishedYear";
-        }, order.direction()))
-        .toList();
-Pageable pageable = SpringDataPages.pageable(new PageQuery(page.cursor(), page.offset(), page.size(), orders));
+Pageable pageable = SpringDataPages.pageable(page, key -> property(SortKey.valueOf(key)),
+        new SortOrder("title", SortOrder.Direction.ASC), new SortOrder("id", SortOrder.Direction.ASC));
+
+private static String property(SortKey key) {
+    return switch (key) {
+        case TITLE -> "title";
+        case PUBLISHED_YEAR -> "publishedYear";
+    };
+}
 ----
 
 Keys declared with REST's `.sortable(String...)` are passed as declared, so they work when they are the entity's
@@ -247,12 +288,19 @@ Its nullability in the input record is the operation's contract, the same over e
 
 * `@Nullable VersionCondition<V>`: the condition is optional, and `null` means the request has none (an unconditional
   write).
-* `VersionCondition<V>`, not `@Nullable`: the condition is required. Through an API plugin, the operation never sees
-  a request without one: the plugin answers it `SynapseErrors.PRECONDITION_REQUIRED` ("The request must be
-  conditional", category `PRECONDITION_FAILED`) before the operation runs, with a violation that says how to resubmit.
-  Over REST that is 428 (RFC 6585 §3). `AnyVersion` counts as a condition, so a client that means "whatever version
-  is current" says so. The pipeline itself doesn't check it: other callers, such as an escape-hatch controller, a
-  subscriber or a test that calls the operation directly, can pass `null`, and must not.
+* `VersionCondition<V>`, not `@Nullable`: the condition is required. The operation never sees a request without one,
+  whoever calls it: the answer is `SynapseErrors.PRECONDITION_REQUIRED` ("The request must be conditional", category
+  `PRECONDITION_FAILED`) before the operation runs, with a violation that says how to resubmit. Over REST that is 428
+  (RFC 6585 §3). `AnyVersion` counts as a condition, so a client that means "whatever version is current" says so.
+  An API plugin answers it while binding the request. For every other caller, such as an escape-hatch controller, a
+  subscriber or a test that calls the operation's bean, the pipeline checks it after Bean Validation: each required
+  `VersionCondition` component of the input record that is `null` is one violation, named after the component, with
+  the message `is required; pass the version read with the resource, or VersionCondition.any()`. An input that also
+  fails Bean Validation is `VALIDATION_FAILED`. The rule is the plugins' (a component that isn't `@Nullable` under
+  `@NullMarked`), and it applies to a `ServiceOperation`'s input record only: a business operation's input, and an
+  input that isn't a record, aren't checked. A nested call (an operation calling another) that omits a required
+  condition is the service's bug, not the caller's: it is `INTERNAL`, with the `PRECONDITION_REQUIRED` as the logged
+  cause.
 
 Google's AIP-154 puts the same choice in the request message: an `etag` field is annotated `REQUIRED` or `OPTIONAL`.
 
@@ -288,6 +336,41 @@ outbound requests, events or persisted data. Types: `ALL` (every character becom
 `LAST_FOUR` (keeps the last four characters; masks everything when there are four or fewer). Masking counts code
 points. A masked object, collection, map or array is written as `"***"`.
 
+Bean Validation can put a value in a message: Hibernate Validator interpolates `+${validatedValue}+` by default, so
+`+@Size(message = "${validatedValue} is too long")+` on a `@Masked` component would write the value wherever the
+message goes. What the pipeline guarantees is this: when it finds a `ConstraintViolationException`
+(the failure itself or one of its first 9 causes, not a suppressed exception) and the rejection is the service's bug
+(`INTERNAL`: a business or nested input, a collaborator, an entity), the operation's ERROR line and its logged cause
+name each violation by its path and message template, not by the interpolated message (see <<errors>>). A rejection
+of the caller's own input is `VALIDATION_FAILED`, logged at WARN without its violations; its messages go back to the
+caller who sent the value.
+
+A raw value can still reach the operation's failure line:
+
+* through a message template that a custom validator built with the value
+  (`buildConstraintViolationWithTemplate("…" + value)`), or a property path, which carries map and iterable keys
+  (`cards[<key>].number`): the line writes templates and paths as they are;
+* through a `ConstraintViolationException` 10 or more causes deep, or held as a suppressed exception: the pipeline
+  doesn't find it, so the failure is `INTERNAL` with the original exception as its cause, logged at ERROR with its
+  messages;
+* through a `SynapseException` that service code throws with a `ConstraintViolationException` as its cause: the
+  pipeline keeps it as it is, so its cause is logged as it is (at ERROR for `INTERNAL`, at WARN for `UNAVAILABLE`
+  and `TIMEOUT`).
+
+And it can reach other places:
+
+* the REST and gRPC edges' own ERROR log for an exception that no operation translated, which logs that exception
+  as it is: a `ConstraintViolationException` thrown by a `@Validated` escape-hatch controller or a hand-written gRPC
+  service. Spring's `MethodArgumentNotValidException`, whose message includes the rejected value, is logged at DEBUG;
+* a business operation's span (the default `spans` mode), whose error records the exception's own message, in the
+  trace backend rather than a log;
+* a library that logs the `ConstraintViolationException` itself, outside the pipeline.
+
+`@Masked` works through the properties Jackson writes, so it doesn't cover a type for which Jackson writes no
+properties: one with its own serializer (a class-level `@JsonSerialize(using = …)`, or a serializer a module
+registers for it), one with a `@JsonValue` accessor, and a value logged through its `toString()` rather than as
+JSON. Their `@Masked` components are logged as they are.
+
 Payload logging is off. Turn it on per operation:
 
 [source,properties]
@@ -300,8 +383,11 @@ masked. It is a sibling of the failure logger `io.americanexpress.synapse.operat
 filters on the failure logger (such as the Log4j2 burst limit) never apply to payloads.
 
 Names under `synapse.operations` that match no operation bean are listed in one WARN at startup, since their settings
-have no effect. A misspelled key under a known name (for example `logging.payload`) is not reported: like any unknown
-Boot property, it is ignored.
+have no effect:
+`No operation bean has these names under synapse.operations, so their settings have no effect: [get-bok]. Check the
+operation names for typos.` The API plugins' per-operation settings (`synapse.api.rest.operations.*`,
+`synapse.api.grpc.operations.*`) are checked the same way, with one WARN per prefix. A misspelled key under a known
+name (for example `logging.payload`) is not reported: like any unknown Boot property, it is ignored.
 
 == Observability
 
@@ -430,9 +516,52 @@ property-name order. The P1 switches are `springdoc.api-docs.enabled` (xref:open
 xref:environments.adoc#aot-switches[AOT and native images]. Define a bean named `synapseBuildTimeSwitchCheck` to
 replace the check.
 
+[#parity]
+== Parity
+
+Protocols must not differ in contract: an operation bound over REST and gRPC takes the same inputs and answers with
+the same error codes over both (see xref:testing.adoc#parity-suite[the parity suite]). Part of that contract is
+declared on the bindings, so startup checks it: once every singleton exists, and so every API plugin has compiled its
+bindings, startup fails when the REST and gRPC bindings of one operation declare any of these differently:
+
+* `.notFound`: the code of the error an empty `Optional` is, `NOT_FOUND` when it isn't declared;
+* `.etag`: the output component sent as the entity tag, or none;
+* `.sortable`: the sort keys, as the operation receives them in `SortOrder.property()` (an enum's constant names, or
+  REST's `sortable(String...)` keys as written), or none.
+
+Each REST route is compared with the gRPC method, so while gRPC binds the operation every REST version must declare
+these alike. Versions may differ only for an operation that gRPC doesn't bind, and an operation bound over one
+protocol only is not checked. REST's `.emptyAs(...)` has no gRPC counterpart and isn't compared.
+
+A mismatch fails startup with a `SynapseConfigurationException` with one sentence per mismatch, ordered by operation
+name, then declaration:
+
+----
+Operation 'get-book' is bound differently over REST (GET /books/{id}) and gRPC (bookstore.v1.Bookstore/GetBook): notFound is BOOK_NOT_FOUND over REST and NOT_FOUND over gRPC.
+----
+
+and the action `Declare .notFound(...) the same way on both bindings: protocols must not differ in contract.`, which
+names every declaration that differs (`Declare .etag(...) and .notFound(...) ...`).
+
+The check holds under `spring.main.lazy-initialization=true` too: each plugin keeps its bindings eager (REST its
+`synapseRestRoutes` bean, gRPC every `GrpcBindings` bean, through a `LazyInitializationExcludeFilter` bean named
+`synapseRestRoutesLazyInitializationExcludeFilter` and `synapseGrpcBindingsLazyInitializationExcludeFilter`), so they
+compile while the singletons are created, and a binding mistake fails startup under lazy initialization as it does
+without it. The gRPC filter matches the `@Bean` method's declared type, so it keeps a binding eager only when the
+method declares `GrpcBindings` (see xref:grpc.adoc#_bindings[gRPC bindings]).
+
 == Configuration
 
 All properties are in the xref:reference/configuration-properties.adoc[property reference]. Core's are
 `synapse.context.*`, `synapse.correlation.*`, `synapse.errors.*`, `synapse.paging.*`, `synapse.observability.*` and
 `synapse.operations.*`. The environment and the configuration files of the service and its modules are described in
 xref:environments.adoc[Environments].
+
+Core sets one Spring Boot default, at lowest precedence, so any value you set wins. When an application configures
+the readiness group, for example with `additional-path`, `management.endpoint.health.group.readiness.include` is
+`readinessState` while Boot's health probes are on (`spring-boot-health` on the class path and
+`management.endpoint.health.probes.enabled` unset or `true`). Setting any key of the readiness group defines the
+group, and a group without `include` has every indicator; the default keeps it to Boot's readiness state and the
+stores that opt in. An application's `include` replaces it. Otherwise Synapse sets no `include`, and Boot's probe
+group keeps its settings (the stores that opt in still join it). See xref:data.adoc#health[Health and readiness] for
+the readiness setup.

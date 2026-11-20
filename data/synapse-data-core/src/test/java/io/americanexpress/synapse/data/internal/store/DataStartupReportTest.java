@@ -19,8 +19,16 @@ import java.util.Map;
 import javax.sql.DataSource;
 
 import com.zaxxer.hikari.HikariDataSource;
+import org.flywaydb.core.api.callback.Callback;
+import org.flywaydb.core.api.callback.Context;
+import org.flywaydb.core.api.callback.Event;
+import org.flywaydb.core.api.migration.BaseJavaMigration;
+import org.flywaydb.core.api.migration.JavaMigration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.support.AbstractBeanDefinition;
+import org.springframework.beans.factory.support.AutowireCandidateQualifier;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.context.event.ApplicationStartedEvent;
@@ -171,6 +179,34 @@ class DataStartupReportTest {
                         .endsWith("spring.test.access.* is set (spring.test.access.module), " + IGNORED));
     }
 
+    /** R10: an access module names the Boot bean types its stores don't use; the report names each such bean. */
+    @Test
+    void aBeanOfATypeTheStoresIgnoreIsNamed(CapturedOutput output) {
+        booksAndLegacy
+                .withBean("unusedBean", TestJdbcStoreInfrastructure.IgnoredByTestStores.class,
+                        () -> new TestJdbcStoreInfrastructure.IgnoredByTestStores() {
+                        })
+                .run(started());
+        assertThat(lines(output, "unusedBean"))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains(" WARN ", "io.americanexpress.synapse.data ")
+                        .endsWith("The IgnoredByTestStores bean unusedBean ("
+                                + TestJdbcStoreInfrastructure.IgnoredByTestStores.class.getName()
+                                + ") is not used by any store: Synapse builds JDBC stores without it."));
+    }
+
+    /** Without stores, nothing is reported, so a bean of an ignored type isn't named either. */
+    @Test
+    void noStoreNoIgnoredBeanWarning(CapturedOutput output) {
+        runner
+                .withBean("unusedBean", TestJdbcStoreInfrastructure.IgnoredByTestStores.class,
+                        () -> new TestJdbcStoreInfrastructure.IgnoredByTestStores() {
+                        })
+                .run(started());
+        assertThat(output.getOut()).doesNotContain("unusedBean");
+    }
+
     @Test
     void namesEachKeyOnceInItsCanonicalForm(CapturedOutput output) {
         booksAndLegacy
@@ -239,6 +275,61 @@ class DataStartupReportTest {
         runner.run(context -> assertThat(context).hasSingleBean(DataStartupReport.class));
     }
 
+    /** R9: with several stores, an unqualified Flyway callback applies to none of them, so the report names it. */
+    @Test
+    void anUnqualifiedCallbackWithTwoStoresWarns(CapturedOutput output) {
+        booksAndLegacy.withBean("auditCallback", Callback.class, NoOpCallback::new).run(started());
+        assertThat(lines(output, "auditCallback"))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains(" WARN ", "io.americanexpress.synapse.data ")
+                        .endsWith("The Flyway Callback bean auditCallback is not used by any store: with several "
+                                + "stores, a Callback applies only to the store its @Qualifier names, such as "
+                                + "@Qualifier(\"books\")."));
+    }
+
+    @Test
+    void aJavaMigrationQualifiedWithNoStoreWarns(CapturedOutput output) {
+        booksAndLegacy.withUserConfiguration(ArchiveMigration.class).run(started());
+        assertThat(lines(output, "archiveMigration"))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains(" WARN ")
+                        .endsWith("The Flyway JavaMigration bean archiveMigration is not used by any store: its "
+                                + "qualifier 'archive' names no store."));
+    }
+
+    /** A qualifier of a type other than {@code @Qualifier} names no store, so the report names the bean. */
+    @Test
+    void aCallbackWithAnotherQualifierTypeWarns(CapturedOutput output) {
+        booksAndLegacy
+                .withBean("archiveCallback", Callback.class, NoOpCallback::new,
+                        definition -> ((AbstractBeanDefinition) definition)
+                                .addQualifier(new AutowireCandidateQualifier(Archive.class)))
+                .run(started());
+        assertThat(lines(output, "archiveCallback"))
+                .singleElement()
+                .satisfies(line -> assertThat(line)
+                        .contains(" WARN ")
+                        .endsWith("The Flyway Callback bean archiveCallback is not used by any store: its qualifier "
+                                + "isn't a @Qualifier, so it names no store."));
+    }
+
+    /** A qualifier annotation that isn't {@code @Qualifier}. */
+    @interface Archive {
+    }
+
+    @Test
+    void flywayBeansThatAStoreUsesAreNotWarnedAbout(CapturedOutput output) {
+        runner
+                .withUserConfiguration(BooksStore.class)
+                .withPropertyValues(store("books"))
+                .withBean("auditCallback", Callback.class, NoOpCallback::new)
+                .run(started());
+        booksAndLegacy.withUserConfiguration(BooksCallback.class).run(started());
+        assertThat(output.getOut()).doesNotContain(" WARN ");
+    }
+
     private static ContextConsumer<AssertableApplicationContext> started() {
         return context -> {
             assertThat(context).hasNotFailed();
@@ -276,6 +367,57 @@ class DataStartupReportTest {
         @Bean
         DataStartupReport userReport(org.springframework.context.ApplicationContext context) {
             return new DataStartupReport(context);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ArchiveMigration {
+
+        @Bean
+        @Qualifier("archive")
+        JavaMigration archiveMigration() {
+            return new V9__Archive();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class BooksCallback {
+
+        @Bean
+        @Qualifier("books")
+        Callback booksCallback() {
+            return new NoOpCallback();
+        }
+    }
+
+    static class NoOpCallback implements Callback {
+
+        @Override
+        public boolean supports(Event event, Context context) {
+            return false;
+        }
+
+        @Override
+        public boolean canHandleInTransaction(Event event, Context context) {
+            return true;
+        }
+
+        @Override
+        public void handle(Event event, Context context) {
+            // Never called: it supports no event.
+        }
+
+        @Override
+        public String getCallbackName() {
+            return "no-op";
+        }
+    }
+
+    static class V9__Archive extends BaseJavaMigration {
+
+        @Override
+        public void migrate(org.flywaydb.core.api.migration.Context context) {
+            // Never run: no store uses it.
         }
     }
 }

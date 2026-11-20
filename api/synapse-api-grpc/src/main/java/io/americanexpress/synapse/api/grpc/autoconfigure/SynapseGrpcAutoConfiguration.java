@@ -32,6 +32,7 @@ import io.micrometer.observation.ObservationRegistry;
 import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.boot.LazyInitializationExcludeFilter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -73,9 +74,11 @@ import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationPropertie
 import io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapsePagingProperties;
 import io.americanexpress.synapse.core.internal.aot.BuildTimeSwitch;
+import io.americanexpress.synapse.core.internal.binding.BindingDeclarations;
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.SynapseBaggageFields;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.internal.pipeline.OperationSettingsPrefix;
 import io.americanexpress.synapse.core.operation.ServiceOperation;
 
 /**
@@ -212,14 +215,40 @@ public final class SynapseGrpcAutoConfiguration {
      * @param operations the operation beans, for {@code .bindAllByName()}
      * @param cursors core's page cursors, for a compiler when there is none
      * @param paging core's paging properties, for a compiler when there is none
+     * @param declarations core's registry of compiled bindings, which the parity check between protocols reads
      * @return the post-processor
      */
     @Bean
     @ConditionalOnMissingBean
     static GrpcBindingsCompiler synapseGrpcBindingsCompiler(ObjectProvider<ServiceCompiler> compiler,
             ObjectProvider<ServiceOperation<?, ?>> operations, ObjectProvider<PageCursors> cursors,
-            ObjectProvider<SynapsePagingProperties> paging) {
-        return new GrpcBindingsCompiler(compiler, operations, cursors, paging);
+            ObjectProvider<SynapsePagingProperties> paging, ObjectProvider<BindingDeclarations> declarations) {
+        return new GrpcBindingsCompiler(compiler, operations, cursors, paging, declarations);
+    }
+
+    /**
+     * Keeps every {@link GrpcBindings} bean eager under {@code spring.main.lazy-initialization=true}, so the bindings
+     * compile, and fail on a mistake, while the singletons are created, and core's parity check between protocols sees
+     * them, rather than when the gRPC server starts. Define a bean with the same name to replace it.
+     *
+     * @return the filter
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseGrpcBindingsLazyInitializationExcludeFilter")
+    static LazyInitializationExcludeFilter synapseGrpcBindingsLazyInitializationExcludeFilter() {
+        return LazyInitializationExcludeFilter.forBeanTypes(GrpcBindings.class);
+    }
+
+    /**
+     * The prefix of the per-operation gRPC settings, {@code synapse.api.grpc.operations}, whose names core's startup
+     * check reports when they match no operation bean. Internal: the bean backs off by name only.
+     *
+     * @return the prefix
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "synapseGrpcOperationSettingsPrefix")
+    OperationSettingsPrefix synapseGrpcOperationSettingsPrefix() {
+        return new OperationSettingsPrefix("synapse.api.grpc.operations");
     }
 
     /**

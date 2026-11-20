@@ -307,7 +307,11 @@ curl -s http://localhost:8080/actuator/health
 `/health` is the readiness group, on the server's port, where a load balancer checks whether to send the instance
 traffic (`management.endpoint.health.group.readiness.additional-path: server:/health` in `application.yaml`). Its
 members are Boot's `readinessState` and the stores that opt in with `health.readiness: true`: data-orders'
-`config.yaml` does, data-ledger's doesn't.
+`config.yaml` does, data-ledger's doesn't. Configuring the readiness group defines it, and a group includes every
+indicator unless it lists its members, so when an application configures the group, as this one does with
+`additional-path`, Synapse defaults its `include` to `readinessState` (an `include` of yours replaces it; without a
+key of the group, Boot's probe group keeps its settings, and the stores that opt in still join it) and adds the
+stores that opt in.
 
 ```bash
 curl -s -i http://localhost:8080/health
@@ -514,9 +518,8 @@ AOT processing creates some store beans, such as the JDBC dialect, which is chos
 The [reference bookstore](../reference-bookstore/README.md#aot-mode) shows it.
 
 `service-orders/src/main/resources/application.yaml` sets the application name, the correlation header, and the
-health groups: the readiness group with Boot's `readinessState` as its member and the extra path
-`/health`. Configuring the readiness group defines it, and a group includes every indicator unless it lists its
-members, hence `include: readinessState`; Synapse adds the stores that opt in. `application-local.yaml` turns on
+readiness group's extra path `/health`. That configures the group, so Synapse defaults its `include` to Boot's
+`readinessState` and adds the stores that opt in; the file sets no `include`. `application-local.yaml` turns on
 `detail` in problem responses and the health components.
 
 ## Tests

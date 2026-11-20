@@ -223,6 +223,92 @@ class SpringDataPagesTest {
         assertThat(one.toString()).contains("offset=5").contains("size=20");
     }
 
+    @Test
+    void keysAreMappedToProperties() {
+        Pageable pageable = SpringDataPages
+                .pageable(PageQuery.ofOffset(0, 5, List.of(new SortOrder("PUBLISHED_YEAR", Direction.DESC))),
+                        SpringDataPagesTest::bookProperty);
+        assertThat(pageable.getSort()).containsExactly(Sort.Order.desc("publishedYear"));
+    }
+
+    @Test
+    void tieBreakersAreAppended() {
+        Pageable pageable = SpringDataPages
+                .pageable(PageQuery.ofOffset(0, 5, List.of(new SortOrder("PUBLISHED_YEAR", Direction.DESC))),
+                        SpringDataPagesTest::bookProperty, new SortOrder("title", Direction.ASC),
+                        new SortOrder("id", Direction.ASC));
+        assertThat(pageable.getSort())
+                .containsExactly(Sort.Order.desc("publishedYear"), Sort.Order.asc("title"), Sort.Order.asc("id"));
+        // Without keys, the tie-breakers are the whole order.
+        Pageable unsorted = SpringDataPages
+                .pageable(PageQuery.first(5), SpringDataPagesTest::bookProperty, new SortOrder("title", Direction.ASC),
+                        new SortOrder("id", Direction.ASC));
+        assertThat(unsorted.getSort()).containsExactly(Sort.Order.asc("title"), Sort.Order.asc("id"));
+    }
+
+    @Test
+    void aTieBreakerAlreadySortedIsSkipped() {
+        Pageable pageable = SpringDataPages
+                .pageable(PageQuery.ofOffset(0, 5, List.of(new SortOrder("TITLE", Direction.DESC))),
+                        SpringDataPagesTest::bookProperty, new SortOrder("title", Direction.ASC),
+                        new SortOrder("id", Direction.ASC));
+        assertThat(pageable.getSort()).containsExactly(Sort.Order.desc("title"), Sort.Order.asc("id"));
+        // A tie-breaker given twice is appended once, in its first direction.
+        Pageable twice = SpringDataPages
+                .pageable(PageQuery.first(5), SpringDataPagesTest::bookProperty, new SortOrder("id", Direction.ASC),
+                        new SortOrder("id", Direction.DESC));
+        assertThat(twice.getSort()).containsExactly(Sort.Order.asc("id"));
+    }
+
+    @Test
+    void aBlankMappingNamesTheKey() {
+        PageQuery query = PageQuery.ofOffset(0, 5, List.of(new SortOrder("X", Direction.ASC)));
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> SpringDataPages.pageable(query, key -> ""))
+                .withMessageContaining("'X'");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> SpringDataPages.pageable(query, key -> " "))
+                .withMessageContaining("'X'");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> SpringDataPages.pageable(query, key -> null))
+                .withMessageContaining("'X'");
+    }
+
+    @Test
+    void aCursorQueryIsStillRejected() {
+        PageQuery query = PageQuery.ofCursor("c", 20, List.of(new SortOrder("TITLE", Direction.ASC)));
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> SpringDataPages
+                        .pageable(query, SpringDataPagesTest::bookProperty, new SortOrder("id", Direction.ASC)))
+                .withMessage("A cursor query cannot be converted to an offset-based Pageable");
+    }
+
+    @Test
+    void offsetAndSizeAreKept() {
+        Pageable pageable = SpringDataPages
+                .pageable(PageQuery.ofOffset(45, 20, List.of(new SortOrder("TITLE", Direction.ASC))),
+                        SpringDataPagesTest::bookProperty, new SortOrder("id", Direction.ASC));
+        assertThat(pageable.getOffset()).isEqualTo(45L);
+        assertThat(pageable.getPageSize()).isEqualTo(20);
+        assertThat(pageable.getPageNumber()).isEqualTo(2);
+        assertThat(pageable)
+                .isEqualTo(SpringDataPages
+                        .pageable(PageQuery
+                                .ofOffset(45, 20,
+                                        List
+                                                .of(new SortOrder("title", Direction.ASC),
+                                                        new SortOrder("id", Direction.ASC)))));
+    }
+
+    /** A key mapper as a service writes one, for keys named like {@code PUBLISHED_YEAR}. */
+    private static String bookProperty(String key) {
+        return switch (key) {
+            case "TITLE" -> "title";
+            case "PUBLISHED_YEAR" -> "publishedYear";
+            default -> throw new IllegalStateException(key);
+        };
+    }
+
     /** The pageable SpringDataPages.pageable gives for an offset query. */
     private static Pageable offset(long offset, int size) {
         return SpringDataPages.pageable(PageQuery.ofOffset(offset, size, List.of()));

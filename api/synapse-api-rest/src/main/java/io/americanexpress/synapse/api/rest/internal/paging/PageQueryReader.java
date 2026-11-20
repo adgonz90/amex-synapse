@@ -19,6 +19,7 @@ import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 import org.springframework.util.MultiValueMap;
 
+import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.internal.paging.PagingViolations;
 import io.americanexpress.synapse.core.paging.PageQuery;
@@ -45,7 +46,7 @@ public final class PageQueryReader {
 
     private static final String INVALID = PagingViolations.INVALID;
 
-    private static final String SINGLE = "must have a single value";
+    private static final String SINGLE = RequestBinder.SINGLE_VALUE;
 
     /** An integer as callers may send it: ASCII digits with an optional sign. */
     private static final Pattern ASCII_INTEGER = Pattern.compile("[+-]?[0-9]+");

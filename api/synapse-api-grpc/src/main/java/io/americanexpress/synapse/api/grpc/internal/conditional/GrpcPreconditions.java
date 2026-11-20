@@ -30,9 +30,11 @@ public final class GrpcPreconditions {
     /**
      * Answers a failure of the operation. A {@link SynapseErrors#STALE_VERSION} on a request that sent a non-empty
      * {@code etag} bound to a {@code VersionCondition} (including {@code *}) means the precondition failed: it becomes
-     * {@link SynapseErrors#PRECONDITION_FAILED} ({@code FAILED_PRECONDITION}), with the failure as its cause, as REST
-     * answers a stale {@code If-Match} 412. Without an {@code etag} the write was unconditional, so a lost race stays
-     * {@code STALE_VERSION} ({@code ABORTED}, REST's 409). Every other failure is returned as is.
+     * code {@link SynapseErrors#PRECONDITION_FAILED}, as REST answers a stale {@code If-Match} 412, with the failure as
+     * its cause. Its status is {@code ABORTED}, as AIP-154 answers a stale etag: the cause tells
+     * {@code GrpcErrorStatuses} it was stale, not weak or unbound ({@code FAILED_PRECONDITION}). Without an
+     * {@code etag} the write was unconditional, so a lost race stays {@code STALE_VERSION} ({@code ABORTED}, REST's
+     * 409). Every other failure is returned as is.
      *
      * @param etagSent whether the request's {@code etag}, bound to a {@code VersionCondition}, was non-empty
      * @param failure what the operation threw

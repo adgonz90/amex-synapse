@@ -29,9 +29,14 @@ import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
 
 /**
- * Translates a {@link ConstraintViolationException} thrown by an operation (for example by Spring method validation
- * or by the persistence provider) into {@code VALIDATION_FAILED} with its violations, sorted by field then message as
- * the pipeline's own validation step does.
+ * Translates a {@link ConstraintViolationException} about the caller's own input, such as an operation validating its
+ * input by hand, into {@code VALIDATION_FAILED} with its violations, sorted by field then message as the pipeline's
+ * own validation step does.
+ * <p>
+ * The pipeline passes it only that kind: every violation's root bean is the outermost operation's input. A
+ * collaborator's method validation, an entity failing Bean Validation at flush, a nested call's input, or an exception
+ * without violations is the service's bug, and the pipeline makes it {@code INTERNAL} before any translator runs, so
+ * its violations never reach the caller. Called directly, it translates whatever it is given.
  */
 @Order(0)
 public final class ConstraintViolationTranslator implements ExceptionTranslator {

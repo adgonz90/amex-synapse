@@ -78,6 +78,7 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HeaderRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HeadersOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HiddenOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.IdFilter;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Isbn;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageRequest;
@@ -97,11 +98,15 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeQuery;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RepeatedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RepeatedRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ScheduleBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ScheduleBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SearchAllOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ShoutedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ShoutedRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SimpleSourcesOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SimpleSourcesRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SortKey;
@@ -164,6 +169,14 @@ class RequestBinderTest {
 
     private final RouteDefinition findBooks = route(
             RestBindings.builder().get("/books", new FindBooksOperation()).build(), writeOptionsFromQuery);
+
+    private final RouteDefinition repeated = route(RestBindings
+            .builder()
+            .get("/books", new RepeatedOperation())
+            .header("X-Id", RepeatedRequest::requestId)
+            .header("X-Tags", RepeatedRequest::labels)
+            .query(RepeatedRequest::filter)
+            .build());
 
     @Test
     void bindsIdFromPathAndRestFromBody() {
@@ -242,6 +255,15 @@ class RequestBinderTest {
                 json(MockMvcRequestBuilders.post("/guarded"),
                         "{\"name\":\"n\",\"note\":\"x\",\"role\":\"admin\",\"secret\":\"s\"}"),
                 Map.of())).isEqualTo(new GuardedRequest("n", null, null, null));
+    }
+
+    @Test
+    void componentJsonDeserializeIsHonoured() {
+        RouteDefinition shouted = route(RestBindings.builder().post("/shouted", new ShoutedOperation()).build());
+
+        assertThat(bind(shouted,
+                json(MockMvcRequestBuilders.post("/shouted"), "{\"code\":\"abc\",\"title\":\"T\"}"),
+                Map.of())).isEqualTo(new ShoutedRequest("ABC", "T"));
     }
 
     @Test
@@ -1031,6 +1053,163 @@ class RequestBinderTest {
                         SynapseErrors.MALFORMED_REQUEST);
             }
         }
+    }
+
+    private @Nullable Object bindRepeated(MockHttpServletRequestBuilder builder) {
+        return bind(repeated, builder, Map.of());
+    }
+
+    @Test
+    void repeatedScalarQueryIsSingleValueViolation() {
+        assertViolations(() -> bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?id=1&id=2"))),
+                new Violation("id", "must have a single value"));
+    }
+
+    @Test
+    void repeatedStringQueryIsNotJoined() {
+        assertViolations(() -> bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?q=a&q=b"))),
+                new Violation("q", "must have a single value"));
+    }
+
+    @Test
+    void queryListKeepsAnEncodedComma() {
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?tag=a%2Cb"))))
+                .isEqualTo(new RepeatedRequest(null, null, List.of("a,b"), null, null, null));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?tag=a%2Cb&tag=c"))))
+                .isEqualTo(new RepeatedRequest(null, null, List.of("a,b", "c"), null, null, null));
+    }
+
+    @Test
+    void repeatedQueryListBindsEveryValue() {
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?tag=a&tag=b"))))
+                .isEqualTo(new RepeatedRequest(null, null, List.of("a", "b"), null, null, null));
+    }
+
+    @Test
+    void repeatedScalarHeaderIsSingleValueViolation() {
+        assertViolations(() -> bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Id", "1", "2")),
+                new Violation("requestId", "must have a single value"));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Id", "1")))
+                .isEqualTo(new RepeatedRequest(null, null, null, 1L, null, null));
+    }
+
+    @Test
+    void headerListSplitsOnCommas() {
+        assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Tags", "a, b")))
+                .isEqualTo(new RepeatedRequest(null, null, null, null, List.of("a", "b"), null));
+    }
+
+    @Test
+    void headerListLinesAreJoinedLikeOneLine() {
+        // RFC 9110 5.3: the lines of a list header mean the same as one line, their values joined with commas.
+        assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Tags", "a, b", "c")))
+                .isEqualTo(new RepeatedRequest(null, null, null, null, List.of("a", "b", "c"), null));
+    }
+
+    @Test
+    void emptyQueryListItemsAreKept() {
+        // Each query value is one item, an empty one too, as a gRPC repeated string keeps "". It is never split.
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?tag="))))
+                .isEqualTo(new RepeatedRequest(null, null, List.of(""), null, null, null));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?tag=&tag=x"))))
+                .isEqualTo(new RepeatedRequest(null, null, List.of("", "x"), null, null, null));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?tag=a&tag=&tag=b"))))
+                .isEqualTo(new RepeatedRequest(null, null, List.of("a", "", "b"), null, null, null));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?tag=a,,b"))))
+                .isEqualTo(new RepeatedRequest(null, null, List.of("a,,b"), null, null, null));
+    }
+
+    @Test
+    void emptyHeaderListItemsAreIgnored() {
+        // RFC 9110 5.6.1.2: a recipient ignores the empty elements of a list header.
+        assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Tags", "a,,b")))
+                .isEqualTo(new RepeatedRequest(null, null, null, null, List.of("a", "b"), null));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Tags", "a, ,b")))
+                .isEqualTo(new RepeatedRequest(null, null, null, null, List.of("a", "b"), null));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Tags", "", "c")))
+                .isEqualTo(new RepeatedRequest(null, null, null, null, List.of("c"), null));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Tags", " , ")))
+                .isEqualTo(new RepeatedRequest(null, null, null, null, List.of(), null));
+    }
+
+    @Test
+    void emptyPathListItemsAreKept() {
+        // RFC 9110 5.6.1.2 is about list headers: a path variable's items are split on commas, trimmed, and kept.
+        RouteDefinition route = route(
+                RestBindings.builder().get("/items/{id}/{tags}", new SimpleSourcesOperation()).build());
+
+        assertThat(bind(route, MockMvcRequestBuilders.get("/items/" + ONE + "/x"),
+                Map.of("id", ONE.toString(), "tags", ",x")))
+                .isEqualTo(new SimpleSourcesRequest(ONE, List.of("", "x"), null, null));
+        assertThat(bind(route, MockMvcRequestBuilders.get("/items/" + ONE + "/x"),
+                Map.of("id", ONE.toString(), "tags", "a, ,b")))
+                .isEqualTo(new SimpleSourcesRequest(ONE, List.of("a", "", "b"), null, null));
+    }
+
+    @Test
+    void emptyCookieListItemsAreKept() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .get("/items/{id}", new SimpleSourcesOperation())
+                .cookie("tags", SimpleSourcesRequest::tags)
+                .build());
+        Map<String, String> id = Map.of("id", ONE.toString());
+
+        assertThat(bind(route, MockMvcRequestBuilders.get("/items/" + ONE).cookie(new Cookie("tags", ",x")), id))
+                .isEqualTo(new SimpleSourcesRequest(ONE, List.of("", "x"), null, null));
+        // Every cookie of the name gives its items; a whole empty value has none, as a comma-delimited list.
+        assertThat(bind(route, MockMvcRequestBuilders
+                .get("/items/" + ONE)
+                .cookie(new Cookie("tags", "a, ,b"), new Cookie("tags", ""), new Cookie("tags", "c")), id))
+                .isEqualTo(new SimpleSourcesRequest(ONE, List.of("a", "", "b", "c"), null, null));
+    }
+
+    @Test
+    void repeatedCookieIsSingleValueViolation() {
+        RouteDefinition headers = route(RestBindings
+                .builder()
+                .get("/books", new HeadersOperation())
+                .header("X-Channel", HeaderRequest::channel)
+                .cookie("session", HeaderRequest::session)
+                .context(HeaderRequest::requestedBy, RequestContext::correlationId)
+                .from(HeaderRequest::region, request -> "eu")
+                .build(), RestConventions.builder().header("X-Tenant", TenantId.class).build());
+        MockHttpServletRequestBuilder request = MockMvcRequestBuilders
+                .get("/books")
+                .header("X-Channel", "web")
+                .header("X-Tenant", "acme")
+                .cookie(new Cookie("session", "s-1"), new Cookie("session", "s-2"));
+
+        // RFC 6265 4.2.2: servers should not rely on the order of two cookies of one name, so neither is chosen.
+        assertViolations(() -> RequestContexts.with().call(() -> bind(headers, request, Map.of())),
+                new Violation("session", "must have a single value"));
+    }
+
+    @Test
+    void repeatedQueryRecordComponentIsSingleValueViolation() {
+        assertViolations(() -> bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?owner=1&owner=2"))),
+                new Violation("owner", "must have a single value"));
+        assertThat(bindRepeated(MockMvcRequestBuilders.get(URI.create("/books?owner=1"))))
+                .isEqualTo(new RepeatedRequest(null, null, null, null, null, new IdFilter(1L)));
+    }
+
+    @Test
+    void everyRepeatedValueIsItsOwnViolation() {
+        assertViolations(
+                () -> bindRepeated(MockMvcRequestBuilders
+                        .get(URI.create("/books?id=1&id=2&q=a&q=b&owner=1&owner=2"))
+                        .header("X-Id", "1", "2")),
+                new Violation("id", "must have a single value"), new Violation("q", "must have a single value"),
+                new Violation("requestId", "must have a single value"),
+                new Violation("owner", "must have a single value"));
+    }
+
+    @Test
+    void pagingRepeatsAreStillOneViolationEach() {
+        RouteDefinition get = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+
+        assertViolations(() -> bind(get, MockMvcRequestBuilders.get(URI.create("/books?size=1&size=2")), Map.of()),
+                new Violation("size", "must have a single value"));
     }
 
     private RouteDefinition annotateRoute() {

@@ -93,6 +93,22 @@ public final class JpaStoreInfrastructure implements StoreInfrastructure {
         return List.of(IgnoredKeys.prefix("spring.jpa"), openInView);
     }
 
+    /**
+     * Returns the Boot JPA bean types that JPA stores don't use, since Synapse builds each store's EntityManagerFactory
+     * itself: Boot's {@code EntityManagerFactoryBuilderCustomizer}, Spring's {@code PersistenceUnitManager}, and the
+     * {@code EntityScanPackages} that {@code @EntityScan} registers (a store's entities come from its package). By
+     * name, as {@link StoreInfrastructure#ignoredBeanTypes()} takes them.
+     *
+     * @return the class names
+     */
+    @Override
+    public List<String> ignoredBeanTypes() {
+        return List
+                .of("org.springframework.boot.jpa.autoconfigure.EntityManagerFactoryBuilderCustomizer",
+                        "org.springframework.orm.jpa.persistenceunit.PersistenceUnitManager",
+                        "org.springframework.boot.persistence.autoconfigure.EntityScanPackages");
+    }
+
     @Override
     public void register(StoreDefinition store, BeanDefinitionRegistry registry, Environment environment,
             ResourceLoader resourceLoader) {

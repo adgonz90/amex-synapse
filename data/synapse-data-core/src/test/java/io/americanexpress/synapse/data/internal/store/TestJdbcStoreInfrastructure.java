@@ -44,6 +44,16 @@ public class TestJdbcStoreInfrastructure implements StoreInfrastructure {
         return List.of(IgnoredKeys.prefix("spring.test.access"));
     }
 
+    /** A test type, and one that is absent, so the startup report's tests see the beans an access module ignores. */
+    @Override
+    public List<String> ignoredBeanTypes() {
+        return List.of(IgnoredByTestStores.class.getName(), "com.example.AbsentType");
+    }
+
+    /** A bean type that the test stores don't use. */
+    public interface IgnoredByTestStores {
+    }
+
     @Override
     public void register(StoreDefinition store, BeanDefinitionRegistry registry, Environment environment,
             ResourceLoader resourceLoader) {

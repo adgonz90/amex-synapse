@@ -85,6 +85,16 @@ fails startup with a `SynapseConfigurationException` whose message starts with t
 * a `.version(...)` is malformed or declared twice on one route, or two versions of the same method and path are equal
   (see <<versioning>>).
 
+Protocols must not differ in contract: when gRPC binds the same operation (see xref:grpc.adoc[gRPC]), startup fails
+if a route and the gRPC method declare `.notFound`, `.etag` or `.sortable` differently, with
+`Operation '<name>' is bound differently over REST (<route>) and gRPC (<method>): <declaration> is <REST value> over
+REST and <gRPC value> over gRPC.` Each REST route is compared with the gRPC method, so while gRPC binds the operation
+every REST version must declare these alike. Versions may differ only for an operation that gRPC doesn't bind. See
+xref:core.adoc#parity[Parity].
+
+The routes are compiled while the singletons are created even under `spring.main.lazy-initialization=true` (the
+`synapseRestRoutes` bean is kept eager), so a binding mistake still fails startup.
+
 The operation must be the Synapse bean, so that its calls run through the pipeline (validation, deadline,
 observation, translation and failure logging).
 
@@ -134,8 +144,38 @@ A `DELETE` route has no query or body defaults: its components come from path va
 
 Values:
 
-* Path variables, query parameters, headers and cookies are converted with Spring MVC's conversion service. A repeated
-  query parameter or header gives a `List` component all its values.
+* Path variables, query parameters, headers and cookies are converted with Spring MVC's conversion service.
+* A component that is not a collection or an array takes one value. A repeated query parameter, header line or
+  cookie for it is the violation `must have a single value`; no value is chosen or joined (`?id=1&id=2`, two `X-Id`
+  lines and two `session` cookies are rejected, as a repeated `cursor`, `offset` or `size` is). A browser can send
+  two cookies of one name (set with different paths or domains), and RFC 6265 §4.2.2 says a server should not rely
+  on their order, so neither is taken. Such a browser gets the 400 on every route that binds the cookie to a single
+  value until one copy expires or is removed: the request doesn't say which copy has which path or domain, so the
+  server can't clear the stale one.
+* A `List`, `Set` or array component takes every value. Each query value is one item, never split: `?tag=a&tag=b`
+  binds `["a", "b"]` and `?tag=a%2Cb` binds `["a,b"]`. A header's lines are split on commas, because HTTP defines
+  the lines of a list header as equal to one line of their values joined with commas: `X-Tags: a, b` binds
+  `["a", "b"]`, and the lines `X-Tags: a, b` and `X-Tags: c` bind `["a", "b", "c"]`. A path variable or cookie
+  value is also split on commas for a list component, and a list component bound to a cookie gets every copy of
+  it. Header, path variable and cookie items are trimmed; query values are kept as sent.
+* The comma split doesn't parse quoted strings: a comma inside a quoted-string (RFC 9110 §5.5) splits the value too,
+  so `X-Tags: "a,b"` binds `["\"a", "b\""]`. Bind a list header to a `List` component. A `String` component bound to
+  a header that is a list by its definition (`Accept-Language`, `X-Forwarded-For`) gets `must have a single value`
+  for two lines, although the same values on one combined line bind `"a, b"`; in the same way, an intermediary that
+  combines two `X-Id` lines into one makes them one value, which binds `"1, 2"` to a `String` and is
+  `is not a valid value` for a `Long`.
+* Only a list header ignores empty items, as RFC 9110 §5.6.1.2 asks of a list header: `X-Tags: a,,b` and
+  `X-Tags: a, ,b` bind `["a", "b"]`. Query values, path variables and cookies keep them, as a gRPC `repeated` field
+  keeps an empty element, so a constraint on the items (`List<@NotBlank String>`) gets the same answer over both
+  protocols: `?tag=` binds `[""]`, `?tag=&tag=x` binds `["", "x"]` and `?tag=a&tag=&tag=b` binds `["a", "", "b"]`,
+  and a path variable or cookie value `,x` binds `["", "x"]`. A path variable or cookie value that is empty as a
+  whole has no items. Two inputs keep a stricter rule of their own: an empty element of `If-Match` or
+  `If-None-Match` (`"5",,`) is a 400 (<<conditional-requests>>), and an empty `sort` key (`sort=title,,year`) is a
+  violation (<<paging>>).
+* The header comma rule and the header empty-item rule are REST's own. gRPC needs no rule: a non-repeated field
+  holds one value, a `repeated` field binds a `List`, and no input is bound from metadata. (Protobuf's parser accepts
+  a non-repeated field that appears twice on the wire and keeps the last value, merging a message field, before
+  Synapse sees the message.)
 * Query values come from the query string only, never from a form body. The query string is decoded as UTF-8
   (`+` is a space); a malformed escape is `MALFORMED_REQUEST`.
 * The body is read only on `POST` and `PUT`, and only as JSON (`application/json` or a `+json` type). Another media
@@ -162,6 +202,8 @@ violation per component:
 |Problem |Violation message
 |Missing value for a non-nullable component (a primitive included) |`must not be null`
 |A value that can't be converted or deserialized |`is not a valid value`
+|More than one value (a repeated query parameter, header line or cookie) for a component that is not a collection or
+an array |`must have a single value`
 |A conflict with the body |`conflicts with the value from the path` (or `query string`, `header`, `cookie`,
 `request context`, `request`)
 |===
@@ -578,10 +620,13 @@ These are the only version types, for `.etag` and for the version type of a `Ver
 (a `double`, a `boolean`, an enum, a `UUID`) fails startup.
 
 `.etag` is allowed on `GET`, on a declared `HEAD`, and on a `POST` with `.created(...)`. Startup fails when it is
-declared on `PUT` or `DELETE` (RFC 9110 section 9.3.4: a write's response carries no validator; clients take the new
-version from the body), on a `POST` without `.created`, twice, on a `List` or `PageResult` output, or with a
-component that isn't a simple component of the output record. `ETag` is reserved on every route; `Cache-Control`,
-`Vary` and `Last-Modified` are reserved on a route with `.etag`, so no date-based 304 can bypass the tag.
+declared on `PUT` or `DELETE`, on a `POST` without `.created`, twice, on a `List` or `PageResult` output, or with a
+component that isn't a simple component of the output record. On `PUT`, RFC 9110 section 9.3.4 allows a validator
+such as `ETag` in a successful response only if the request's representation was saved without any transformation,
+and the validator reflects the new representation. A Synapse write always transforms the representation it stores
+(it sets the version, and the audit fields where the entity has them), so a `PUT` answers no `ETag`, and neither
+does a `DELETE`: clients take the new version from the body, or read the resource again. `ETag` is reserved on every
+route; `Cache-Control`, `Vary` and `Last-Modified` are reserved on a route with `.etag`, so no date-based 304 can bypass the tag.
 
 === `If-Match` on writes
 
@@ -942,7 +987,10 @@ synapse.api.rest.operations.get-book.errors.status.[BOOK_NOT_FOUND]=410
 ----
 
 The first that applies wins: the operation's override, the global override, the fixed status of a `RestErrors` code,
-428 for `PRECONDITION_REQUIRED`, the category's status. An override outside 400 to 599 fails startup.
+428 for `PRECONDITION_REQUIRED`, the category's status. An override outside 400 to 599 fails startup. Names under
+`synapse.api.rest.operations` that match no operation bean are listed in one WARN at startup,
+`No operation bean has these names under synapse.api.rest.operations, so their settings have no effect: [<names>].
+Check the operation names for typos.`, as core lists those under `synapse.operations`.
 
 Errors raised outside Spring MVC (in a filter, or by the servlet container) reach the container's error dispatch,
 except client errors that escape the filter chain, which the edge answers itself (see below). Synapse's error

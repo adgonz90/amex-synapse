@@ -1,4 +1,5 @@
 .gitattributes
+.mvn/wrapper/maven-wrapper.properties
 README.md
 compose.yaml
 contract-s/pom.xml
@@ -21,6 +22,8 @@ data-s/src/main/resources/db/migration/s/V1__s.sql
 data-s/src/test/java/com/example/s/data/s/ItemRepositoryIT.java
 data-s/src/test/java/com/example/s/data/s/StoreTestApplication.java
 data-s/src/test/resources/application-test.yaml
+mvnw
+mvnw.cmd
 pom.xml
 service-s/.dockerignore
 service-s/Dockerfile

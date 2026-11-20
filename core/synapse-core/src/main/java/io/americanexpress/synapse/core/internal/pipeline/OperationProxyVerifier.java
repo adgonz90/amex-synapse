@@ -61,7 +61,8 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * </ul>
  *
  * It also logs one WARN listing the names under {@code synapse.operations} that match no operation bean, since their
- * settings would otherwise do nothing silently.
+ * settings would otherwise do nothing silently, and one for each prefix an API plugin contributes as an
+ * {@link OperationSettingsPrefix} bean (such as {@code synapse.api.rest.operations}).
  */
 public final class OperationProxyVerifier implements SmartInitializingSingleton {
 
@@ -77,7 +78,8 @@ public final class OperationProxyVerifier implements SmartInitializingSingleton 
      * Creates the verifier.
      *
      * @param beanFactory the bean factory holding the operation beans
-     * @param environment the environment, scanned for {@code synapse.operations.<name>} keys
+     * @param environment the environment, scanned for {@code synapse.operations.<name>} keys and the keys under
+     *     each {@link OperationSettingsPrefix} bean's prefix
      */
     public OperationProxyVerifier(ConfigurableListableBeanFactory beanFactory, Environment environment) {
         this.beanFactory = beanFactory;
@@ -238,34 +240,42 @@ public final class OperationProxyVerifier implements SmartInitializingSingleton 
         if (!(environment instanceof ConfigurableEnvironment configurable)) {
             return;
         }
-        Set<String> unknown = new TreeSet<>();
-        for (PropertySource<?> source : configurable.getPropertySources()) {
-            if (source instanceof EnumerablePropertySource<?> enumerable) {
-                for (String key : enumerable.getPropertyNames()) {
-                    String name = operationName(key);
-                    if (name != null && !name.isEmpty() && !known.contains(name)) {
-                        unknown.add(name);
+        Set<String> prefixes = new LinkedHashSet<>();
+        prefixes.add(OPERATIONS);
+        beanFactory
+                .getBeanProvider(OperationSettingsPrefix.class)
+                .orderedStream()
+                .forEach(contributed -> prefixes.add(contributed.prefix()));
+        for (String prefix : prefixes) {
+            Set<String> unknown = new TreeSet<>();
+            for (PropertySource<?> source : configurable.getPropertySources()) {
+                if (source instanceof EnumerablePropertySource<?> enumerable) {
+                    for (String key : enumerable.getPropertyNames()) {
+                        String name = operationName(prefix, key);
+                        if (name != null && !name.isEmpty() && !known.contains(name)) {
+                            unknown.add(name);
+                        }
                     }
                 }
             }
-        }
-        if (!unknown.isEmpty()) {
-            LOGGER
-                    .warn("No operation bean has these names under synapse.operations, so their settings have no "
-                            + "effect: {}. Check the operation names for typos.", unknown);
+            if (!unknown.isEmpty()) {
+                LOGGER
+                        .warn("No operation bean has these names under {}, so their settings have no effect: {}. "
+                                + "Check the operation names for typos.", prefix, unknown);
+            }
         }
     }
 
     /**
-     * Returns the operation name of a key under {@code synapse.operations}, written
-     * {@code synapse.operations.<name>...}, {@code synapse.operations.[<name>]...} or
-     * {@code synapse.operations[<name>]...}; {@code null} for any other key.
+     * Returns the operation name of a key under a prefix such as {@code synapse.operations}, written
+     * {@code <prefix>.<name>...}, {@code <prefix>.[<name>]...} or {@code <prefix>[<name>]...}; {@code null} for any
+     * other key.
      */
-    static @Nullable String operationName(String key) {
-        if (!key.startsWith(OPERATIONS)) {
+    static @Nullable String operationName(String prefix, String key) {
+        if (!key.startsWith(prefix)) {
             return null;
         }
-        String rest = key.substring(OPERATIONS.length());
+        String rest = key.substring(prefix.length());
         if (rest.startsWith(".")) {
             rest = rest.substring(1);
         } else if (!rest.startsWith("[")) {
