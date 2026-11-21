@@ -1136,7 +1136,8 @@ All must pass for a phase to be done; enforced in CI on every pull request unles
    least 90% of changed lines covered (diff-cover). A jar module with main sources but no execution data fails the
    build (closes JaCoCo's "skip when no data" gap), and diff-cover fails when reports are missing.
 3. **Mutation testing:** PIT nightly on opted-in modules (`synapse-core` and each plugin's error mapping); score ≥ 70%
-   (provisional). The nightly job opens an issue on failure.
+   (provisional). The nightly job opens an issue on failure. PIT runs unit tests only (`*IT` excluded): integration
+   tests are failsafe's, and in PIT's single test JVM a `@SpringBootTest` would reconfigure logging for the unit tests.
 4. **Static analysis and format:** Error Prone + NullAway (JSpecify mode); Spotless with the Synapse Eclipse profile,
    import order, LF and license header (applied locally, checked in CI); Javadoc built on the JDK 25 PR leg.
 5. **Enforcer:** Java 25 for the build, Maven ≥ 3.9.6, `dependencyConvergence`, `banDuplicatePomDependencyVersions`,

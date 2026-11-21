@@ -38,12 +38,10 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.slf4j.MDC;
-import org.springframework.boot.test.system.CapturedOutput;
-import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import io.americanexpress.synapse.core.context.RequestContext;
 import io.americanexpress.synapse.core.error.ErrorCategory;
@@ -57,6 +55,7 @@ import io.americanexpress.synapse.core.internal.context.InboundContext;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.BookErrors;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.CardLabel;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.GetBookOperation;
+import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.LogCapture;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.SaveBookOperation;
 import io.americanexpress.synapse.core.observability.DefaultOperationObservationConvention;
 import io.americanexpress.synapse.core.observability.OperationObservationContext;
@@ -84,7 +83,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-@ExtendWith(OutputCaptureExtension.class)
 class OperationInterceptorTest {
 
     record CreateBookRequest(@NotBlank String title) {
@@ -107,6 +105,9 @@ class OperationInterceptorTest {
     private final TestObservationRegistry observations = TestObservationRegistry.create();
 
     private final ContextBinder binder = PipelineFixtures.binder();
+
+    @RegisterExtension
+    final LogCapture logs = new LogCapture();
 
     private @Nullable Level previousLevel;
 
@@ -329,7 +330,7 @@ class OperationInterceptorTest {
     }
 
     @Test
-    void collaboratorViolationIsInternal(CapturedOutput output) {
+    void collaboratorViolationIsInternal() {
         ConstraintViolationException thrown = new ConstraintViolationException(collaboratorViolations());
         SaveBookOperation<OrderRequest> op = translating().wrapOperation(throwing(in -> thrown));
 
@@ -343,27 +344,27 @@ class OperationInterceptorTest {
                 .isNotInstanceOf(ConstraintViolationException.class)
                 .hasMessage("ConstraintViolationException: title: {jakarta.validation.constraints.NotBlank.message}");
         assertThat(Objects.requireNonNull(failure.getCause()).getStackTrace()).isEqualTo(thrown.getStackTrace());
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains(" ERROR ", "Operation save-book failed with INTERNAL (INTERNAL)",
                         "title: {jakarta.validation.constraints.NotBlank.message}")
                 .doesNotContain("must not be blank");
     }
 
     @Test
-    void aMaskedValueInACollaboratorViolationNeverReachesTheLog(CapturedOutput output) {
+    void aMaskedValueInACollaboratorViolationNeverReachesTheLog() {
         SaveBookOperation<OrderRequest> op = translating()
                 .wrapOperation(throwing(
                         in -> new ConstraintViolationException(VALIDATOR.validate(new CardLabel(SECRET)))));
 
         assertThat(catchThrowableOfType(SynapseException.class, () -> op.execute(new OrderRequest("o-1", 1))).details())
                 .isEqualTo(SynapseErrors.INTERNAL);
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains(" ERROR ", "number: ${validatedValue} is too long", "violations=\"number: ${validatedValue}")
                 .doesNotContain(SECRET);
     }
 
     @Test
-    void aWrappedViolationIsInternalAndNeverLogsTheWrappersMessages(CapturedOutput output) {
+    void aWrappedViolationIsInternalAndNeverLogsTheWrappersMessages() {
         // As a commit wraps a flush failure: the wrapper's message repeats the violations' interpolated messages.
         SaveBookOperation<OrderRequest> op = translating().wrapOperation(throwing(in -> {
             ConstraintViolationException violations = new ConstraintViolationException(
@@ -380,7 +381,7 @@ class OperationInterceptorTest {
                 .hasMessage(
                         "IllegalStateException > IllegalArgumentException > ConstraintViolationException: "
                                 + "number: ${validatedValue} is too long");
-        assertThat(output.getOut()).contains(" ERROR ", "failed with INTERNAL").doesNotContain(SECRET);
+        assertThat(logs.text()).contains(" ERROR ", "failed with INTERNAL").doesNotContain(SECRET);
     }
 
     @Test
@@ -466,7 +467,7 @@ class OperationInterceptorTest {
     }
 
     @Test
-    void errorsAreNotTranslated(CapturedOutput output) {
+    void errorsAreNotTranslated() {
         StackOverflowError error = new StackOverflowError();
         List<Throwable> translated = new ArrayList<>();
         GetBookOperation op = pipeline().translators(List.of(ex -> {
@@ -490,7 +491,7 @@ class OperationInterceptorTest {
                 .hasLowCardinalityKeyValue("error.code", "ERROR")
                 .hasLowCardinalityKeyValue("error.type", "ERROR")
                 .hasBeenStopped();
-        assertThat(output).doesNotContain("failed with");
+        assertThat(logs.text()).doesNotContain("failed with");
     }
 
     @Test
@@ -601,16 +602,16 @@ class OperationInterceptorTest {
     }
 
     @Test
-    void logsClientErrorAtWarnWithoutStackTrace(CapturedOutput output) {
+    void logsClientErrorAtWarnWithoutStackTrace() {
         GetBookOperation op = pipeline().build().wrapOperation(failing(bookNotFound()));
 
         try (ContextScope scope = open("c-7")) {
             assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
         }
 
-        assertThat(linesContaining(output.getOut(), FAILURE_LOGGER)).isEqualTo(1);
-        String line = output
-                .getOut()
+        assertThat(linesContaining(logs.text(), FAILURE_LOGGER)).isEqualTo(1);
+        String line = logs
+                .text()
                 .lines()
                 .filter(text -> text.contains(FAILURE_LOGGER))
                 .findFirst()
@@ -619,27 +620,27 @@ class OperationInterceptorTest {
                 .contains(" WARN ", "Operation get-book failed with BOOK_NOT_FOUND (NOT_FOUND): Book 42 was not found",
                         "operation=\"get-book\"", "errorCode=\"BOOK_NOT_FOUND\"", "errorCategory=\"NOT_FOUND\"",
                         "correlationId=\"c-7\"");
-        assertThat(output).doesNotContain("\tat ", "Exception:");
+        assertThat(logs.text()).doesNotContain("\tat ", "Exception:");
     }
 
     @Test
-    void logsInternalAtErrorWithStackTrace(CapturedOutput output) {
+    void logsInternalAtErrorWithStackTrace() {
         GetBookOperation op = pipeline().build().wrapOperation(failing(new IllegalStateException("db password=x")));
 
         try (ContextScope scope = open("c-8")) {
             assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
         }
 
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains(" ERROR ", "Operation get-book failed with INTERNAL (INTERNAL): An internal error occurred",
                         "correlationId=\"c-8\"", "errorCode=\"INTERNAL\"", "errorCategory=\"INTERNAL\"",
                         "Caused by: java.lang.IllegalStateException: db password=x",
                         "\tat io.americanexpress.synapse.core.internal.pipeline.");
-        assertThat(output.getOut()).doesNotContain(" WARN ");
+        assertThat(logs.text()).doesNotContain(" WARN ");
     }
 
     @Test
-    void leavesTheCorrelationIdToTheMdcWhenItHoldsIt(CapturedOutput output) {
+    void leavesTheCorrelationIdToTheMdcWhenItHoldsIt() {
         GetBookOperation op = pipeline().build().wrapOperation(failing(bookNotFound()));
 
         // As Boot's correlation fields do with tracing on: a key-value of the same name would make Boot's Logback
@@ -648,12 +649,12 @@ class OperationInterceptorTest {
             assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
         }
 
-        assertThat(output.getOut()).contains("Operation get-book failed with BOOK_NOT_FOUND", "operation=\"get-book\"");
-        assertThat(output.getOut()).doesNotContain("correlationId=");
+        assertThat(logs.text()).contains("Operation get-book failed with BOOK_NOT_FOUND", "operation=\"get-book\"");
+        assertThat(logs.text()).doesNotContain("correlationId=");
     }
 
     @Test
-    void translatedInternalIsLoggedAtError(CapturedOutput output) {
+    void translatedInternalIsLoggedAtError() {
         GetBookOperation op = pipeline()
                 .translators(List.of(ex -> new SynapseException(SynapseErrors.INTERNAL, ex)))
                 .build()
@@ -661,13 +662,13 @@ class OperationInterceptorTest {
 
         assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
 
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains(" ERROR ", "failed with INTERNAL", "Caused by: java.lang.IllegalStateException: boom");
     }
 
     @ParameterizedTest
     @EnumSource(value = SynapseErrors.class, names = {"UNAVAILABLE", "DEADLINE_EXCEEDED"})
-    void unavailableAndTimeoutLogTheirCauseAtWarn(SynapseErrors error, CapturedOutput output) {
+    void unavailableAndTimeoutLogTheirCauseAtWarn(SynapseErrors error) {
         GetBookOperation op = pipeline()
                 .translators(List.of(ex -> new SynapseException(error, ex)))
                 .build()
@@ -675,7 +676,7 @@ class OperationInterceptorTest {
 
         assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
 
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains(" WARN ", "failed with " + error.code() + " (" + error.category() + ")",
                         "java.lang.IllegalStateException: connection refused",
                         "\tat io.americanexpress.synapse.core.internal.pipeline.")
@@ -683,18 +684,18 @@ class OperationInterceptorTest {
     }
 
     @Test
-    void unavailableWithoutACauseIsOneLine(CapturedOutput output) {
+    void unavailableWithoutACauseIsOneLine() {
         GetBookOperation op = pipeline()
                 .build()
                 .wrapOperation(failing(new SynapseException(SynapseErrors.UNAVAILABLE)));
 
         assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
 
-        assertThat(output.getOut()).contains(" WARN ", "failed with UNAVAILABLE (UNAVAILABLE)").doesNotContain("\tat ");
+        assertThat(logs.text()).contains(" WARN ", "failed with UNAVAILABLE (UNAVAILABLE)").doesNotContain("\tat ");
     }
 
     @Test
-    void clientCategoriesNeverLogTheirCause(CapturedOutput output) {
+    void clientCategoriesNeverLogTheirCause() {
         GetBookOperation op = pipeline()
                 .translators(List.of(ex -> new SynapseException(SynapseErrors.CONFLICT, ex)))
                 .build()
@@ -702,23 +703,23 @@ class OperationInterceptorTest {
 
         assertThatThrownBy(() -> op.execute("42")).isInstanceOf(SynapseException.class);
 
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains(" WARN ", "failed with CONFLICT (CONFLICT)")
                 .doesNotContain("version mismatch", "\tat ");
     }
 
     @Test
-    void successLogsNothing(CapturedOutput output) {
+    void successLogsNothing() {
         setLevel(FAILURE_LOGGER, Level.TRACE);
         GetBookOperation op = pipeline().build().wrapOperation(new GetBookOperation(in -> "ok"));
 
         assertThat(op.execute("x")).isEqualTo("ok");
 
-        assertThat(output).doesNotContain(FAILURE_LOGGER);
+        assertThat(logs.text()).doesNotContain(FAILURE_LOGGER);
     }
 
     @Test
-    void countsInflightAndRejectsWhileDraining(CapturedOutput output) {
+    void countsInflightAndRejectsWhileDraining() {
         InflightTracker tracker = new InflightTracker();
         OperationPipeline pipeline = pipeline().inflight(tracker).build();
         GetBookOperation inner = pipeline
@@ -736,7 +737,7 @@ class OperationInterceptorTest {
         assertThat(outerTarget.calls).isEqualTo(1);
         assertThat(tracker.inflight()).isZero();
         assertThat(RequestContext.find()).isEmpty();
-        assertThat(output).contains(" WARN ", "failed with UNAVAILABLE (UNAVAILABLE)").doesNotContain("\tat ");
+        assertThat(logs.text()).contains(" WARN ", "failed with UNAVAILABLE (UNAVAILABLE)").doesNotContain("\tat ");
     }
 
     @Test
@@ -833,25 +834,25 @@ class OperationInterceptorTest {
     }
 
     @Test
-    void throwingTranslatorLogsItsFailure(CapturedOutput output) {
+    void throwingTranslatorLogsItsFailure() {
         GetBookOperation op = pipeline().translators(List.of(ex -> {
             throw new IllegalArgumentException("translator bug");
         })).build().wrapOperation(failing(new IllegalStateException("busy")));
 
         assertThatThrownBy(() -> op.execute("x")).isInstanceOf(SynapseException.class);
 
-        String line = output
-                .getOut()
+        String line = logs
+                .text()
                 .lines()
                 .filter(text -> text.contains("failed; trying the next one"))
                 .findFirst()
                 .orElseThrow();
         assertThat(line).contains(" WARN ", OperationInterceptor.class.getName(), "Exception translator");
-        assertThat(output.getOut()).contains("java.lang.IllegalArgumentException: translator bug");
+        assertThat(logs.text()).contains("java.lang.IllegalArgumentException: translator bug");
     }
 
     @Test
-    void closeFailuresKeepTheResult(CapturedOutput output) {
+    void closeFailuresKeepTheResult() {
         ObservationRegistry registry = failingScopeAndStopRegistry();
         InflightTracker tracker = new InflightTracker();
         GetBookOperation op = pipeline()
@@ -870,15 +871,15 @@ class OperationInterceptorTest {
         assertThat(tracker.inflight()).isZero();
         assertThat(RequestContext.find()).isEmpty();
         assertThat(OperationInterceptor.depth()).isZero();
-        assertThat(linesContaining(output.getOut(), "Operation get-book could not release")).isEqualTo(3);
-        assertThat(output.getOut())
+        assertThat(linesContaining(logs.text(), "Operation get-book could not release")).isEqualTo(3);
+        assertThat(logs.text())
                 .contains("could not release its context scope", "could not release its observation scope",
                         "could not release its observation")
                 .doesNotContain("failed with");
     }
 
     @Test
-    void closeFailuresKeepTheFailure(CapturedOutput output) {
+    void closeFailuresKeepTheFailure() {
         ObservationRegistry registry = failingScopeAndStopRegistry();
         SynapseException thrown = bookNotFound();
         GetBookOperation op = pipeline()
@@ -894,8 +895,8 @@ class OperationInterceptorTest {
         }
 
         assertThat(RequestContext.find()).isEmpty();
-        assertThat(linesContaining(output.getOut(), "Operation get-book could not release")).isEqualTo(3);
-        assertThat(linesContaining(output.getOut(), "Operation get-book failed with BOOK_NOT_FOUND")).isEqualTo(1);
+        assertThat(linesContaining(logs.text(), "Operation get-book could not release")).isEqualTo(3);
+        assertThat(linesContaining(logs.text(), "Operation get-book failed with BOOK_NOT_FOUND")).isEqualTo(1);
     }
 
     /** A registry whose handler throws when a scope closes and when an observation stops. */

@@ -446,6 +446,11 @@
                         <targetClasses>
                             <param>io.americanexpress.synapse.*</param>
                         </targetClasses>
+                        <!-- Unit tests only, as surefire: integration tests are failsafe's. PIT runs every test class
+                             in one JVM, where a @SpringBootTest IT would reconfigure logging for the unit tests. -->
+                        <excludedTestClasses>
+                            <param>**.*IT</param>
+                        </excludedTestClasses>
                         <mutationThreshold>${pitest.mutation.threshold}</mutationThreshold>
                         <failWhenNoMutations>false</failWhenNoMutations>
                         <timestampedReports>false</timestampedReports>

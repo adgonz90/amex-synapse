@@ -13,9 +13,12 @@
  */
 package io.americanexpress.synapse.core.internal.pipeline;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
 import jakarta.validation.Validation;
@@ -24,9 +27,16 @@ import jakarta.validation.constraints.Size;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.OutputStreamAppender;
 import io.micrometer.tracing.Tracer;
 import org.hibernate.validator.HibernateValidator;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.extension.AfterEachCallback;
+import org.junit.jupiter.api.extension.BeforeEachCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
 import org.slf4j.LoggerFactory;
 
 import io.americanexpress.synapse.core.error.ErrorCategory;
@@ -84,6 +94,80 @@ final class PipelineFixtures {
     /** Counts the lines of the output that contain the text. */
     static long linesContaining(String output, String text) {
         return output.lines().filter(line -> line.contains(text)).count();
+    }
+
+    /**
+     * Captures, in {@link #PATTERN}, every event that reaches the root logger during each test, whatever appenders and
+     * pattern the active Logback configuration has. Another test in the same JVM (a {@code @SpringBootTest}, for
+     * example) can replace Logback's unconfigured default with Boot's console pattern, which prints neither the
+     * key-value pairs nor the unpadded thread name. Fails fast if a logger the tests read ({@link #READ}) or one of its
+     * ancestors is not additive: its lines would never reach the root logger, and a test that asserts the absence of a
+     * line would pass without seeing anything.
+     */
+    static final class LogCapture implements BeforeEachCallback, AfterEachCallback {
+
+        /** As Logback's unconfigured default ({@code TTLLLayout}): thread, level, full logger name and key-value pairs. */
+        static final String PATTERN = "%d{HH:mm:ss.SSS} [%thread] %level %logger -%kvp- %msg%n";
+
+        /** The loggers whose lines the pipeline tests read. */
+        static final List<String> READ = List.of(FAILURE_LOGGER, PAYLOAD_LOGGER, OperationInterceptor.class.getName());
+
+        private final ByteArrayOutputStream lines = new ByteArrayOutputStream();
+
+        private @Nullable OutputStreamAppender<ILoggingEvent> appender;
+
+        @Override
+        public void beforeEach(ExtensionContext context) {
+            LoggerContext loggers = (LoggerContext) LoggerFactory.getILoggerFactory();
+            requireAdditive(loggers);
+            lines.reset();
+            PatternLayoutEncoder encoder = new PatternLayoutEncoder();
+            encoder.setContext(loggers);
+            encoder.setPattern(PATTERN);
+            encoder.setCharset(StandardCharsets.UTF_8);
+            encoder.start();
+            OutputStreamAppender<ILoggingEvent> capture = new OutputStreamAppender<>();
+            capture.setContext(loggers);
+            capture.setName("pipeline-test-capture");
+            capture.setEncoder(encoder);
+            capture.setOutputStream(lines);
+            capture.start();
+            loggers.getLogger(Logger.ROOT_LOGGER_NAME).addAppender(capture);
+            appender = capture;
+        }
+
+        @Override
+        public void afterEach(ExtensionContext context) {
+            OutputStreamAppender<ILoggingEvent> capture = appender;
+            if (capture != null) {
+                ((LoggerContext) LoggerFactory.getILoggerFactory())
+                        .getLogger(Logger.ROOT_LOGGER_NAME)
+                        .detachAppender(capture);
+                capture.stop();
+                appender = null;
+            }
+        }
+
+        /** The lines logged so far in the current test. */
+        String text() {
+            return lines.toString(StandardCharsets.UTF_8);
+        }
+
+        private static void requireAdditive(LoggerContext loggers) {
+            for (Logger logger : loggers.getLoggerList()) {
+                String name = logger.getName();
+                List<String> cut = READ.stream().filter(read -> isSelfOrAncestor(name, read)).toList();
+                if (!logger.isAdditive() && !cut.isEmpty()) {
+                    throw new IllegalStateException("Logger " + name + " is not additive, so the lines of " + cut
+                            + " never reach the root logger that LogCapture reads");
+                }
+            }
+        }
+
+        /** Whether {@code candidate} is {@code logger} or one of its ancestors in Logback's name hierarchy. */
+        private static boolean isSelfOrAncestor(String candidate, String logger) {
+            return logger.equals(candidate) || logger.startsWith(candidate + ".") || logger.startsWith(candidate + "$");
+        }
     }
 
     enum BookErrors implements ErrorDetails {

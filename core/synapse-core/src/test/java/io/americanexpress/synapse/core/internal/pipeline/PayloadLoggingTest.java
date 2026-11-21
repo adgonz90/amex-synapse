@@ -23,13 +23,12 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.springframework.boot.test.system.CapturedOutput;
-import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import io.americanexpress.synapse.core.internal.context.ContextBinder;
 import io.americanexpress.synapse.core.internal.context.ContextScope;
 import io.americanexpress.synapse.core.internal.context.InboundContext;
+import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.LogCapture;
 import io.americanexpress.synapse.core.masking.LogMasking;
 import io.americanexpress.synapse.core.masking.MaskType;
 import io.americanexpress.synapse.core.masking.Masked;
@@ -43,7 +42,6 @@ import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.setLevel;
 import static org.assertj.core.api.Assertions.assertThat;
 
-@ExtendWith(OutputCaptureExtension.class)
 class PayloadLoggingTest {
 
     record CardRequest(@Masked(MaskType.LAST_FOUR) String number) {
@@ -68,6 +66,9 @@ class PayloadLoggingTest {
     }
 
     private final ContextBinder binder = PipelineFixtures.binder();
+
+    @RegisterExtension
+    final LogCapture logs = new LogCapture();
 
     private @Nullable Level previousPayloadLevel;
 
@@ -102,15 +103,15 @@ class PayloadLoggingTest {
     }
 
     @Test
-    void logsMaskedPayloadsAtDebugWhenEnabled(CapturedOutput output) {
+    void logsMaskedPayloadsAtDebugWhenEnabled() {
         GetCardOperation<Card> op = operation("get-card"::equals, PayloadLoggingTest::card);
 
         try (ContextScope scope = binder.open(new InboundContext("c-9", Map.of(), null, null, null))) {
             assertThat(op.execute(new CardRequest("4111111111111111")).holder()).isEqualTo("Ann");
         }
 
-        assertThat(linesContaining(output.getOut(), PAYLOAD_LOGGER)).isEqualTo(2);
-        assertThat(output.getOut())
+        assertThat(linesContaining(logs.text(), PAYLOAD_LOGGER)).isEqualTo(2);
+        assertThat(logs.text())
                 .contains(" DEBUG ", "Operation get-card input: {\"number\":\"************1111\"}",
                         "Operation get-card output: {\"number\":\"************1111\",\"holder\":\"Ann\"}",
                         "operation=\"get-card\"", "correlationId=\"c-9\"")
@@ -118,26 +119,26 @@ class PayloadLoggingTest {
     }
 
     @Test
-    void logsNoPayloadsWhenDisabled(CapturedOutput output) {
+    void logsNoPayloadsWhenDisabled() {
         GetCardOperation<Card> op = operation(name -> !name.equals("get-card"), PayloadLoggingTest::card);
 
         op.execute(new CardRequest("4111111111111111"));
 
-        assertThat(output).doesNotContain(PAYLOAD_LOGGER);
+        assertThat(logs.text()).doesNotContain(PAYLOAD_LOGGER);
     }
 
     @Test
-    void logsNoPayloadsBelowDebug(CapturedOutput output) {
+    void logsNoPayloadsBelowDebug() {
         setLevel(PAYLOAD_LOGGER, Level.INFO);
         GetCardOperation<Card> op = operation(name -> true, PayloadLoggingTest::card);
 
         op.execute(new CardRequest("4111111111111111"));
 
-        assertThat(output).doesNotContain(PAYLOAD_LOGGER);
+        assertThat(logs.text()).doesNotContain(PAYLOAD_LOGGER);
     }
 
     @Test
-    void payloadLoggingIsOffByDefault(CapturedOutput output) {
+    void payloadLoggingIsOffByDefault() {
         GetCardOperation<Card> op = OperationPipeline
                 .builder()
                 .build()
@@ -145,18 +146,18 @@ class PayloadLoggingTest {
 
         op.execute(new CardRequest("4111111111111111"));
 
-        assertThat(output).doesNotContain(PAYLOAD_LOGGER);
+        assertThat(logs.text()).doesNotContain(PAYLOAD_LOGGER);
     }
 
     @Test
-    void unwrapsOptionalOutput(CapturedOutput output) {
+    void unwrapsOptionalOutput() {
         GetCardOperation<Optional<Card>> present = operation(name -> true, in -> Optional.of(card(in)));
         GetCardOperation<Optional<Card>> absent = operation(name -> true, in -> Optional.empty());
 
         present.execute(new CardRequest("4111111111111111"));
         absent.execute(new CardRequest("4111111111111111"));
 
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains("Operation get-card output: {\"number\":\"************1111\",\"holder\":\"Ann\"}",
                         "Operation get-card output: null");
     }

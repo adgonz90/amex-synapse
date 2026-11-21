@@ -37,9 +37,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.springframework.boot.test.system.CapturedOutput;
-import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
@@ -52,6 +50,7 @@ import io.americanexpress.synapse.core.internal.context.InboundContext;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.BookErrors;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.CardLabel;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.GetBookOperation;
+import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.LogCapture;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.SaveBookOperation;
 import io.americanexpress.synapse.core.observability.OperationObservationContext;
 import io.americanexpress.synapse.core.operation.BusinessOperation;
@@ -68,7 +67,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
-@ExtendWith(OutputCaptureExtension.class)
 class NestedInvocationTest {
 
     /** The outer operation, named {@code get-shelf}; it calls {@code get-book} through a function. */
@@ -89,6 +87,9 @@ class NestedInvocationTest {
     private final TestObservationRegistry observations = TestObservationRegistry.create();
 
     private final ContextBinder binder = PipelineFixtures.binder();
+
+    @RegisterExtension
+    final LogCapture logs = new LogCapture();
 
     private final OperationPipeline pipeline = OperationPipeline
             .builder()
@@ -152,7 +153,7 @@ class NestedInvocationTest {
     }
 
     @Test
-    void nestedFailureIsLoggedOnceByOutermost(CapturedOutput output) {
+    void nestedFailureIsLoggedOnceByOutermost() {
         SynapseException failure = new SynapseException(BookErrors.BOOK_NOT_FOUND, "42");
         GetBookOperation inner = notFoundBook(failure);
         GetShelfOperation outer = pipeline.wrapOperation(new GetShelfOperation(inner::execute));
@@ -161,8 +162,8 @@ class NestedInvocationTest {
             assertThatThrownBy(() -> outer.execute("42")).isSameAs(failure);
         }
 
-        assertThat(linesContaining(output.getOut(), FAILURE_LOGGER)).isEqualTo(1);
-        assertThat(output.getOut())
+        assertThat(linesContaining(logs.text(), FAILURE_LOGGER)).isEqualTo(1);
+        assertThat(logs.text())
                 .contains("Operation get-shelf failed with BOOK_NOT_FOUND (NOT_FOUND)", "correlationId=\"c-3\"")
                 .doesNotContain("Operation get-book failed");
         TestObservationRegistryAssert
@@ -174,7 +175,7 @@ class NestedInvocationTest {
     }
 
     @Test
-    void caughtNestedFailureIsNotLogged(CapturedOutput output) {
+    void caughtNestedFailureIsNotLogged() {
         GetBookOperation inner = notFoundBook(new SynapseException(BookErrors.BOOK_NOT_FOUND, "42"));
         GetShelfOperation outer = pipeline.wrapOperation(new GetShelfOperation(in -> {
             try {
@@ -186,11 +187,11 @@ class NestedInvocationTest {
 
         assertThat(outer.execute("42")).isEqualTo("fallback");
 
-        assertThat(output).doesNotContain(FAILURE_LOGGER);
+        assertThat(logs.text()).doesNotContain(FAILURE_LOGGER);
     }
 
     @Test
-    void asyncNestedCallOnOtherThreadIsOutermostThere(CapturedOutput output) throws Exception {
+    void asyncNestedCallOnOtherThreadIsOutermostThere() throws Exception {
         GetBookOperation inner = notFoundBook(new SynapseException(BookErrors.BOOK_NOT_FOUND, "42"));
         ExecutorService pool = Executors.newSingleThreadExecutor(task -> new Thread(task, "async-worker"));
         try {
@@ -215,14 +216,14 @@ class NestedInvocationTest {
             pool.shutdownNow();
         }
 
-        assertThat(linesContaining(output.getOut(), FAILURE_LOGGER)).isEqualTo(1);
+        assertThat(linesContaining(logs.text(), FAILURE_LOGGER)).isEqualTo(1);
         // The worker's MDC has no correlation id (no-op tracer), so the line carries it as a key-value.
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains("[async-worker]", "Operation get-book failed with BOOK_NOT_FOUND", "correlationId=\"c-4\"");
     }
 
     @Test
-    void depthIsRestoredOnEveryExitPath(CapturedOutput output) {
+    void depthIsRestoredOnEveryExitPath() {
         StackOverflowError error = new StackOverflowError();
         GetBookOperation erroring = pipeline.wrapOperation(new GetBookOperation(in -> {
             throw error;
@@ -244,7 +245,7 @@ class NestedInvocationTest {
         assertThat(RequestContext.find()).isEmpty();
 
         assertThatThrownBy(() -> failing.execute("x")).isInstanceOf(SynapseException.class);
-        assertThat(output.getOut()).contains("Operation get-book failed with BOOK_NOT_FOUND");
+        assertThat(logs.text()).contains("Operation get-book failed with BOOK_NOT_FOUND");
     }
 
     @Test
@@ -286,7 +287,7 @@ class NestedInvocationTest {
     }
 
     @Test
-    void nestedErrorPropagatesUnchanged(CapturedOutput output) {
+    void nestedErrorPropagatesUnchanged() {
         StackOverflowError error = new StackOverflowError();
         List<Throwable> translated = new ArrayList<>();
         OperationPipeline translating = OperationPipeline
@@ -307,7 +308,7 @@ class NestedInvocationTest {
         assertThatThrownBy(() -> outer.execute("x")).isSameAs(error);
 
         assertThat(translated).isEmpty();
-        assertThat(output).doesNotContain(FAILURE_LOGGER);
+        assertThat(logs.text()).doesNotContain(FAILURE_LOGGER);
         TestObservationRegistryAssert
                 .assertThat(observations)
                 .hasNumberOfObservationsWithNameEqualTo("synapse.operation", 2)
@@ -317,7 +318,7 @@ class NestedInvocationTest {
     }
 
     @Test
-    void nestedForeignExceptionIsLoggedOnceWithItsCause(CapturedOutput output) {
+    void nestedForeignExceptionIsLoggedOnceWithItsCause() {
         IllegalStateException cause = new IllegalStateException("disk full");
         GetBookOperation inner = pipeline.wrapOperation(new GetBookOperation(in -> {
             throw cause;
@@ -328,8 +329,8 @@ class NestedInvocationTest {
 
         assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
         assertThat(failure.getCause()).isSameAs(cause);
-        assertThat(linesContaining(output.getOut(), "failed with")).isEqualTo(1);
-        assertThat(output.getOut())
+        assertThat(linesContaining(logs.text(), "failed with")).isEqualTo(1);
+        assertThat(logs.text())
                 .contains(" ERROR ", "Operation get-shelf failed with INTERNAL (INTERNAL)",
                         "Caused by: java.lang.IllegalStateException: disk full")
                 .doesNotContain("Operation get-book failed");
@@ -381,7 +382,7 @@ class NestedInvocationTest {
     }
 
     @Test
-    void nestedBusinessInputViolationIsInternalAtTheEdge(CapturedOutput output) {
+    void nestedBusinessInputViolationIsInternalAtTheEdge() {
         LabelShelf label = pipeline.wrapBusiness(new LabelShelf());
         GetShelfOperation outer = pipeline
                 .wrapOperation(new GetShelfOperation(in -> label.execute(new ShelfLabel(""))));
@@ -389,8 +390,8 @@ class NestedInvocationTest {
         SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute("x"));
 
         assertInternalCausedBy(failure, SynapseErrors.VALIDATION_FAILED);
-        assertThat(linesContaining(output.getOut(), "failed with")).isEqualTo(1);
-        assertThat(output.getOut())
+        assertThat(linesContaining(logs.text(), "failed with")).isEqualTo(1);
+        assertThat(logs.text())
                 .contains(" ERROR ", "Operation get-shelf failed with INTERNAL (INTERNAL)",
                         "violations=\"text: {jakarta.validation.constraints.NotBlank.message}\"");
     }
@@ -473,7 +474,7 @@ class NestedInvocationTest {
     }
 
     @Test
-    void aMaskedValueOfABusinessInputNeverReachesTheErrorLine(CapturedOutput output) {
+    void aMaskedValueOfABusinessInputNeverReachesTheErrorLine() {
         LabelCard label = pipeline.wrapBusiness(new LabelCard());
         GetShelfOperation outer = pipeline
                 .wrapOperation(new GetShelfOperation(in -> label.execute(new CardLabel(in))));
@@ -481,7 +482,7 @@ class NestedInvocationTest {
         SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute(SECRET));
 
         assertInternalCausedBy(failure, SynapseErrors.VALIDATION_FAILED);
-        assertThat(output.getOut())
+        assertThat(logs.text())
                 .contains(" ERROR ", "Operation get-shelf failed with INTERNAL",
                         "violations=\"number: ${validatedValue} is too long\"")
                 .doesNotContain(SECRET);
