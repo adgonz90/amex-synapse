@@ -189,6 +189,10 @@ public final class ContextBinder {
      * @return their sum, computed as a long so that it can't wrap to a negative size that passes the limit
      */
     static long entrySize(int nameBytes, int valueBytes) {
+        if (nameBytes < 0 || valueBytes < 0) {
+            String lengths = nameBytes + " and " + valueBytes;
+            throw new IllegalArgumentException("UTF-8 lengths can't be negative: " + lengths);
+        }
         return (long) nameBytes + valueBytes;
     }
 
