@@ -961,6 +961,44 @@ A native image is not verified yet: `grpc-netty`, protobuf's runtime reflection 
 mapped records and enums, and the lambdas' `writeReplace` method. The native build of the reference application, in
 P4, checks them.
 
+[#native-access]
+== Native access (Java 24 and later)
+
+From Java 24 the JVM warns the first time code on the class path calls `System.loadLibrary` or `System.load`, unless
+native access is enabled for it (https://openjdk.org/jeps/472[JEP 472]). Netty, which the gRPC server runs on, makes
+that call when it starts on Linux, so a gRPC service on Java 25 prints:
+
+----
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by io.netty.util.internal.NativeLibraryUtil in an unnamed module (...)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+----
+
+The call still succeeds: warning is the default mode in Java 24 and 25 (`--illegal-native-access=warn`), and JEP 472
+says a future release will deny it by default. Netty's maintainers say they can't remove the JNI use in Netty 4.x
+(https://github.com/netty/netty/issues/15404[netty#15404]).
+
+Synapse doesn't enable native access for services: `synapse-parent` sets no option for the application, its tests or
+its images. Synapse's own build passes `--enable-native-access=ALL-UNNAMED` to its test JVMs only. To enable it in a
+service:
+
+* *How.* Pass `--enable-native-access=ALL-UNNAMED` to the JVM, for example in `JAVA_TOOL_OPTIONS` or
+  `JDK_JAVA_OPTIONS`, or put `Enable-Native-Access: ALL-UNNAMED` in the manifest of a jar started with `java -jar`
+  (JEP 472; the manifest entry accepts no other value). Java 21 accepts the option too, so the same command line works
+  on both.
+* *Scope.* `ALL-UNNAMED` lifts the restriction for every jar on the class path, not only Netty's: a dependency that
+  loads native code no longer gets a warning either. A narrower grant names modules, so it works only for jars on the
+  module path, which a Spring Boot jar doesn't use (https://github.com/netty/netty/issues/17301[netty#17301]).
+* *AOT cache.* The option must be the same in the training run and at run time. On JDK 25.0.5, a cache recorded
+  without it is rejected by a run with it (`Mismatched values for property jdk.module.enable.native.access`), and the
+  other way round; with `-XX:AOTMode=on` the JVM then stops. So with synapse-parent's image settings, add it to both
+  `TRAINING_RUN_JAVA_TOOL_OPTIONS` and `BPE_APPEND_JAVA_TOOL_OPTIONS`, or to both the training `RUN` and the
+  `ENTRYPOINT` of a Dockerfile, as for the collector (xref:parent.adoc#gc[The garbage collector]). Check it with
+  `-XX:AOTMode=on` (xref:parent.adoc#java21-images[Java 21 images]).
+* *Tests.* Add it to the `argLine` property (xref:parent.adoc#_the_mockito_agent[The Mockito agent]) to silence the
+  warning in a service's own tests.
+
 == Configuration
 
 The gRPC properties are `synapse.api.grpc.*`; all are in the

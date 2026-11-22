@@ -15,11 +15,25 @@ concurrency:
   group: nightly
   cancel-in-progress: false
 
+env:
+  # Parallel reactor build (-T) for the jobs that build many modules: the runner's 4 vCPUs are 2 cores with SMT, and two
+  # module threads measured faster than one and about as fast as three (see ci.yml). Local builds stay serial.
+  MAVEN_THREADS: '2'
+
+# Each Maven step has a timeout-minutes below its job's: a step over its limit is killed and fails, so the job's
+# if: failure() report upload still runs. A job over its own limit is cancelled, and then no failure() step runs.
+
 jobs:
   mutation-testing:
+    # The job builds only the modules that opt in to PIT (PIT_MODULES) and what they depend on; the other modules' tests
+    # run in full-jdk21. PIT runs its mutants on 2 threads (pitest.threads), one per physical core: 4 starved the minions,
+    # timed out 17 extra mutants and was slower than 1 (ci-measure dry run). The build itself is serial.
     name: Mutation testing (PIT)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # Comma-separated module paths, as -pl takes them. A step before Maven fails if a module opts in and isn't listed.
+      PIT_MODULES: core/synapse-core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,10 +43,36 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
+
+      - name: Restore the Maven cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
+
+      # Fails closed on the reactor's effective POM in this job's profile: any project whose PIT plugin has no skip, or
+      # a skip other than true, must be in PIT_MODULES (see .github/scripts/pit-modules-check.sh).
+      - name: Check that every module opting in to PIT is built
+        timeout-minutes: 5
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress --quiet -Pmutation help:effective-pom \
+            -Doutput="$RUNNER_TEMP/effective-pom.xml"
+          bash .github/scripts/pit-modules-check.sh "$RUNNER_TEMP/effective-pom.xml"
 
       - name: Verify with mutation testing
-        run: ./mvnw --batch-mode --no-transfer-progress -Pmutation verify
+        timeout-minutes: 50
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Dmaven.test.redirectTestOutputToFile=true
+          -Pmutation -Dpitest.threads=2 -pl "$PIT_MODULES" -am verify
+
+      - name: Upload test and mutation reports (failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-mutation-testing
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+            **/target/pit-reports/
+          retention-days: 7
+          if-no-files-found: ignore
 
   full-jdk21:
     # Builds with JDK 25 and runs every unit and integration test on JDK 21 (pull requests only run the smoke subset).
@@ -51,10 +91,42 @@ jobs:
           java-version: |
             21
             25
-          cache: maven
+
+      # No Maven cache here, on purpose: the cache holds everything any build of the month resolved, so an artifact
+      # missing from the nested builds' pre-resolve lists (invoker:install extraArtifacts) could pass on a warm cache
+      # and fail later on an unrelated pull request. From an empty local repository, this job fails on it that night.
+      # Without the composite action, the Maven distribution is fetched here, with the same retries.
+      - name: Fetch the Maven distribution (retried)
+        timeout-minutes: 5
+        run: |
+          for attempt in 1 2 3; do
+            if ./mvnw --batch-mode --quiet --version; then
+              exit 0
+            fi
+            echo "::warning::The Maven Wrapper could not download Maven (attempt ${attempt} of 3)."
+            sleep $((attempt * 15))
+          done
+          echo "::error::The Maven Wrapper could not download Maven after 3 attempts."
+          exit 1
 
       - name: Build and run all tests on JDK 21
-        run: ./mvnw --batch-mode --no-transfer-progress verify -Djvm="$JAVA_HOME_21_X64/bin/java"
+        timeout-minutes: 50
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          verify -Djvm="$JAVA_HOME_21_X64/bin/java"
+
+      - name: Upload test reports (failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-full-jdk21
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+            **/target/it/**/build.log
+            **/target/inv/**/build.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   aot-reference:
     # Spring AOT processing is opt-in (synapse-parent's aot profile), and pull requests build without it. This job
@@ -77,19 +149,34 @@ jobs:
           java-version: |
             21
             25
-          cache: maven
+
+      - name: Restore the Maven cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
 
       - name: Build the reference bookstore with AOT processing and run its tests
+        timeout-minutes: 35
         run: >-
-          ./mvnw --batch-mode --no-transfer-progress -Paot
-          -pl samples/reference-bookstore/service-bookstore -am verify
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          -Paot -pl samples/reference-bookstore/service-bookstore -am verify
 
       - name: Run BookstoreAotIT on JDK 21
+        timeout-minutes: 15
         run: >-
-          ./mvnw --batch-mode --no-transfer-progress -Paot
-          -pl samples/reference-bookstore/service-bookstore -am verify
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          -Paot -pl samples/reference-bookstore/service-bookstore -am verify
           -Djvm="$JAVA_HOME_21_X64/bin/java" -Dit.test=BookstoreAotIT -Dtest=NONE
           -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false -Djacoco.skip=true
+
+      - name: Upload test reports (failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-aot-reference
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+          retention-days: 7
+          if-no-files-found: ignore
 
   image-reference:
     # The reference bookstore's container images, both ways a service builds one: spring-boot:build-image with
@@ -109,15 +196,28 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
+
+      - name: Restore the Maven cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
 
       - name: Build the image with Paketo (spring-boot:build-image)
+        timeout-minutes: 30
         shell: bash
         run: >-
-          ./mvnw --batch-mode --no-transfer-progress -Pimage
-          -pl samples/reference-bookstore/service-bookstore -am package
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          -Pimage -pl samples/reference-bookstore/service-bookstore -am package
           -Dspring-boot.build-image.imageName=bookstore:paketo
           | tee "$RUNNER_TEMP/build-image.log"
+
+      - name: Upload test reports (failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-image-reference
+          path: |
+            **/target/surefire-reports/
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Smoke-test the Paketo image
         env:

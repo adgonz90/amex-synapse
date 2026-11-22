@@ -85,7 +85,6 @@ import org.springframework.web.servlet.function.RouterFunction;
 import org.springframework.web.servlet.function.RouterFunctions;
 import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
-import org.springframework.web.servlet.handler.HandlerMappingIntrospector;
 import org.springframework.web.util.ServletRequestPathUtils;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -714,11 +713,17 @@ class SynapseRestAutoConfigurationTest {
 
     @Test
     void corsSourceBacksOffByName() {
-        // Spring MVC's HandlerMappingIntrospector is a CorsConfigurationSource too; it doesn't make the source back off.
-        routesRunner.withUserConfiguration(Books.class).run(context -> {
-            assertThat(context).hasSingleBean(HandlerMappingIntrospector.class);
-            assertThat(context).hasSingleBean(SynapseCorsConfigurationSource.class);
-        });
+        // Another CorsConfigurationSource doesn't make Synapse's back off, only one with its name does.
+        CorsConfigurationSource other = request -> null;
+        routesRunner
+                .withUserConfiguration(Books.class)
+                .withBean("otherCorsSource", CorsConfigurationSource.class, () -> other)
+                .run(context -> {
+                    assertThat(context.getBean("otherCorsSource")).isSameAs(other);
+                    assertThat(context).hasSingleBean(SynapseCorsConfigurationSource.class);
+                    assertThat(context.getBean("corsConfigurationSource"))
+                            .isInstanceOf(SynapseCorsConfigurationSource.class);
+                });
         CorsConfigurationSource user = request -> null;
         webRunner.withBean("corsConfigurationSource", CorsConfigurationSource.class, () -> user).run(context -> {
             assertThat(context).doesNotHaveBean(SynapseCorsConfigurationSource.class);
@@ -834,13 +839,14 @@ class SynapseRestAutoConfigurationTest {
     @Test
     void corsFilterActivatesAndBacksOff() {
         String app = "https://app.example.com";
-        // With bindings, next to Spring MVC's HandlerMappingIntrospector, which is a CorsConfigurationSource too.
+        // With bindings, next to another CorsConfigurationSource (which allows nothing): the filter applies Synapse's.
         routesRunner
                 .withUserConfiguration(Books.class)
+                .withBean("otherCorsSource", CorsConfigurationSource.class, () -> request -> null)
                 .withPropertyValues("synapse.api.rest.cors.allowed-origins=" + app)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
-                    assertThat(context).hasSingleBean(HandlerMappingIntrospector.class);
+                    assertThat(context).hasBean("otherCorsSource");
                     assertThat(corsFiltered(context, app).getHeader("Access-Control-Allow-Origin")).isEqualTo(app);
                 });
         // Without bindings, so an environment file can still turn CORS on.

@@ -203,6 +203,9 @@ public final class SchemaGenerator {
 
     private int buildSchemas;
 
+    /** How many times a component has been walked. */
+    private int walks;
+
     private boolean limitReached;
 
     /** How many components there were when they were last named. */
@@ -234,6 +237,11 @@ public final class SchemaGenerator {
     /** How many schemas the generator has created. */
     int schemaCount() {
         return schemas;
+    }
+
+    /** How many components the generator has walked. */
+    int walkCount() {
+        return walks;
     }
 
     /**
@@ -552,6 +560,7 @@ public final class SchemaGenerator {
      * {@code {}} instead, and the components first referenced while walking it are dropped with it.
      */
     private void build(Node node) {
+        walks++;
         building = node;
         buildSchemas = 0;
         createdInBuild.clear();

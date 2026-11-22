@@ -1,0 +1,58 @@
+name: Restore the Maven cache
+description: >-
+  Restores the local Maven repository and the Maven wrapper distribution, read-only. Only the Verify job of a push to
+  main saves the cache (ci.yml), from a complete build. Workflows that publish (release, snapshot, docs) don't use it: a
+  poisoned cache entry would end up in the published artifacts. Then makes sure the Maven distribution is present,
+  retrying its download.
+
+outputs:
+  key:
+    description: The exact key looked up, which the saving job saves under.
+    value: ${{ steps.key.outputs.key }}
+  cache-hit:
+    description: Whether an entry with the exact key was restored ('true'), not one found by prefix.
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # The key hashes only the POMs that manage versions (root build, synapse-parent, synapse-bom) and the wrapper
+    # properties, so a pull request that edits a module, sample or test POM keeps the key. The month stamp starts the
+    # cache from empty once a month, so artifacts that are no longer used don't accumulate. Within a month a changed
+    # hash still restores the newest entry of that month (restore-keys), and the build downloads only what is new.
+    - name: Compute the Maven cache key
+      id: key
+      shell: bash
+      run: |
+        hash="$(cat pom.xml parent/synapse-parent/pom.xml bom/synapse-bom/pom.xml .mvn/wrapper/maven-wrapper.properties \
+          | sha256sum | cut -c1-64)"
+        prefix="maven-${RUNNER_OS}-$(date -u +%Y-%m)-"
+        echo "prefix=${prefix}" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}${hash}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the Maven cache
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.m2/repository
+          ~/.m2/wrapper/dists
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    # The distribution is cached with the repository (the wrapper's only-script mode keeps nothing else under
+    # ~/.m2/wrapper), and maven-wrapper.properties is in the key, so a new Maven version starts a new entry. On a miss
+    # (a pull request whose base branch has no entry, or the first run of a month), mvnw downloads it once with wget or
+    # curl, with no retry, and a single failed request would fail the job.
+    - name: Fetch the Maven distribution (retried)
+      shell: bash
+      run: |
+        for attempt in 1 2 3; do
+          if ./mvnw --batch-mode --quiet --version; then
+            exit 0
+          fi
+          echo "::warning::The Maven Wrapper could not download Maven (attempt ${attempt} of 3)."
+          sleep $((attempt * 15))
+        done
+        echo "::error::The Maven Wrapper could not download Maven after 3 attempts."
+        exit 1

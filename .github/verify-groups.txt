@@ -1,0 +1,17 @@
+# The module groups of CI's split Verify (JDK 25) on pull requests: one job per group, each running the full verify of
+# its modules (every test, every gate) after installing what they depend on without tests. Every module of the reactor
+# is in exactly one group (.github/scripts/verify-groups.sh checks it, and the PR fails otherwise). A module's tests,
+# and so its JaCoCo gate, stay in one job.
+#
+# Balanced on the serial module times of the ci-measure dry run (seconds, fastest and slowest runner), 2026-11-22:
+#   core  about 180-230 s: the root (Spotless for samples/**), the BOM, the parents, core, logging, build-rules invoker ITs
+#   api   about 190-240 s: REST, OpenAPI, gRPC, their test slices and the REST and gRPC samples
+#   data  about 230-280 s: the data modules, their test slice and the JPA-and-JDBC tests
+#   apps  about 200-250 s: the multi-store and reference samples and both archetypes (archetype ITs), which need the
+#         same plugins as the samples
+#
+# <group> <modules, comma-separated as -pl takes them ("." is the root POM)>
+core .,bom/synapse-bom,parent/synapse-parent,core/synapse-core,core/synapse-test,core/synapse-logging-log4j2,tests/synapse-logging-logback-tests,tests/synapse-build-rules-tests
+api api/synapse-api-rest,api/synapse-api-rest-openapi,api/synapse-test-rest,api/synapse-api-grpc,api/synapse-test-grpc,samples/rest-books,samples/hello-rest,samples/grpc-inventory,samples/grpc-inventory/contract-inventory,samples/grpc-inventory/service-inventory
+data data/synapse-data-core,data/synapse-data-jpa,data/synapse-data-jdbc,data/synapse-test-data,data/synapse-data-postgres,tests/synapse-data-mixed-tests
+apps samples/multi-store,samples/multi-store/data-orders,samples/multi-store/data-ledger,samples/multi-store/service-orders,samples/reference-bookstore,samples/reference-bookstore/contract-bookstore,samples/reference-bookstore/data-books,samples/reference-bookstore/service-bookstore,archetypes/synapse-archetype-quickstart,archetypes/synapse-archetype-service

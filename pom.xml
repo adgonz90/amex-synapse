@@ -136,8 +136,11 @@
         <jacoco.skip>false</jacoco.skip>
         <!-- JUnit tag expression for integration tests; empty runs all. CI sets it to smoke on the JDK 21 leg. -->
         <synapse.it.groups></synapse.it.groups>
+        <!-- A module opts in by setting pitest.skip to false; add it to PIT_MODULES in nightly.yml, which checks. -->
         <pitest.skip>true</pitest.skip>
         <pitest.mutation.threshold>70</pitest.mutation.threshold>
+        <!-- Threads PIT runs mutants on. 1 locally; the nightly job sets 2, one per core of the runner. -->
+        <pitest.threads>1</pitest.threads>
         <pitest-maven.version>1.30.1</pitest-maven.version>
         <pitest-junit5-plugin.version>1.2.3</pitest-junit5-plugin.version>
         <!-- The phase of synapse-release's placeholder javadoc jar: none, except in an archetype module (the
@@ -349,13 +352,17 @@
                 <!--
                     Tests: Mockito is attached as a -javaagent (dynamic agent loading is deprecated on JDK 21+).
                     Pass -Djvm=<path to java> to run tests on another JDK (CI uses this for JDK 21).
+                    Native access for the class path (the enable-native-access option): on JDK 24+ the JVM warns when
+                    class-path code loads a native library (JEP 472), and Netty (gRPC, on Linux) and JNA
+                    (Testcontainers) do. Test JVMs only; JDK 21 accepts the option. What services can do is in
+                    docs/modules/ROOT/pages/grpc.adoc (Native access).
                 -->
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
-                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off --enable-native-access=ALL-UNNAMED</argLine>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -363,7 +370,7 @@
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
-                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off --enable-native-access=ALL-UNNAMED</argLine>
                         <groups>${synapse.it.groups}</groups>
                     </configuration>
                 </plugin>
@@ -452,6 +459,7 @@
                             <param>**.*IT</param>
                         </excludedTestClasses>
                         <mutationThreshold>${pitest.mutation.threshold}</mutationThreshold>
+                        <threads>${pitest.threads}</threads>
                         <failWhenNoMutations>false</failWhenNoMutations>
                         <timestampedReports>false</timestampedReports>
                         <outputFormats>
