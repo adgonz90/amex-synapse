@@ -28,12 +28,25 @@ Requires JDK 25 to build (enforced). The Maven Wrapper is included; never use a 
 
 ```bash
 ./mvnw verify                                  # unit + integration tests and all quality gates
-CI=true ./mvnw verify                          # exactly what CI runs (formatting is checked, not applied)
+CI=true ./mvnw verify                          # CI's quality gates (formatting is checked, not applied)
+CI=true ./mvnw -T 2 -Dmaven.test.redirectTestOutputToFile=true verify javadoc:javadoc   # CI's Verify gates (main runs install)
 ./mvnw verify -Djvm=/path/to/jdk-21/bin/java   # run tests on a Java 21 runtime
 ./mvnw -pl core/synapse-core -am verify        # one module and what it depends on
 ./mvnw -Pmutation verify                       # also run PIT mutation testing (nightly in CI)
 ./mvnw -Paot -pl samples/reference-bookstore/service-bookstore -am verify   # Spring AOT (nightly in CI)
 ```
+
+Verify, Smoke and the nightly full, AOT and image jobs build two modules at a time (`-T 2`; `MAVEN_THREADS` in
+`ci.yml` and `nightly.yml`), and CI writes each test
+class's output to `target/surefire-reports/` or `target/failsafe-reports/` (`<class>-output.txt`) instead of the
+console; failures are still summarised in the log. The other jobs' flags are in `.github/workflows/`.
+
+On pull requests, Verify (JDK 25) is split across runners by the module groups in `.github/verify-groups.txt`. Each
+group's job installs what its modules depend on without tests, then runs the command above with `-pl <its modules>`;
+the `Verify (JDK 25)` check passes only when every group passed, and runs the changed-lines gate on all their coverage
+reports. Smoke (tests on JDK 21) is split by the same groups, and its check likewise passes only when every group
+passed. Every module is in exactly one group (the pull request fails otherwise), so a new module needs a line there.
+Locally, a group's commands need `-Dmaven.repo.local=<scratch dir>`, since they install.
 
 `-Paot` (synapse-parent's opt-in Spring AOT processing) works only for the reference bookstore, as above. The other
 samples have no build environment file (`application-build.yaml`) by design, so `./mvnw -Paot verify` at the root fails

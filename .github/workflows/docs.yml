@@ -16,6 +16,9 @@ concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
 
+# No dependency cache (Maven or npm) in this workflow: it publishes the site to GitHub Pages, and the build job
+# compiles the modules (property tables) and produces the deployed artifact, so a poisoned cache entry would reach
+# the published site. As in release.yml and snapshot-build.yml.
 jobs:
   build:
     name: Build site
@@ -33,13 +36,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: docs/package-lock.json
+          # No npm cache, explicitly: setup-node caches automatically when package.json names npm as packageManager.
+          package-manager-cache: false
 
       - name: Build the site
         working-directory: docs

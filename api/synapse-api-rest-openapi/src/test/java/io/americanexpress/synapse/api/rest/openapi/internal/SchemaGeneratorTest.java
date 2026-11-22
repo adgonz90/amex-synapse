@@ -602,16 +602,23 @@ class SchemaGeneratorTest {
         assertThat(property(shelf, "first").get$ref()).isEqualTo(REF + "Book");
         assertThat(property(shelf, "second").get$ref()).isEqualTo(REF + "Book");
         assertThat(property(shelf, "others").getItems().get$ref()).isEqualTo(REF + "Book");
+        // One walk per type: Node's reference to itself and Shelf's three references to Book reuse the component.
+        assertThat(generator.walkCount()).isEqualTo(3);
 
         // Without a budget the walk would never end: every level doubles the parameterizations, and none repeats.
         SchemaGenerator growing = new SchemaGenerator(JsonMapper.builder().build(), VALIDATOR);
-        Schema<?> grow = assertTimeoutPreemptively(Duration.ofSeconds(1),
+        // The counts below are the check; the timeout is only a backstop (about 30 times the usual second) so that
+        // a runaway walk fails here instead of hanging the build.
+        Schema<?> grow = assertTimeoutPreemptively(Duration.ofSeconds(30),
                 () -> growing.output(ResolvableType.forClassWithGenerics(Grow.class, String.class)));
 
         assertThat(grow.get$ref()).isEqualTo(REF + "GrowOfString");
         assertThat(growing.components())
                 .hasSizeLessThanOrEqualTo(SchemaGenerator.TYPE_BUDGET)
                 .containsKeys("GrowOfString", "GrowOfListOfString", "GrowOfSetOfString");
+        // The budget bounds the work, not only the result: each type within it is walked once, and no more.
+        assertThat(growing.walkCount()).isEqualTo(growing.components().size());
+        assertThat(growing.schemaCount()).isLessThanOrEqualTo(DEFAULTS.schemas());
         assertThat(growing.undescribed())
                 .hasSize(1)
                 .allSatisfy(type -> assertThat(type).startsWith(Grow.class.getCanonicalName() + "<"));

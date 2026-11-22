@@ -151,6 +151,20 @@
                                 <extraArtifact>io.americanexpress.synapse:synapse-api-rest:${project.version}:jar</extraArtifact>
                                 <extraArtifact>io.americanexpress.synapse:synapse-logging-log4j2:${project.version}:jar</extraArtifact>
                                 <extraArtifact>io.americanexpress.synapse:synapse-test-rest:${project.version}:jar</extraArtifact>
+                                <!-- What the generated project's build needs beyond what this module's build resolves,
+                                     resolved (with runtime dependencies) into the main local repository, which CI
+                                     caches. src/test/resources/settings.xml mirrors every repository to that
+                                     repository, so a generated build that needs anything else fails and names it: add
+                                     it here. The plugin versions are spring-boot-starter-parent's. -->
+                                <extraArtifact>org.springframework.boot:spring-boot-maven-plugin:${spring-boot.version}:maven-plugin</extraArtifact>
+                                <extraArtifact>org.apache.maven.plugins:maven-failsafe-plugin:3.5.6:maven-plugin</extraArtifact>
+                                <extraArtifact>org.apache.maven.surefire:surefire-junit-platform:3.5.6:jar</extraArtifact>
+                                <!-- The JUnit Platform launcher that provider resolves for the tests, at the
+                                     JUnit version Boot manages (6.0.3), outside the project's dependency
+                                     management. It brings jspecify 1.0.0, which the main build resolves only
+                                     when its own tests happen to run first. -->
+                                <extraArtifact>org.junit.platform:junit-platform-launcher:6.0.3:jar</extraArtifact>
+                                <extraArtifact>org.springframework.boot:spring-boot-starter-actuator:${spring-boot.version}:jar</extraArtifact>
                             </extraArtifacts>
                         </configuration>
                     </execution>
