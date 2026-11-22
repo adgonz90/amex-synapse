@@ -1,0 +1,271 @@
+= The OpenTelemetry Java agent
+
+Synapse traces through Spring Boot's OpenTelemetry bridge, `spring-boot-starter-opentelemetry`, which a service with
+operations must have (see xref:core.adoc#tracing[Tracing is required]). The
+https://opentelemetry.io/docs/zero-code/java/agent/[OpenTelemetry Java agent] is an alternative way to produce the
+traces, and Synapse supports it as a recipe: you keep the starter, add one configuration class, and start the JVM with
+`-javaagent:`. The agent and Boot then share one OpenTelemetry SDK, the agent's, so Boot's observations, Synapse's
+baggage and the agent's own instrumentation are in the same traces and go to the same exporters.
+
+The reference bookstore (`samples/reference-bookstore`) has the recipe, and its `BookstoreAgentIT` runs the jar under
+the agent in every build. The versions on this page are the agent 2.33.1, which targets the OpenTelemetry SDK 1.67.0
+(https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/tag/v2.33.1[release notes]), and
+Spring Boot 4.1.2.
+
+[#recipe]
+== The recipe
+
+. Keep `spring-boot-starter-opentelemetry` in the service module. Synapse's tracing check needs Boot's tracer, and the
+  agent doesn't replace it.
+. Give Boot's bridge the agent's SDK. The agent installs its SDK as the global OpenTelemetry before the application
+  starts; this class makes it the application's `OpenTelemetry` bean, so Boot doesn't start an SDK of its own (Boot
+  creates one only when no `OpenTelemetry` bean exists):
++
+[source,java]
+----
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnClass(name = "io.opentelemetry.javaagent.bootstrap.AgentInitializer")
+public class OpenTelemetryAgentConfiguration {
+
+    @Bean
+    OpenTelemetry openTelemetryAgent() {
+        return GlobalOpenTelemetry.get();
+    }
+}
+----
++
+The condition is a class of the agent's jar, which `-javaagent:` puts on the class path. On the JVM it is evaluated
+at every start, so the same jar runs with or without the agent: without it, the class does nothing and Boot's SDK is
+used. Never make it depend on a Spring profile; whether the agent runs is decided by how the JVM starts, not by the
+environment. In AOT mode it is different: see <<aot>>.
+. Get the agent jar with Maven, and check it. Spring Boot doesn't manage its version, so the service's pom pins it and
+  its SHA-256. `maven-dependency-plugin` copies it to `target/otel/opentelemetry-javaagent.jar`, and the Enforcer's
+  https://maven.apache.org/enforcer/enforcer-rules/requireFileChecksum.html[`requireFileChecksum`] fails the build when
+  the copy has another checksum. The JVM gives a `-javaagent` full rights, and Maven's own repository checksum check only
+  warns by default, so the pin is what stops a different jar from running. The value is the one in Maven Central's
+  `opentelemetry-javaagent-2.33.1.jar.sha256`, and it is the checksum of the `opentelemetry-javaagent.jar` of the
+  agent's GitHub release too:
++
+[source,xml]
+----
+<properties>
+  <opentelemetry-javaagent.version>2.33.1</opentelemetry-javaagent.version>
+  <opentelemetry-javaagent.sha256>e43a270df53c6f423e0ab157be9c27ccc01d5dc3232e162fe54777573db2f149</opentelemetry-javaagent.sha256>
+  <otel-agent.jar>${project.build.directory}/otel/opentelemetry-javaagent.jar</otel-agent.jar>
+</properties>
+
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-dependency-plugin</artifactId>
+  <executions>
+    <execution>
+      <id>otel-agent</id>
+      <phase>generate-test-resources</phase>
+      <goals>
+        <goal>copy</goal>
+      </goals>
+      <configuration>
+        <artifactItems>
+          <artifactItem>
+            <groupId>io.opentelemetry.javaagent</groupId>
+            <artifactId>opentelemetry-javaagent</artifactId>
+            <version>${opentelemetry-javaagent.version}</version>
+            <outputDirectory>${project.build.directory}/otel</outputDirectory>
+            <destFileName>opentelemetry-javaagent.jar</destFileName>
+          </artifactItem>
+        </artifactItems>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
+
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-enforcer-plugin</artifactId>
+  <executions>
+    <execution>
+      <id>otel-agent-checksum</id>
+      <phase>process-test-resources</phase>
+      <goals>
+        <goal>enforce</goal>
+      </goals>
+      <configuration>
+        <rules>
+          <requireFileChecksum>
+            <file>${otel-agent.jar}</file>
+            <checksum>${opentelemetry-javaagent.sha256}</checksum>
+            <type>sha256</type>
+          </requireFileChecksum>
+        </rules>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
+----
++
+The copy runs in `generate-test-resources` and the check in the next phase, `process-test-resources`, so every build
+that compiles the tests has a checked agent: the integration tests, `package`, and `spring-boot:run`, which builds to
+`test-compile` before it starts the application. Change the checksum together with the version.
+. Start the JVM with the agent:
++
+[source,bash]
+----
+java -javaagent:target/otel/opentelemetry-javaagent.jar -Dotel.service.name=bookstore -jar target/service-bookstore-2.0.0-SNAPSHOT.jar
+----
++
+The agent logs `opentelemetry-javaagent - version: 2.33.1` first. The bookstore's pom also has a profile,
+`otel-agent`, that sets `spring-boot.run.jvmArguments` to the agent and its exporters off:
+`./mvnw -Potel-agent spring-boot:run` in a service whose modules are installed. The copy runs before `test-compile`, so
+it should work on a fresh checkout too, but this is not verified: it isn't run in this repository, whose modules are
+never installed (the bookstore's README runs `java -jar`).
+
+The bookstore's container images (xref:parent.adoc#_images[Images]) don't contain the agent, and their AOT cache was
+recorded without it. Adding the agent at run time only (`JAVA_TOOL_OPTIONS=-javaagent:...`) makes that cache unusable:
+the JVM says `Mismatched values for property jdk.module.addmods: java.instrument specified during runtime but not
+during dump time` and starts without the cache, or, with `-XX:AOTMode=on`, stops with `Unable to use AOT cache`. JEP
+483 lists the agents that a run with a cache must not use
+(https://openjdk.org/jeps/483[JEP 483]). An image with the agent and an AOT cache recorded under it is not part of
+this recipe yet.
+
+[#aot]
+== AOT mode (`-Paot`)
+
+Spring's AOT processing evaluates the conditions once, at build time, and the generated code creates the beans that
+matched then
+(https://docs.spring.io/spring-boot/how-to/aot.html#howto.aot.conditions[Spring Boot, Ahead-of-time processing]).
+`process-aot` runs without the agent, so `@ConditionalOnClass(AgentInitializer)` is false in the generated code, and a
+jar built with `-Paot` and started in AOT mode (`-Dspring.aot.enabled=true`) never has the `openTelemetryAgent` bean,
+agent or not. Under the agent, Boot would then start its own SDK next to the agent's, and Boot's observations and
+Synapse's baggage would leave through Boot's SDK, not the agent's exporters. So in AOT mode the same build does *not*
+behave the same with and without the agent.
+
+The bookstore fails such a start instead. `OpenTelemetryAgentAotConfiguration` has no condition, so the generated code
+always has it. In AOT mode, when the agent's class is present at run time and the `openTelemetryAgent` bean is not,
+startup fails:
+
+----
+The OpenTelemetry Java agent is running, but this AOT-processed application was built without it: AOT processing fixed OpenTelemetryAgentConfiguration's @ConditionalOnClass at build time, so Spring Boot would start a second OpenTelemetry SDK instead of using the agent's.
+
+Action:
+
+To run under the agent, start the jar without -Dspring.aot.enabled=true, or don't build with -Paot.
+----
+
+On the JVM, the same jar under the agent is unaffected: the condition is evaluated at the start, and the check does
+nothing. `BookstoreAotIT` runs the failing case with the real agent, and `BookstoreAgentIT` the JVM case. A build that
+puts the agent on the class path of AOT processing is not part of this recipe and is not verified: its generated code
+would always create the bean, so that jar is for runs under the agent only.
+
+== What changes in the logs
+
+Every line keeps Boot's `traceId` and `spanId`, and Synapse's failure line its `correlationId`, `errorCode` and
+`errorCategory` (see xref:core.adoc#errors[Errors]). The agent's Log4j instrumentation adds three fields of its own,
+`trace_id`, `span_id` and `trace_flags`, with the same ids. Under the bookstore's recipe a failure line reads (the
+`@timestamp`, `process` and `service` fields left out):
+
+[source,json]
+----
+"message":"Operation delete-book failed with BOOK_NOT_FOUND (NOT_FOUND): Book 2b0c3c7e-1111-4222-8333-444455556666 was not found","correlationId":"c26b9663-e7fd-44af-a94b-b74c4b4c8ae8","errorCategory":"NOT_FOUND","errorCode":"BOOK_NOT_FOUND","operation":"delete-book","spanId":"57d34912ed65c88b","span_id":"57d34912ed65c88b","traceId":"0af7651916cd43dd8448eb211c80319c","trace_flags":"01","trace_id":"0af7651916cd43dd8448eb211c80319c","ecs":{"version":"8.11"}
+----
+
+To keep only Boot's fields, turn the agent's Log4j instrumentation off with
+`-Dotel.instrumentation.log4j-context-data.enabled=false`.
+
+Synapse's startup check of context attribute names (xref:logging-log4j2.adoc#ecs[ECS JSON by default]) reserves
+Boot's `traceId` and `spanId`, but not the agent's three fields. Under the agent, don't name a context attribute
+`trace_id`, `span_id` or `trace_flags`: it would be an MDC entry of the same name as the agent's on every line of the
+call.
+
+[#configuration]
+== Configuring the agent: `-Dotel.*` and `OTEL_*`
+
+The agent reads its settings from system properties (`-Dotel.service.name=bookstore`) and from environment variables
+of the same name in upper case, with `.` and `-` replaced by `_` (`OTEL_SERVICE_NAME=bookstore`). A system property
+wins over the environment variable, which wins over the agent's configuration file (`otel.javaagent.configuration-file`)
+(https://opentelemetry.io/docs/zero-code/java/agent/configuration/[agent configuration]). The settings themselves are
+the SDK's (https://opentelemetry.io/docs/languages/java/configuration/[SDK configuration]), among them:
+
+[cols="2,3"]
+|===
+|Property (variable) |What it does
+
+|`otel.service.name` (`OTEL_SERVICE_NAME`)
+|The service's name in every trace, metric and log; `unknown_service:java` when unset.
+
+|`otel.traces.exporter`, `otel.metrics.exporter`, `otel.logs.exporter` (`OTEL_TRACES_EXPORTER`, ...)
+|`otlp` by default, to the collector at `otel.exporter.otlp.endpoint`; `none` turns a signal's export off. The bookstore's tests and its `otel-agent` profile set all three to `none`.
+
+|`otel.propagators` (`OTEL_PROPAGATORS`)
+|`tracecontext,baggage` by default.
+
+|`otel.instrumentation.<name>.enabled` (`OTEL_INSTRUMENTATION_<NAME>_ENABLED`)
+|`false` turns off the agent's instrumentation of one library, for example `tomcat`, `servlet`, `grpc` or
+`log4j-context-data` (https://opentelemetry.io/docs/zero-code/java/agent/disable/[suppressing instrumentation]).
+|===
+
+[#otel-environment-variables]
+=== `OTEL_*` and Spring Boot
+
+Spring Boot also reads a subset of the `OTEL_*` variables and maps them to its own properties
+(https://docs.spring.io/spring-boot/reference/actuator/observability.html[Spring Boot, observability]). A variable
+meant for the agent can then change Boot too. For example, `OTEL_PROPAGATORS=tracecontext` turns Boot's baggage off,
+and Synapse's startup fails:
+
+----
+Synapse service operations carry the correlation id and context attributes as tracing baggage, but baggage is disabled: Spring Boot set management.tracing.baggage.enabled=false from the OTEL_PROPAGATORS environment variable, which does not include 'baggage'.
+----
+
+When the agent alone should read the `OTEL_*` variables, turn Boot's mapping off in the service's `application.yaml`:
+
+[source,yaml]
+----
+management:
+  opentelemetry:
+    map-environment-variables: false
+----
+
+With it, the same variable configures only the agent, and the service starts. Boot's own settings are then only its
+`management.*` properties.
+
+[#duplicate-spans]
+== Duplicate server spans
+
+Under the agent, every request gets two server spans in the same trace: the agent's, from its instrumentation of
+Tomcat (`+DELETE /books/{id}+`, tracer `io.opentelemetry.tomcat-10.0`) or of grpc-java (tracer `io.opentelemetry.grpc-1.6`),
+and Boot's observation of the same request (`+http delete /books/{id}+` and the gRPC method name, tracer
+`org.springframework.boot`), which Boot's bridge reports through the agent's SDK. Turn one of them off, preferably the
+agent's.
+
+* *The agent's (preferred):* `-Dotel.instrumentation.tomcat.enabled=false -Dotel.instrumentation.servlet.enabled=false`
+  (REST; with only `tomcat` off, the agent's servlet instrumentation creates the server span instead) and
+  `-Dotel.instrumentation.grpc.enabled=false` (gRPC; this turns off all of the agent's grpc-java instrumentation).
+  `otel.instrumentation.<name>.enabled=false` suppresses the agent's instrumentation of that library
+  (https://opentelemetry.io/docs/zero-code/java/agent/disable/[suppressing instrumentation]). Boot's observation is
+  then the server span, so Boot's server metrics stay as they are, and it is the span that
+  `synapse.context.inbound.trusted=false` covers (see <<untrusted>>).
+* *Boot's:* `management.observations.enable.http.server.requests=false` (REST) and
+  `management.observations.enable.grpc.server=false` (gRPC). Boot's
+  https://docs.spring.io/spring-boot/reference/actuator/observability.html[`management.observations.enable.<prefix>`]
+  turns off every observation whose name starts with the prefix, and "for metrics and traces, Spring Boot uses
+  Micrometer Observation", so this also removes Boot's server metrics. With both properties set, the bookstore's `/actuator/metrics` has no
+`http.server.requests`, `grpc.server`, `grpc.server.active` or `grpc.server.received` (404) after a REST and a gRPC
+call; with the agent-side switch above, all four are there. The agent's span is then the
+  server span, and the correlation id and the trace still reach Synapse's logs, but, as in the default setup,
+  `trusted=false` doesn't restart the trace. Use it only if your server metrics come from somewhere else.
+
+The operation's own span (`delete-book`, Synapse's operation observation) and the agent's JDBC, Hibernate and Spring
+Data spans are children of the server span either way.
+
+[#untrusted]
+== `synapse.context.inbound.trusted=false` under the agent
+
+A public-facing service sets `synapse.context.inbound.trusted=false`, so each request starts a new trace and the
+caller's baggage is dropped (see xref:rest.adoc#_baggage_and_trust[REST] and xref:grpc.adoc#_baggage_and_trust[gRPC]).
+Synapse hides the trace and baggage headers from Boot's observation, but the agent reads them before any servlet
+filter or gRPC interceptor runs. So, with the agent's server instrumentation on (its default), `trusted=false` does not
+restart the trace: a request with a `traceparent` is logged with the caller's trace id, over REST and over gRPC.
+Whether the caller's baggage is dropped under the agent is not verified, in this setup or in the one below. A Synapse
+extension of the agent that closes this gap is planned.
+
+Until then, turn the agent's server instrumentation off as shown under <<duplicate-spans>>: Boot's observation is then
+the server span, and `trusted=false` restarts the trace again, over REST and gRPC.

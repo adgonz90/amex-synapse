@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    The files of the generated project, shaped like samples/hello-rest. The templates are Velocity: ${package},
+    ${packageInPathFormat}, ${groupId}, ${artifactId} and ${version} are replaced, an undefined reference such as ${ENV}
+    stays as it is, and a line starting with ## is a Velocity comment (so the README escapes its headings: #[[## …]]#).
+    The template pom.xml is always generated; its synapse-parent version was filled in when this archetype was built.
+    Every fileSet but the Maven Wrapper's is filtered, including those with nothing to replace: the generator writes a
+    filtered file with the platform's line separator and copies an unfiltered one as is, so this keeps a project
+    generated on Windows on one line ending. The generated .gitattributes then normalizes them to LF in git.
+-->
+<archetype-descriptor xmlns="https://maven.apache.org/plugins/maven-archetype-plugin/archetype-descriptor/1.1.0"
+                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                      xsi:schemaLocation="https://maven.apache.org/plugins/maven-archetype-plugin/archetype-descriptor/1.1.0 https://maven.apache.org/xsd/archetype-descriptor-1.1.0.xsd"
+                      name="synapse-archetype-quickstart">
+    <fileSets>
+        <fileSet filtered="true" packaged="true" encoding="UTF-8">
+            <directory>src/main/java</directory>
+            <includes>
+                <include>**/*.java</include>
+            </includes>
+        </fileSet>
+        <fileSet filtered="true" encoding="UTF-8">
+            <directory>src/main/resources</directory>
+            <includes>
+                <include>**/*.yaml</include>
+            </includes>
+        </fileSet>
+        <fileSet filtered="true" packaged="true" encoding="UTF-8">
+            <directory>src/test/java</directory>
+            <includes>
+                <include>**/*.java</include>
+            </includes>
+        </fileSet>
+        <fileSet filtered="true" encoding="UTF-8">
+            <directory>src/test/resources</directory>
+            <includes>
+                <include>**/*.yaml</include>
+            </includes>
+        </fileSet>
+        <fileSet filtered="true" encoding="UTF-8">
+            <directory></directory>
+            <includes>
+                <include>.gitattributes</include>
+                <include>README.md</include>
+            </includes>
+        </fileSet>
+        <!-- The Maven Wrapper: the repository's mvnw, mvnw.cmd and maven-wrapper.properties, byte for byte (the
+             archetype-drift build-rules test checks it). Unfiltered, for two reasons: Velocity would read the scripts'
+             ${...} and # lines as its own, and an unfiltered file is copied as is, so mvnw keeps LF and mvnw.cmd keeps
+             CRLF on every platform. The post-generation script sets mvnw executable. -->
+        <fileSet filtered="false">
+            <directory></directory>
+            <includes>
+                <include>mvnw</include>
+                <include>mvnw.cmd</include>
+                <include>.mvn/wrapper/maven-wrapper.properties</include>
+            </includes>
+        </fileSet>
+    </fileSets>
+</archetype-descriptor>

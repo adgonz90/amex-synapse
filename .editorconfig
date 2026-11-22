@@ -1,0 +1,25 @@
+# Editor basics for every file type (https://editorconfig.org). Java formatting itself is enforced by the build
+# (Spotless + .config/synapse-java-format.xml); these settings keep editors consistent with it and cover the
+# files the build doesn't format.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.java]
+max_line_length = 120
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+# Two trailing spaces are a hard line break in Markdown.
+trim_trailing_whitespace = false
+
+[*.{cmd,bat}]
+end_of_line = crlf

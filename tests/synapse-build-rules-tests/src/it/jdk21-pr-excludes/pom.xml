@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Carrier for verify.groovy, which checks that .config/jdk21-pr-excluded-its.txt covers the ITs of every sample that inherits synapse-parent: the build must succeed. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse</groupId>
+        <artifactId>synapse</artifactId>
+        <version>@project.version@</version>
+        <relativePath/>
+    </parent>
+
+    <artifactId>jdk21-pr-excludes</artifactId>
+    <packaging>pom</packaging>
+</project>

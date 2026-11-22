@@ -1,0 +1,507 @@
+= The parent POM
+
+`synapse-parent` is the parent POM for applications built with Synapse. It extends `spring-boot-starter-parent`, imports
+`synapse-bom` and adds Synapse's build conventions for consumer projects.
+
+[source,xml]
+----
+<parent>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-parent</artifactId>
+  <version>${synapse.version}</version>
+  <relativePath/>
+</parent>
+----
+
+== Pins
+
+The parent repeats the third-party pins of `synapse-bom` in its own `dependencyManagement`. An explicit entry there
+beats every imported BOM, including one your project imports itself, such as `guava-bom` or a cloud provider's
+libraries BOM. Maven processes your project's own imports before the `synapse-bom` import it inherits, so the import
+alone would let your BOM's older versions win. Only an entry in your own `dependencyManagement` overrides a pin. The
+pins include a CVE pin for Guava, which you keep without doing anything. Build rules check that the root build, the BOM
+and the parent agree, and that the Guava pin beats an older `guava-bom` that a project imports.
+
+== Logging
+
+The parent manages the version of `synapse-logging-log4j2` (through the BOM) and does not choose a backend for you.
+Maven can't exclude `spring-boot-starter-logging` globally, and excluding it in managed starters would leave Logback
+users with no backend, so the exclusions stay in your service module. The setup is in xref:logging-log4j2.adoc[Log4j2
+logging].
+
+== Build environment
+
+Spring AOT processing is opt-in. The parent runs it only in its Maven profile `aot`, which is off by default:
+
+[source,bash]
+----
+./mvnw -Paot verify
+----
+
+`-Paot` is experimental until P4: it may change without notice.
+
+Without the profile, no `process-aot` runs: the jar holds no AOT-generated code, `-Dspring.aot.enabled=true` can't
+start it, and the service needs no build environment file. That holds for a clean build. The code that `-Paot`
+generated stays in `target/` until `clean`, and a later build without the profile still puts it in the jar. So run
+`clean` in the first build without `-Paot` that follows a `-Paot` one, for example `./mvnw clean package`. Full AOT, with the native image, comes in a later phase
+(BUILD.md §15, P4). The rules for an application that runs AOT-generated code are in
+xref:environments.adoc#aot[AOT and native images].
+
+`synapse.build.environment` is `build`. Spring Boot evaluates conditions when it processes the application ahead of
+time, so the environment used at build time has to be set for that run
+(https://docs.spring.io/spring-boot/maven-plugin/aot.html[Spring Boot Maven plugin, process-aot]). The `aot` profile
+does that on a `spring-boot-maven-plugin` execution in its plugin management, with the id `process-aot`, the id that
+Boot's `native` profile uses, so AOT processing runs once:
+
+[source,xml]
+----
+<execution>
+  <id>process-aot</id>
+  <goals>
+    <goal>process-aot</goal>
+  </goals>
+  <configuration>
+    <profiles combine.self="override"/>
+    <arguments>
+      <argument>--spring.profiles.active=</argument>
+      <argument>--spring.profiles.default=${synapse.build.environment}</argument>
+    </arguments>
+  </configuration>
+</execution>
+----
+
+The build environment reaches AOT processing as the *default* profile, and no profile is active. Spring's AOT code
+generation makes every profile that is active during processing active at run time too
+(https://docs.spring.io/spring-framework/reference/core/aot.html[Spring Framework, Ahead of Time Optimizations]: "profiles
+that have been enabled at build time are automatically enabled at runtime as well"). That holds for the goal's
+`profiles` parameter, for `-Dspring.profiles.active` in `jvmArguments` or `systemPropertyVariables`, and for an
+argument. A default profile is not carried over, so the build environment is never active when the application runs:
+a run in `dev` has `dev` as its only profile and never reads `application-build.yaml`. Bean definitions that the build
+environment decided, such as a `@Profile("build")` bean, stay in the generated code, because AOT processing fixes the
+set of beans (see xref:environments.adoc#aot[AOT and native images]).
+
+* The empty `spring.profiles.active` is a command-line argument, so it outranks the `+${ENV}+` in your
+  `application.yaml` and a `SPRING_PROFILES_ACTIVE` on the build machine.
+* `synapse-core` counts `spring.profiles.default` as the environment only during AOT processing (Spring sets the
+  system property `spring.aot.processing` for that run). At any other time it does not count. During processing no
+  profile may be active: a `spring.profiles.include` would make Boot ignore the default profile, so the build fails.
+  Feature profiles go in `spring.profiles.group.<env>`, `spring.profiles.group.build` included (see
+  xref:environments.adoc#environment[The environment]).
+* [[aot-cloud-platform]]A library can add a profile too, and fail processing the same way: spring-cloud-kubernetes
+  adds `kubernetes` when Boot detects Kubernetes, which it does on a build agent that runs in a pod (Kubernetes sets
+  `KUBERNETES_SERVICE_HOST` in every container). The failure then says that a library or the platform added the
+  profile, not `spring.profiles.include`. Boot's `spring.main.cloud-platform=none` turns off Boot's platform detection
+  (`CloudPlatform.isActive` then answers `false` for every platform but `NONE`). A CI build that runs `-Paot` inside a
+  cloud platform can pass it to `process-aot` for that build only, through the goal's `spring-boot.aot.jvmArguments`
+  user property, which the parent's execution doesn't set
+  (https://docs.spring.io/spring-boot/maven-plugin/aot.html[Spring Boot Maven plugin, process-aot], 4.1.2):
++
+[source,shell]
+----
+./mvnw -Paot package -Dspring-boot.aot.jvmArguments=-Dspring.main.cloud-platform=none
+----
++
+To set it for every build of the service instead, append `<argument>--spring.main.cloud-platform=none</argument>` to
+the execution's arguments (with `<arguments combine.children="append">`, as below). Synapse doesn't set it in the
+parent, because it makes AOT processing decide everything that depends on the platform as if the service never ran on
+one:
+** a config-data document with `spring.config.activate.on-cloud-platform` is not read during processing, so a
+   property in it that decides which beans exist is decided as if it were unset;
+** beans that are `@ConditionalOnCloudPlatform` are decided at build time, so the AOT-processed application has none
+   of them, wherever it runs.
++
+The `server.forward-headers-strategy` default is not one of them: Boot's Tomcat customizer
+(`TomcatWebServerFactoryCustomizer`) decides it when the application starts, from the platform it runs on
+(`NATIVE` on a supported cloud platform), so `none` during processing doesn't change it. Setting
+`spring.main.cloud-platform` in the service's own files would, at every run.
++
+That this stops spring-cloud-kubernetes from adding its profile is read from its source, not tested here.
+* The empty `<profiles combine.self="override"/>` keeps a plugin-level `<profiles>`, such as one you set for
+  `spring-boot:run`, out of AOT processing: plugin-level configuration applies to every goal of the plugin
+  (https://maven.apache.org/pom.html[Maven POM reference]).
+* Don't add `profiles` to your own configuration of the `process-aot` execution. The run of the AOT-processed
+  application then fails at startup with `The AOT-generated code activates the profiles build at every run …` (see
+  xref:environments.adoc#_startup_failures[Startup failures]). To add an argument, append it to the parent's with
+  `<arguments combine.children="append">`; a plain `<arguments>` replaces both of the parent's.
+* Boot's `native` profile declares the same execution without these arguments, so it gets them only together with
+  `aot` (`-Paot,native`). The native image is not supported yet. With `-Pnative` alone, `process-aot` runs Boot's bare
+  execution, and the environment comes from `ENV`, as in <<_without_synapse_parent>>. Both outcomes fail closed:
+** with `ENV` unset, AOT processing fails the build with `+No environment is set: spring.profiles.active is '${ENV}', and ENV has no value.+`;
+** with `ENV` (or `SPRING_PROFILES_ACTIVE`) set, say to `e3`, the build passes but bakes `e3` in, and every run of the
+   AOT-generated code fails at startup, in `e3` too, with `The AOT-generated code activates the profiles e3 at every
+   run (example.App__EnvironmentPostProcessor) …` (see xref:environments.adoc#_startup_failures[Startup failures]).
+
+Put the build's settings, such as a placeholder data store URL that nothing connects to, in `application-build.yaml`
+and in the library modules' `config-build.yaml`.
+
+A service that builds with `-Paot` needs `src/main/resources/application-build.yaml`, even with nothing but a comment
+in it, and so does one that builds an image, whose training run starts in the build environment too (see
+<<_images>>, which also says what the image build does without it). Without it, `process-aot` fails the module's
+`package`, because every environment has its own file:
+
+----
+The environment 'build' has no file in the service: none of application-build.yaml, application-build.yml,
+application-build.properties was loaded or found on the classpath. Environment names are case-sensitive.
+----
+
+=== Without synapse-parent
+
+A project that imports only the BOM, or builds with Gradle, passes the same two arguments to AOT processing itself.
+Without them, AOT processing fails when `ENV` is unset, and when `ENV` or `SPRING_PROFILES_ACTIVE` is set on the build
+machine it bakes that environment in, so every run of the artifact fails at startup.
+
+Maven: with `spring-boot-starter-parent` as the parent, put this execution inside your `native` profile (Boot's
+`native` profile, which declares the `process-aot` execution, is in `spring-boot-starter-parent`, so a project that
+imports only the BOM has none); declared outside a profile, in `<build><plugins>`, it adds AOT processing to every
+build:
+
+[source,xml]
+----
+<plugin>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-maven-plugin</artifactId>
+  <executions>
+    <execution>
+      <id>process-aot</id>
+      <goals>
+        <goal>process-aot</goal>
+      </goals>
+      <configuration>
+        <profiles combine.self="override"/>
+        <arguments>
+          <argument>--spring.profiles.active=</argument>
+          <argument>--spring.profiles.default=build</argument>
+        </arguments>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
+----
+
+Gradle: the `processAot` task is a `JavaExec` task
+(https://docs.spring.io/spring-boot/gradle-plugin/aot.html[Spring Boot Gradle plugin, AOT]), and it passes its
+`args` to the AOT processor after its own:
+
+[source,kotlin]
+----
+tasks.named<JavaExec>("processAot") {
+    args("--spring.profiles.active=", "--spring.profiles.default=build")
+}
+----
+
+== Images
+
+For `spring-boot:build-image` the parent sets these environment variables for the Paketo buildpacks
+(https://github.com/paketo-buildpacks/spring-boot[paketo-buildpacks/spring-boot]):
+
+[cols="2,3"]
+|===
+|Variable |Value
+
+|`BP_JVM_VERSION`
+|`+${synapse.image.jvm-version}+` (25)
+
+|`BP_JVM_AOTCACHE_ENABLED`
+|`true`: the image build performs the AOT cache training run.
+
+|`TRAINING_RUN_JAVA_TOOL_OPTIONS`
+|`+-XX:+UseG1GC -Dspring.profiles.active=${synapse.build.environment}+`: the collector (see <<gc>>) and the training
+run's environment. A system property outranks
+the `+${ENV}+` in `application.yaml`, so there is still exactly one environment. The training run is an ordinary run
+of the application, not AOT processing: Paketo adds `-Dspring.aot.enabled=true` to it only with
+`BP_SPRING_AOT_ENABLED`, so the AOT-generated code doesn't run, and `build` is its one active profile. The JVM's AOT
+cache that it records holds loaded and linked classes (https://openjdk.org/jeps/483[JEP 483]) and, on Java 25, method
+profiles (https://openjdk.org/jeps/515[JEP 515]), not Spring's environment, so no run of the image inherits the profile.
+
+|`BPE_DELIM_JAVA_TOOL_OPTIONS`, `BPE_APPEND_JAVA_TOOL_OPTIONS`
+|A space, and `-XX:+UseG1GC`: every run of the image appends the collector to its `JAVA_TOOL_OPTIONS`, after your
+options (<<gc>>). Paketo's environment variables buildpack applies `BPE_*` variables to the
+image's launch environment (https://paketo.io/docs/howto/configuration/[Paketo configuration]); Spring Boot's
+build-image documentation shows this pair, with `xml:space="preserve"` so that Maven keeps the space
+(https://docs.spring.io/spring-boot/maven-plugin/build-image.html[Spring Boot, build-image]).
+|===
+
+The AOT cache doesn't need Spring AOT processing, so these apply with or without `-Paot`. The training run starts the
+application in the build environment either way, so a service that builds an image ships the build environment's
+files: `application-build.yaml`, and a placeholder `config-build.yaml` in each library module whose store or client
+needs settings to start (see <<_build_environment>>). The run exits once the context is refreshed
+(`-Dspring.context.exit=onRefresh`), so nothing connects.
+
+[#training-run-without-build-file]
+Without `application-build.yaml` the training run fails to start, with Synapse's message in the image build's log:
+
+----
+[creator]     APPLICATION FAILED TO START
+[creator]     Description:
+[creator]     The environment 'build' has no file in the service: none of application-build.yaml, application-build.yml, application-build.properties was loaded or found on the classpath. Environment names are case-sensitive.
+[creator]         Training run exited with an error, but produced a usable application.aot (25604096 bytes); keeping it and continuing. The exit status came from the application, after the cache was written: exit status 1
+----
+
+That is why the parent's `image` profile checks for the file before Paketo runs (below): `./mvnw -Pimage package`
+fails early, in `validate`, naming the file to add. Only `spring-boot:build-image` invoked on the command line skips
+that check, and then the build still succeeds: the Paketo Spring Boot buildpack (5.40.5, `boot/spring_performance.go`)
+judges a training run by the cache it wrote, not by its exit status, and nothing in its settings changes that. Such an
+image starts normally in its own environment, but its cache holds only what loaded before the failure (25.6 MB for the
+reference bookstore, against 139 MB from a full training run), so the image starts more slowly than a fully trained
+one; how much more slowly was not measured. A Dockerfile's training `RUN` (see <<dockerfile>>) fails `docker build`
+instead, because `RUN` fails on any non-zero exit.
+
+The parent never sets `BP_SPRING_AOT_ENABLED`. According to the Paketo README, the build fails ("build failed because
+of invalid user configuration") when the application is AOT processed, `BP_SPRING_AOT_ENABLED` is `true` and
+`TRAINING_RUN_JAVA_TOOL_OPTIONS` is set, because the AOT classes from the training run aren't compatible with other
+`JAVA_TOOL_OPTIONS` at runtime. If you set `BP_SPRING_AOT_ENABLED` in your project, leave the training run's options
+out.
+
+Override any of these in your own `spring-boot-maven-plugin` configuration, or change the two properties
+(`synapse.build.environment`, `synapse.image.jvm-version`).
+
+[#image-profile]
+=== The `image` profile
+
+Build the image with the parent's Maven profile `image`, off by default, so that only `-Pimage` needs Docker:
+
+[source,bash]
+----
+./mvnw -Pimage package
+./mvnw -Pimage -pl service-bookstore -am package    # one service of a reactor, with the modules it needs
+----
+
+The profile does two things:
+
+* It binds `build-image-no-fork` to `package`, after `repackage`, in each module that declares
+  `spring-boot-maven-plugin`. The execution is in the profile's plugin management, as `process-aot` is in the `aot`
+  profile, so contract and data modules, which don't declare the plugin, build no image. `spring-boot:build-image` on
+  the command line would instead run in every module of the reactor, and fail in a module without a main class
+  ("Unable to find main class"). The image is named `<artifactId>:<version>`;
+  `-Dspring-boot.build-image.imageName=<name>` names it otherwise.
+* Before anything else, in `validate`, it requires the service's file for the build environment:
+  `+src/main/resources/application-${synapse.build.environment}.yaml+` (or `.yml`, `.properties`), with the
+  Enforcer's
+  https://maven.apache.org/enforcer/enforcer-rules/requireFilesExist.html[`requireFilesExist`] (`satisfyAny`). A module
+  counts as a service when it has `application.yaml`, `application.yml` or `application.properties` in
+  `src/main/resources`; library modules ship their settings in `META-INF/synapse/` instead, so the check skips them.
+  A module that has such a file but builds no image (test fixtures, for example) opts out with
+  `<synapse.image.notService>true</synapse.image.notService>` in its `<properties>`. A service whose settings are
+  elsewhere (a `config/application.yaml`, or a relocated resources directory) isn't seen as one, so the check doesn't
+  run for it.
+  Without the file the build stops:
++
+----
+-Pimage builds an image whose AOT-cache training run starts this service in the build environment (synapse.build.environment=build), but the service has no file for it. Add src/main/resources/application-build.yaml (comments only is fine), and a placeholder config-build.yaml in each library module whose store or client needs settings to start (parent.adoc, Images).
+----
++
+The check covers the service's file only, not a library module's `config-build.yaml`.
+
+`spring-boot:build-image` on the command line (`./mvnw spring-boot:build-image`) uses the same Paketo settings but
+bypasses this check, and in a reactor fails in every module without a main class; use `-Pimage`.
+
+The build logs the training run
+(`Training run will use this value as JAVA_TOOL_OPTIONS: -XX:+UseG1GC -Dspring.profiles.active=build`), which starts
+the application with its one active profile `build` and `-Dspring.context.exit=onRefresh`. On Java 25 the JVM then
+writes the cache (`AOTCache creation is complete: application.aot 139083776 bytes` for the reference bookstore), and
+the image starts with `-XX:AOTCache=application.aot`. The image's JRE is the Paketo default, BellSoft Liberica
+(`BellSoft Liberica JRE 25.0.5`).
+
+[#java21-images]
+=== Java 21 images
+
+`-Dsynapse.image.jvm-version=21` builds the image on Java 21 with the same settings, the G1 pin included (<<gc>>): the
+bookstore's Java 21 image (`BellSoft Liberica JRE 21.0.13`) logs `Using G1` and passes the smoke test with
+`-Xshare:on`, in a default container and in 512 MB with one CPU and `BPL_JVM_THREAD_COUNT=50`. An AOT cache needs
+Java 24 to load and Java 25 to record in one step, so on Java 21 the same training run records a CDS archive instead
+(https://github.com/paketo-buildpacks/spring-boot[paketo-buildpacks/spring-boot]): the image starts with
+`-XX:SharedArchiveFile=application.jsa` (it logs `Spring CDS Enabled, contributing -XX:SharedArchiveFile=application.jsa
+to JAVA_TOOL_OPTIONS`). `BP_JVM_CDS_ENABLED`, the older switch, is deprecated in favour of `BP_JVM_AOTCACHE_ENABLED`,
+which covers both, so a Java 21 image needs no other setting.
+
+To check that a run really uses its cache or archive, start it once with `JAVA_TOOL_OPTIONS=-XX:AOTMode=on` (Java 25)
+or `-Xshare:on` (Java 21): the JVM then stops when it can't use them, instead of starting without them. The
+reference bookstore's `scripts/image-smoke.sh` runs its images this way in the nightly build.
+
+[#gc]
+=== The garbage collector
+
+Both image builds pin the garbage collector to G1, for the training run and for every run of the image: the parent
+puts `-XX:+UseG1GC` in `TRAINING_RUN_JAVA_TOOL_OPTIONS` and appends it to the image's `JAVA_TOOL_OPTIONS`
+(`BPE_APPEND_JAVA_TOOL_OPTIONS`), and the Dockerfile has it in the training `RUN` and in the `ENTRYPOINT`. So the cache
+is always used with the collector it was trained with. Left to the JVM, the collector depends on the machine: in a
+512 MB container with one CPU it chose the Serial collector (`UseSerialGC` is `true` in `-XX:+PrintFlagsFinal`), and
+the JVM then stopped at once:
+
+----
+[error][aot] AOT cache has aot-linked classes but the archived heap objects cannot be loaded. Try increasing your heap size.
+[error][aot] unrecoverable error
+----
+
+The cause is the initial heap, not the Serial collector itself. Serial loads the cache's archived heap objects into its
+old generation (Tenured), which starts at the initial heap less the young generation. In that container the JVM's
+default initial heap is 8192 KB (`InitialHeapSize` in `-XX:+PrintFlagsFinal`, with a 128 MB maximum), of which the
+young generation takes 2688 KB (`NewSize`), so the old generation starts at 5504 KB. The bookstore's cache holds
+6074 KB of archived heap objects (`Loaded heap region ... size 6219920`, in bytes, with `-Xlog:aot`), which doesn't
+fit.
+Measured with the Dockerfile image (Temurin 25.0.5, the cache trained under G1) in 512 MB and one CPU,
+`-XX:+UseSerialGC -XX:AOTMode=on` stops as above with the default initial heap and with `-Xms8m`, and loads the cache
+and starts with `-Xms10m` or more (`-Xlog:gc+heap=debug` then shows `Tenured total 6848K, used 6074K` at `-Xms10m`).
+Serial also loaded it with the default initial heap in 640 MB or more. `-Xmx` makes no difference (the failure was
+the same from 70 MB to 384 MB). JEP 483 allows the training and later runs to use different collectors
+(https://openjdk.org/jeps/483[JEP 483]), and that is what these runs show.
+The parent pins G1 so that the cache loads whatever the container's size, with no `-Xms` to choose.
+
+With the collector pinned, both of the bookstore's images start in a 512 MB, one-CPU container and pass the smoke test
+with `-XX:AOTMode=on`; started with `-Xlog:gc -Xlog:aot`, they log `Using G1` and `Opened AOT cache application.aot.`
+(Paketo, with `BPL_JVM_THREAD_COUNT=50`, see <<heap>>) or `Opened AOT cache app.aot.` (Dockerfile).
+
+To use another collector, train with it too: set it in both places, and never in a deployment's `JAVA_TOOL_OPTIONS`
+alone. With Serial, also set an initial heap that holds the cache's archived heap objects, such as `-Xms64m`: in a
+small container the default one is too small, as above. With Paketo, override `TRAINING_RUN_JAVA_TOOL_OPTIONS`
+(keep `+-Dspring.profiles.active=${synapse.build.environment}+`) and `BPE_APPEND_JAVA_TOOL_OPTIONS` in your
+`spring-boot-maven-plugin` configuration; with the Dockerfile, change the training `RUN` and the `ENTRYPOINT`. A second
+collector in `JAVA_TOOL_OPTIONS` next to the pinned one stops the JVM (`Multiple garbage collectors selected`).
+
+[#heap]
+=== Heap size in small pods
+
+A JVM in a container sizes its heap from the container's memory limit, but the heap is only part of the memory it
+uses: the thread stacks, the metaspace, the code cache and direct buffers come on top. The two image builds size it
+differently.
+
+*Paketo* runs its memory calculator at every start
+(https://paketo.io/docs/reference/java-reference/[Paketo Java reference]): the heap (`-Xmx`) is the container's memory
+less the non-heap regions and less the head room. The non-heap regions are direct memory (10 MB), the metaspace
+(computed from the class count), the code cache, for which the calculator budgets the JVM's whole default reservation
+of 240 MB (`-XX:ReservedCodeCacheSize`), and 1 MB of stack per thread for 250 threads. The head room is a percentage of
+the memory that `BPL_JVM_HEAD_ROOM` sets and that defaults to 0. `BPL_JVM_THREAD_COUNT` (250) and
+`BPL_JVM_LOADED_CLASS_COUNT` (35% of the classes) change the inputs
+(https://github.com/paketo-buildpacks/bellsoft-liberica[paketo-buildpacks/bellsoft-liberica]). A flag you set in
+`JAVA_TOOL_OPTIONS` wins over the calculated or default one, `-Xmx` and the non-heap sizes such as
+`-XX:ReservedCodeCacheSize` alike, and the calculator then works with your value
+(https://paketo.io/docs/howto/java/[Paketo Java how-to]; the reference says the non-heap defaults can be overridden).
+For the reference bookstore the calculator gives:
+
+[cols="1,2,1"]
+|===
+|Container memory |Settings |`-Xmx`
+
+|1 GB
+|the defaults
+|381 MB (`-Xmx390965K`)
+
+|768 MB
+|`BPL_JVM_THREAD_COUNT=50`, `BPL_JVM_HEAD_ROOM=10`
+|249 MB (`-Xmx254978K`)
+
+|512 MB
+|`BPL_JVM_THREAD_COUNT=50`, `JAVA_TOOL_OPTIONS=-XX:ReservedCodeCacheSize=64M`
+|246 MB (`-Xmx251701K`)
+
+|512 MB
+|`BPL_JVM_THREAD_COUNT=50`
+|70 MB (`-Xmx71477K`)
+
+|512 MB
+|the defaults
+|none: the image doesn't start
+|===
+
+With the defaults, a 512 MB pod is too small: the calculator stops the start with `fixed memory regions require
+657610K which is greater than 512M available for allocation`. The bookstore's requests run on virtual threads
+(`spring.threads.virtual.enabled`), whose stacks are in the heap, and whose carriers are as many platform threads as
+there are processors (https://openjdk.org/jeps/444[JEP 444]), so a lower `BPL_JVM_THREAD_COUNT` is a reasonable first
+change; measure your service's threads before you lower it. Set `BPL_JVM_HEAD_ROOM` (for example `10`) to leave memory
+for what the calculator doesn't count, such as the collector's own structures: G1, which the images pin (<<gc>>), keeps
+remembered sets and a card table that use more native memory than Serial's. In pods below about 1 GB, set it (5 to 10)
+and check the container's memory use under load: the 512 MB starts below were measured without load. A smaller code
+cache leaves more heap, but less room for compiled code; measure the service under load before you shrink it. A
+70 MB heap is very small for a service with JPA, two servers and an AOT cache: treat that row as the limit of the
+calculator, not as a size to deploy.
+
+In a 512 MB container the JVM chooses the Serial collector, whose default initial heap there is too small to load this
+AOT cache, so both image builds pin G1 (see <<gc>>). With the pin, the Paketo image with `BPL_JVM_THREAD_COUNT=50`
+(a 70 MB heap) and the Dockerfile's image start in 512 MB and one CPU, with their cache.
+
+*The Dockerfile* (below) runs `java` directly, so the JVM's own default applies: at most 25% of the container's memory
+for the heap (`-XX:MaxRAMPercentage`, https://docs.oracle.com/en/java/javase/25/docs/specs/man/java.html[the java
+command]). Set a larger share in the deployment, never in the image, so that each environment can size it:
+
+[source,bash]
+----
+docker run --memory 1g -e JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=50 ...
+----
+
+[cols="1,1,1"]
+|===
+|Container memory |`-XX:MaxRAMPercentage` |Maximum heap
+
+|512 MB |25 (the default) |128 MB
+|512 MB |50 |256 MB
+|1 GB |25 (the default) |256 MB
+|1 GB |50 |512 MB
+|===
+
+The values are `MaxHeapSize` from `-XX:+PrintFlagsFinal` in the bookstore's Dockerfile image (the collector is pinned
+to G1, see <<gc>>). Leave room for the non-heap memory, which the JVM doesn't subtract from the container's memory: the
+code cache's reservation alone is 240 MB by default, as the calculator above shows. A heap setting in
+`JAVA_TOOL_OPTIONS` doesn't stop the JVM from using the AOT cache; the bookstore's image starts with
+`-XX:AOTMode=on -XX:MaxRAMPercentage=50` in 1 GB.
+
+[#dockerfile]
+=== A Dockerfile instead
+
+The reference bookstore also has a `Dockerfile` (`samples/reference-bookstore/service-bookstore/Dockerfile`), for teams
+that build images without buildpacks. It follows Spring Boot's AOT cache Dockerfile
+(https://docs.spring.io/spring-boot/reference/packaging/container-images/dockerfiles.html[Spring Boot, Dockerfiles]):
+
+. A first stage extracts the jar with `java -Djarmode=tools -jar application.jar extract --layers --destination
+  extracted`. The cache works only with the extracted form of the application
+  (https://docs.spring.io/spring-boot/reference/packaging/aot-cache.html[Spring Boot, AOT cache]).
+. The runtime stage copies the four layers, then runs the training run:
+  `java -XX:+UseG1GC -XX:AOTCacheOutput=app.aot -Dspring.context.exit=onRefresh -Dspring.profiles.active=build -jar
+  application.jar` (G1, as in the `ENTRYPOINT`: see <<gc>>).
+  `-XX:AOTCacheOutput` records and writes the cache in one step (https://openjdk.org/jeps/514[JEP 514], Java 25). The
+  build environment is a system property here too, so it is the one active profile of the training run and of no
+  later run. `&& test -s app.aot` fails the build when the run exits 0 without writing the cache, as a failed start
+  already does.
+. It switches to the image's unprivileged user (uid 1000) and starts with
+  `ENTRYPOINT ["java", "-XX:+UseG1GC", "-XX:AOTCache=app.aot", "-jar", "application.jar"]`.
+
+The base image is Eclipse Temurin's JRE, pinned by digest to the JDK that builds Synapse, 25.0.5+8
+(`eclipse-temurin:25.0.5_8-jre-resolute@sha256:b6e00330337143a2c1a20f1c1c693d4b6ce9a3c30ade8b9d03fc68cc9e3871e7`).
+The cache is valid only with the JDK release, the class path and the hardware architecture of the training run, and
+when a run differs the JVM warns and ignores the cache (https://openjdk.org/jeps/483[JEP 483]). The training run
+happens in the image, so they always match. Read the release notes before you move the pin: 25.0.5+8 fixes a JVM
+crash at start with an AOT cache that depended on the CPU's instructions (JDK-8388703, in
+https://api.adoptium.net/v3/info/release_notes/jdk-25.0.5+8[Adoptium's release notes for jdk-25.0.5+8]).
+
+Unlike the Paketo image, it has no memory calculator, so size the heap as shown in <<heap>>.
+
+== The Mockito agent
+
+Tests that use Mockito get it as a `-javaagent`, because loading it dynamically is deprecated on current JDKs. The
+parent runs `maven-dependency-plugin:properties` and a `build-helper-maven-plugin:regex-property` execution
+(`mockito-agent-arg`, the version Spring Boot manages) that sets `synapse.mockitoAgentArg` to
+`-javaagent:<mockito-core jar>` when the module has `mockito-core`, and to an empty string when it doesn't. Surefire
+and Failsafe get `+<argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>+`, so a module without
+Mockito starts its test JVM without an agent, and a coverage agent that sets `argLine` keeps working (build rules
+check both, with JaCoCo's `prepare-agent` and with a project's own `argLine`). `-Xshare:off` turns off class data
+sharing in the test JVM. Mockito's inline mock maker appends to the bootstrap class path when it creates its first
+mock, and with sharing on the JVM then prints "Sharing is only supported for boot loader classes because bootstrap
+classpath has been appended". The cost is a slightly slower test JVM start: about 20 ms per start, measured with
+`java -version` on JDK 25.0.5 (91 ms without the option, 109 ms with it, ten runs each, on a loaded machine). The
+parent defines an empty `argLine` property, because Surefire leaves an undefined `+@{argLine}+` in the command line as
+literal text.
+
+* To add JVM options, set the `argLine` property. Its value takes the place of `+@{argLine}+`, so it only adds
+  options. Don't put `+@{argLine}+` in the property, where it would refer to itself.
+* `-Xshare:off` comes last, so it overrides any class data sharing option of yours in `argLine`, such as
+  `-XX:SharedArchiveFile` or `-Xshare:auto`: the test JVM never shares classes from an archive. To test with one,
+  configure `<argLine>` yourself (below) and leave the option out, and expect Mockito's warning.
+* If you configure Surefire's or Failsafe's `<argLine>` yourself, it replaces the parent's: start it with
+  `+@{argLine} @{synapse.mockitoAgentArg} -Xshare:off+`.
+
+== Keeping the JVM alive
+
+Synapse doesn't set `spring.main.keep-alive`: Tomcat's and Netty's non-daemon threads keep the JVM running. Add
+`spring.main.keep-alive=true` when the application has no server and relies on virtual threads only, for example a
+service driven by `@Scheduled` beans. Virtual threads are daemon threads, and the JVM exits when only daemon threads
+are left
+(https://docs.spring.io/spring-boot/reference/features/spring-application.html[Spring Boot, virtual threads]).

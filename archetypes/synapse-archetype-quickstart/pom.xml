@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    The quick-start archetype: a one-module REST service shaped like samples/hello-rest.
+
+        mvn archetype:generate -DarchetypeGroupId=io.americanexpress.synapse \
+            -DarchetypeArtifactId=synapse-archetype-quickstart -DarchetypeVersion=<version>
+
+    The templates are in src/main/resources/archetype-resources. The integration test (projects/basic) generates a
+    project, builds it with verify and checks its files (verify.groovy).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse</groupId>
+        <artifactId>synapse</artifactId>
+        <version>2.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>synapse-archetype-quickstart</artifactId>
+    <packaging>maven-archetype</packaging>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Maven archetype for a Synapse REST service in one module, shaped like the hello-rest sample.</description>
+
+    <properties>
+        <!-- The synapse-parent version of the generated project: the Synapse release this archetype is released with.
+             The template pom.xml files are filtered with @ delimiters only, so @synapse.version@ is replaced at
+             archetype build time and the templates' ${...} stays for Velocity. -->
+        <synapse.version>${project.version}</synapse.version>
+    </properties>
+
+    <!--
+        Test scope: these put the modules the generated project uses ahead of this one in the reactor (-am builds
+        them). invoker:install below copies them, from the reactor, into target/it-repo.
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-parent</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-bom</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-api-rest</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-logging-log4j2</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-test-rest</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!--
+            The IT projects (src/test/resources) are copied to target/it, not target/test-classes, and generated there
+            (target/it/projects/basic/project/greetings). Under target/test-classes the generated project's own
+            target/classes would match ArchUnit's DO_NOT_INCLUDE_TESTS pattern (.*/target/test-classes/.*), so its
+            ArchitectureTest would import no class and fail. This module has no test classes.
+        -->
+        <testOutputDirectory>${project.build.directory}/it</testOutputDirectory>
+        <!-- Maven filtering (@ delimiters only) of the template pom.xml files; every other template is copied as is. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>archetype-resources/**/pom.xml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>archetype-resources/**/pom.xml</exclude>
+                </excludes>
+            </resource>
+        </resources>
+        <!-- The IT projects' verify.groovy files get the reactor version (@project.version@). -->
+        <testResources>
+            <testResource>
+                <directory>src/test/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>projects/*/verify.groovy</include>
+                </includes>
+            </testResource>
+            <testResource>
+                <directory>src/test/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>projects/*/verify.groovy</exclude>
+                </excludes>
+            </testResource>
+        </testResources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <configuration>
+                    <delimiters>
+                        <delimiter>@</delimiter>
+                    </delimiters>
+                    <useDefaultDelimiters>false</useDefaultDelimiters>
+                </configuration>
+            </plugin>
+            <!-- Fills target/it-repo with the reactor's Synapse modules that the generated project uses (and their
+                 parents), so the IT never reads or writes a Synapse snapshot in the developer's ~/.m2. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-invoker-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>it-repo</id>
+                        <goals>
+                            <goal>install</goal>
+                        </goals>
+                        <configuration>
+                            <localRepositoryPath>${project.build.directory}/it-repo</localRepositoryPath>
+                            <extraArtifacts>
+                                <extraArtifact>io.americanexpress.synapse:synapse-parent:${project.version}:pom</extraArtifact>
+                                <extraArtifact>io.americanexpress.synapse:synapse-bom:${project.version}:pom</extraArtifact>
+                                <extraArtifact>io.americanexpress.synapse:synapse-api-rest:${project.version}:jar</extraArtifact>
+                                <extraArtifact>io.americanexpress.synapse:synapse-logging-log4j2:${project.version}:jar</extraArtifact>
+                                <extraArtifact>io.americanexpress.synapse:synapse-test-rest:${project.version}:jar</extraArtifact>
+                            </extraArtifacts>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- archetype:integration-test (integration-test phase): generates each project of target/it/projects
+                 (copied from src/test/resources/projects) and runs its goal.txt with target/it-repo as the local
+                 repository. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-archetype-plugin</artifactId>
+                <configuration>
+                    <localRepositoryPath>${project.build.directory}/it-repo</localRepositoryPath>
+                    <!-- Mirrors the developer's/CI's local repository as a remote one (as the build-rules tests do). -->
+                    <settingsFile>${project.basedir}/src/test/resources/settings.xml</settingsFile>
+                    <properties>
+                        <!-- target/it-repo comes first, so its Synapse modules win; the main local repository serves
+                             what it lacks (test libraries, plugins) in place. invoker:install above still copies the
+                             runtime dependencies of the extraArtifacts into target/it-repo. -->
+                        <maven.repo.local.tail>${settings.localRepository}</maven.repo.local.tail>
+                    </properties>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

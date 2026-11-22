@@ -1,0 +1,128 @@
+= Archetypes
+
+Two Maven archetypes start a new service. Each generates a project shaped like one of the
+xref:samples.adoc[samples], with your coordinates, its tests, and a README with the commands to run it. Both projects
+inherit xref:parent.adoc[`synapse-parent`] at the Synapse version the archetype was released with.
+
+[cols="1,3,2",options="header"]
+|===
+|Archetype |Generates |Shaped like
+
+|<<quickstart,`synapse-archetype-quickstart`>>
+|A REST service in one module: one operation, its two models, one route and the tests
+|`samples/hello-rest`
+
+|<<service,`synapse-archetype-service`>>
+|A service in three modules (contract, data, service), served over REST and gRPC on PostgreSQL, with one aggregate,
+`Item`, and two operations, create and get
+|`samples/reference-bookstore`
+|===
+
+The generated projects need JDK 21 or later. Each has the Maven Wrapper (`mvnw`, `mvnw.cmd` and
+`.mvn/wrapper/maven-wrapper.properties`, the same files as Synapse's own build), which downloads Maven 3.9.16, so their
+READMEs say `./mvnw`. The post-generation script makes `mvnw` executable on a file system with POSIX permissions,
+and prints a warning when it can't. Windows has no such bit, so a project committed from Windows needs
+`git update-index --chmod=+x mvnw` for `mvnw` to be executable where it is checked out on Linux. With a Maven of
+your own instead, the quickstart needs 3.6.3 or later, Spring Boot's minimum, and the service 3.9.6 or later: its contract module's
+`protobuf-maven-plugin` (5.1.11 with Spring Boot 4.1.2) requires it, and an older Maven fails in that module. The
+archetypes are built with `maven-archetype-plugin` 3.4.1. Each archetype's build has an integration test that
+generates a project and builds it with `verify`, so a release whose generated project doesn't build fails Synapse's
+own build.
+
+[#quickstart]
+== Quickstart
+
+[source,bash]
+----
+mvn archetype:generate -DarchetypeGroupId=io.americanexpress.synapse \
+  -DarchetypeArtifactId=synapse-archetype-quickstart -DarchetypeVersion=<version> \
+  -DgroupId=com.example -DartifactId=greetings -Dversion=0.1.0-SNAPSHOT -Dpackage=com.example.greetings
+----
+
+The properties are Maven's own: `groupId`, `artifactId`, `version` and `package`. Without `-D` values, the plugin
+asks for them.
+
+What it generates, under `greetings/`:
+
+* `pom.xml`, with `synapse-parent` as its parent and `synapse-api-rest`, `synapse-logging-log4j2`, Boot's
+  OpenTelemetry starter, Actuator, and for tests `synapse-test-rest` and `spring-boot-starter-test`, without versions;
+  `.gitattributes` (LF in git, CRLF for `mvnw.cmd`); and the Maven Wrapper.
+* `HelloApplication`, the operation `GetGreetingOperation` (`QueryOperation<GetGreetingRequest, Greeting>`), its
+  records in `model`, and one `RestBindings` bean in `api.rest` (`+GET /greetings/{name}+`), each package with its
+  `@NullMarked` `package-info.java`.
+* `application.yaml` (`spring.profiles.active: ${ENV}`) and `application-local.yaml` (problem `detail` on), and
+  `src/test/resources/application-test.yaml`.
+* The tests: `GetGreetingOperationTest` (`SynapseOperations.invoke`), `HelloRestTest` (`@SynapseRestTest`),
+  `ArchitectureTest` (`SynapseArchitecture.forApplication(...)`) and `HelloApplicationIT`.
+* A README: what the project shows, how to run and test it, and how to make it yours.
+
+It has no build environment file and no Dockerfile, as `hello-rest` has none. Spring AOT (`-Paot`) and the parent's
+image build (`-Pimage`) both need `src/main/resources/application-build.yaml`, a comment alone being enough: without
+it, `process-aot` fails the build, and the `image` profile fails it early, in `validate`, naming the file to add (see
+xref:parent.adoc#_build_environment[Build environment] and xref:parent.adoc#image-profile[The `image` profile]). Only
+`spring-boot:build-image` invoked on the command line skips that check; its training run then fails to start, and the
+image is still built, with a partial AOT cache. The README says so.
+
+[#service]
+== Service
+
+[source,bash]
+----
+mvn archetype:generate -DarchetypeGroupId=io.americanexpress.synapse \
+  -DarchetypeArtifactId=synapse-archetype-service -DarchetypeVersion=<version> \
+  -DgroupId=com.example -DartifactId=orders -Dversion=0.1.0-SNAPSHOT -Dpackage=com.example.orders \
+  -DserviceName=orders
+----
+
+`serviceName` (default `example`) is the service's name. It is the module suffix (`contract-orders`, `data-orders`,
+`service-orders`), `spring.application.name`, the data store (`synapse.data.stores.orders`, `db/migration/orders`),
+a package segment (`data.orders`), the `.proto`'s directory, and part of the store's environment variables
+(`SYNAPSE_DATA_STORES_ORDERS_URL`).
+
+So `serviceName` must be a lowercase letter followed by lowercase letters and digits: no hyphen, no upper case, and
+not a Java keyword or literal (`class`, `true`). `maven-archetype-plugin` checks the descriptor's `validationRegex`
+only for a value typed at its prompt, never for `-DserviceName=...`, so the archetype's post-generation script checks
+every value. An invalid one fails the generation:
+
+----
+serviceName 'order-service' is not valid: it must be a lowercase letter followed by lowercase letters and digits, with no hyphen, and not a Java keyword, because it names the Java package data.<serviceName> and the environment variables SYNAPSE_DATA_STORES_<SERVICENAME>_*. The project in <directory>/orders was written but doesn't build: delete it and generate again with, for example, -DserviceName=orderservice.
+----
+
+The plugin runs the script after it has written the files, so the directory is left behind: delete it before you
+generate again.
+
+What it generates, under `orders/`:
+
+* An aggregator `pom.xml` with `synapse-parent` as its parent, `.gitattributes`, the Maven Wrapper, and `compose.yaml`
+  with the `orders-db` PostgreSQL container for `local` (its image pinned by digest, as
+  `SynapseContainers.POSTGRES_IMAGE`).
+* `contract-orders`: the records the operations take and return (`Item`, `CreateItemRequest`, `GetItemRequest`), the
+  error codes (`ItemErrors.ITEM_NOT_FOUND`) and `orders/v1/orders.proto`, from which the gRPC classes are generated.
+* `data-orders`: the store, `@SynapseDataStore("orders")` on JPA and PostgreSQL, the entity on `AuditedEntity`, its
+  repository, the Flyway migration `db/migration/orders/V1__orders.sql`, and the store's settings in
+  `META-INF/synapse/config.yaml` and `config-<env>.yaml` for `local`, `dev` and `build`, shipped in its jar.
+* `service-orders`: the operations, one `RestBindings` bean and one `GrpcBindings` bean over them with the same
+  contract, and the environment files `application.yaml` (with readiness at `/health`), `application-local.yaml`
+  (problem detail, gRPC reflection, the OpenAPI document and CORS for a local front end), `application-dev.yaml` (an
+  example of a deployed environment) and `application-build.yaml`.
+* The build environment's files, `application-build.yaml` and `data-orders`' `config-build.yaml`, each with a comment
+  that it exists for the image's training run and for `-Paot`.
+* A `Dockerfile` and `.dockerignore`: a Temurin 25 JRE pinned by digest, a training run in `build` that writes the
+  JVM's AOT cache (`&& test -s app.aot`), and G1 pinned for the training run and every run (see
+  xref:parent.adoc#dockerfile[A Dockerfile instead]). `-Pimage` builds the image with Paketo instead.
+* The OpenTelemetry Java agent recipe: the agent copied to `target/otel` with its SHA-256 checked, the `otel-agent`
+  profile for `spring-boot:run`, and the configuration classes that hand Boot's bridge the agent's SDK and fail an
+  AOT-mode start under the agent (see xref:opentelemetry-agent.adoc[OpenTelemetry Java agent]).
+* The tests: the operations with `@SynapseOperationTest`, the bindings with `@SynapseRestTest` and `@SynapseGrpcTest`,
+  the repository with `@SynapseDataTest`, `ArchitectureTest`, and integration tests: one scenario suite run over both
+  protocols against the whole service (`ServiceJvmIT`), health, the OpenAPI default and the audit user
+  (`ServiceOperationalIT`), the training run's start with no database (`ServiceExitOnRefreshIT`), and the packaged jar
+  under the agent (`ServiceAgentIT`). `ServiceAotIT` runs the scenarios against the jar in AOT mode, only with `-Paot`.
+* A README: the layout, the environments, how to run, try and test the service, Spring AOT and the image, the agent,
+  and how to make it yours.
+
+The integration tests need Docker, for the PostgreSQL containers.
+
+On Windows without long paths (`LongPathsEnabled`), the generated project's deepest paths limit where it can live: the
+README gives the numbers. With `-Paot`, Spring's generated classes are so deep that only long paths make a build
+practical.

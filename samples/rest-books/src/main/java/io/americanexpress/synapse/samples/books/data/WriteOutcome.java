@@ -1,0 +1,33 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package io.americanexpress.synapse.samples.books.data;
+
+/** The outcome of a write to the {@link InMemoryBookStore}. */
+public enum WriteOutcome {
+
+    /** The write happened: the book was added, replaced or removed. */
+    WRITTEN,
+
+    /** No book has the id (replace and remove only). */
+    NOT_FOUND,
+
+    /** Another book already has the ISBN, so nothing was written (as a unique constraint would reject it). */
+    ISBN_TAKEN,
+
+    /**
+     * The book's version isn't the expected one: another write changed it since it was read, so nothing was written
+     * (replace and remove only).
+     */
+    STALE
+}

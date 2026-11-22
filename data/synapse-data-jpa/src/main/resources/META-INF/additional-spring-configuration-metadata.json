@@ -1,0 +1,51 @@
+{
+  "properties": [
+    {
+      "name": "synapse.data.stores.*.jpa.properties",
+      "type": "java.util.Map<java.lang.String,java.lang.String>",
+      "description": "Hibernate and JPA properties for the store's EntityManagerFactory, such as hibernate.jdbc.batch_size. Schema keys (hibernate.hbm2ddl.*, jakarta.persistence.schema-generation.* and javax.persistence.schema-generation.*) and connection keys (jakarta.persistence.jdbc.*, javax.persistence.jdbc.*, the JPA data source keys, and hibernate.connection.url, username, user, password, driver_class, provider_class and datasource) fail startup: use jpa.hibernate.ddl-auto and the store's url, username and password instead. Replace * with the store name."
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.mapping-resources",
+      "type": "java.util.List<java.lang.String>",
+      "description": "Mapping resources of the store's persistence unit (the mapping-file entries of a persistence.xml), added after Synapse's own."
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.database-platform",
+      "type": "java.lang.String",
+      "description": "Hibernate dialect class for the store. By default Hibernate resolves the dialect from the vendor module's database product name."
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.database",
+      "type": "org.springframework.orm.jpa.vendor.Database",
+      "description": "Target database of the store, as Spring's Database enum, instead of the vendor module's."
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.show-sql",
+      "type": "java.lang.Boolean",
+      "description": "Whether Hibernate logs the store's SQL statements.",
+      "defaultValue": false
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.generate-ddl",
+      "type": "java.lang.Boolean",
+      "description": "Not used to change the schema: true fails startup. Use jpa.hibernate.ddl-auto instead.",
+      "defaultValue": false
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.hibernate.ddl-auto",
+      "type": "java.lang.String",
+      "description": "Schema action the store runs when it starts, after its migrations: none, validate, update, create or create-drop. Defaults to validate when Flyway is on the class path, else none. update, create and create-drop fail startup unless the store sets allow-ddl-auto."
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.hibernate.naming.physical-strategy",
+      "type": "java.lang.String",
+      "description": "Fully qualified name of the store's physical naming strategy. A PhysicalNamingStrategy bean for the store wins over it."
+    },
+    {
+      "name": "synapse.data.stores.*.jpa.hibernate.naming.implicit-strategy",
+      "type": "java.lang.String",
+      "description": "Fully qualified name of the store's implicit naming strategy. An ImplicitNamingStrategy bean for the store wins over it."
+    }
+  ]
+}

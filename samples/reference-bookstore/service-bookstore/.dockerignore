@@ -1,0 +1,4 @@
+# The Dockerfile copies only the executable jar that ./mvnw package builds: everything else stays out of the build
+# context, so docker build sends a few megabytes, not the sources and the test output.
+*
+!target/*.jar

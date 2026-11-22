@@ -1,0 +1,4 @@
+io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration
+io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration
+io.americanexpress.synapse.core.autoconfigure.SynapseOperationAutoConfiguration
+io.americanexpress.synapse.core.autoconfigure.SynapseObservabilityAutoConfiguration

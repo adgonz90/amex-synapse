@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "898da78c1c3a3d519aba99514b064b640896d51c",
+  "include-component-in-tag": false,
+  "packages": {
+    ".": {
+      "release-type": "maven",
+      "release-as": "2.0.0-M1",
+      "prerelease": true,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "parent/synapse-parent/pom.xml"
+        }
+      ]
+    }
+  }
+}

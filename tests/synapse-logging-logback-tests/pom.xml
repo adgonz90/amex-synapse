@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    Tests of Synapse's failure and payload lines on Logback, Spring Boot's default backend, in Boot's structured formats
+    (ecs, logstash, gelf), with Boot's own Logback configuration and the data module on the class path.
+    The test is core/synapse-logging-log4j2/src/shared-it/java, which synapse-logging-log4j2 runs on Log4j2: one source,
+    and a backend is chosen per class path, so each backend has its own module. It has test sources only.
+    Never published.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse</groupId>
+        <artifactId>synapse</artifactId>
+        <version>2.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>synapse-logging-logback-tests</artifactId>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Tests of Synapse's log lines on Logback in Spring Boot's structured formats. Not published.</description>
+
+    <properties>
+        <!-- Tests only: never installed or deployed (which also keeps it out of the release SBOM), and no source or
+             Javadoc jars. -->
+        <maven.install.skip>true</maven.install.skip>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.source.skip>true</maven.source.skip>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <!-- Without main sources the java-module profile is off, so JaCoCo's prepare-agent never sets argLine (there
+             is no code to cover). The Mockito agent argument comes from the two executions below, as in that
+             profile; spring-boot-starter-test brings Mockito. -->
+        <argLine></argLine>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <!-- The data module's COMMIT_OUTCOME_UNKNOWN failure line; it brings synapse-core. -->
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-data-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The OpenTelemetry bridge, so the correlation id reaches the MDC as in a service. -->
+            <groupId>io.americanexpress.synapse</groupId>
+            <artifactId>synapse-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Brings spring-boot-starter-logging (Logback), the backend under test. -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The embedded DataSource Boot creates for synapse-data-core's class path. -->
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <!-- No main classes, so no jar. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <skipIfEmpty>true</skipIfEmpty>
+                </configuration>
+            </plugin>
+            <plugin>
+                <!-- As in the java-module profile: exposes ${org.mockito:mockito-core:jar} for the agent argument. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>dependency-paths</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <!-- As in the java-module profile: sets synapse.mockitoAgentArg to Mockito's -javaagent, so Mockito
+                     runs as an agent instead of attaching itself at run time (parent/synapse-parent/pom.xml explains
+                     the regex). -->
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>mockito-agent-arg</id>
+                        <phase>process-test-classes</phase>
+                        <goals>
+                            <goal>regex-property</goal>
+                        </goals>
+                        <configuration>
+                            <name>synapse.mockitoAgentArg</name>
+                            <value>"-javaagent:${org.mockito:mockito-core:jar}"</value>
+                            <regex>^"-javaagent:\$\{.*|^(.+)$</regex>
+                            <replacement>$1</replacement>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!-- The failure-line IT, shared with synapse-logging-log4j2: one source, compiled here with
+                             Logback on the class path. -->
+                        <id>shared-it-sources</id>
+                        <phase>generate-test-sources</phase>
+                        <goals>
+                            <goal>add-test-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.basedir}/../../core/synapse-logging-log4j2/src/shared-it/java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <!-- The java-module profile binds failsafe only in modules with main sources. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

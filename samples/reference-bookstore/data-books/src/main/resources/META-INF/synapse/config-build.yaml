@@ -1,0 +1,12 @@
+# The books store in the build environment: spring-boot:process-aot (with -Paot) runs the service in it, and so does
+# the AOT cache's training run, which exits as soon as the context is refreshed (spring.context.exit=onRefresh).
+# Neither connects. AOT processing creates some of the store's beans (its dialects are chosen from the url), and the
+# store migrates only when its lifecycle starts, which the training run exits before. So the url names a closed port,
+# and the credentials are placeholders. Nothing here is a secret.
+synapse:
+  data:
+    stores:
+      books:
+        url: jdbc:postgresql://127.0.0.1:1/books
+        username: build
+        password: ""

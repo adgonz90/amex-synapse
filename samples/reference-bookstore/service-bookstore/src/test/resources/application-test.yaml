@@ -1,0 +1,8 @@
+# Settings for the tests: Synapse's test slices and the integration tests activate the test environment, which loads
+# this file. Error detail is off by default in every environment; turning it on here lets the slice tests check the
+# detail message. BookstoreJvmIT turns it off again, so the scenarios run against the defaults, as the AOT and image
+# runs in the dev environment do. The books store's settings come from data-books' config.yaml, as in every
+# environment, and the integration tests connect the store to a PostgreSQL container with @StoreConnection.
+synapse:
+  errors:
+    include-detail: true

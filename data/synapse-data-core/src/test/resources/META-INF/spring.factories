@@ -1,0 +1,3 @@
+# A stand-in for synapse-data-jdbc, so stores with access AUTO resolve in this module's tests.
+io.americanexpress.synapse.data.internal.store.StoreInfrastructure=\
+io.americanexpress.synapse.data.internal.store.TestJdbcStoreInfrastructure

@@ -1,0 +1,16 @@
+# Known vulnerabilities accepted by the maintainers (read by .github/workflows/osv-scanner.yml).
+#
+# When OSV-Scanner reports a vulnerability:
+#   1. Upgrade the dependency (or wait for the Dependabot PR) if a fixed version exists. This is always preferred.
+#   2. Only if the vulnerability can't affect Synapse or its users, ignore it here.
+#
+# Rules for every entry:
+#   - a `reason` explaining why it doesn't apply (not "no fix available")
+#   - an `ignoreUntil` date: 3 months by default, at most 1 year; anything over 3 months needs a comment saying why
+#   - expired entries are re-reviewed, never just extended
+#
+# Example:
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# ignoreUntil = 2027-01-31
+# reason = "Only affects the XML parser's DTD support, which Synapse disables."

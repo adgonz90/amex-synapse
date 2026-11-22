@@ -1,0 +1,21 @@
+= Synapse
+
+Synapse is a set of Spring Boot starters for building enterprise services with prescriptive conventions.
+You write protocol-agnostic operations and expose them over REST, gRPC, GraphQL or cloud functions by adding API
+plugin starters. Clients, data access and messaging follow the same conventions.
+
+IMPORTANT: Synapse 2 is under active development and has not been released yet.
+The current release line, 0.4.x, is documented in the
+https://github.com/americanexpress/synapse/tree/develop[`develop` branch] and receives security fixes only.
+
+== What's here
+
+These docs are for teams building services with Synapse. To start a service, generate one with an
+xref:archetypes.adoc[archetype], or read one of the runnable xref:samples.adoc[samples]. Then there is a guide per
+module and the xref:reference/configuration-properties.adoc[configuration property reference]. As later modules land
+they will add the error codes and categories, and the migration guide from 0.4.x.
+
+The build specification and delivery plan for Synapse 2 are in
+https://github.com/americanexpress/synapse/blob/main/specs/v2/BUILD.md[the Synapse 2 build specification], and the
+design decisions and roadmap are in
+https://github.com/americanexpress/synapse/blob/main/specs/v2/DESIGN.md[the Synapse 2 design record].

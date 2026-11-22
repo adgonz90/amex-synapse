@@ -1,0 +1,97 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package io.americanexpress.synapse.core.internal.aot;
+
+import java.lang.invoke.SerializedLambda;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.aot.hint.MemberCategory;
+import org.springframework.aot.hint.RuntimeHints;
+import org.springframework.aot.hint.RuntimeHintsRegistrar;
+import org.springframework.aot.hint.predicate.RuntimeHintsPredicates;
+import org.springframework.core.io.support.SpringFactoriesLoader;
+
+import io.americanexpress.synapse.core.conditional.VersionCondition;
+import io.americanexpress.synapse.core.internal.context.ContextValueAccessor;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class SynapseCoreRuntimeHintsTest {
+
+    private static final String SERVICES = "META-INF/services/io.micrometer.context.ThreadLocalAccessor";
+
+    @Test
+    void registersServiceLoaderResourceAndAccessor() throws NoSuchMethodException {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseCoreRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        assertThat(RuntimeHintsPredicates.resource().forResource(SERVICES)).accepts(hints);
+        assertThat(RuntimeHintsPredicates.reflection().onType(ContextValueAccessor.class)).accepts(hints);
+        assertThat(RuntimeHintsPredicates
+                .reflection()
+                .onConstructorInvocation(ContextValueAccessor.class.getConstructor())).accepts(hints);
+    }
+
+    @Test
+    void registersSerializedLambdaReflection() {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseCoreRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        assertThat(RuntimeHintsPredicates.reflection().onType(SerializedLambda.class)).accepts(hints);
+        assertThat(hints
+                .reflection()
+                .typeHints()
+                .filter(hint -> hint.getType().getName().equals(SerializedLambda.class.getName()))
+                .flatMap(hint -> hint.getMemberCategories().stream()))
+                .contains(MemberCategory.INVOKE_DECLARED_METHODS);
+    }
+
+    @Test
+    void registersTheVersionConditionCasesForBinding() throws NoSuchMethodException {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseCoreRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        // A model declares VersionCondition; Spring's binding registrar doesn't follow the sealed permits, so the
+        // records a request holds at run time are registered here.
+        assertThat(RuntimeHintsPredicates.reflection().onType(VersionCondition.AnyVersion.class)).accepts(hints);
+        assertThat(RuntimeHintsPredicates.reflection().onType(VersionCondition.Version.class)).accepts(hints);
+        assertThat(RuntimeHintsPredicates
+                .reflection()
+                .onMethodInvocation(VersionCondition.Version.class.getMethod("value"))).accepts(hints);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"META-INF/synapse/config.yaml", "META-INF/synapse/config-e2.yaml",
+            "META-INF/synapse/config.properties", "META-INF/synapse/config-e2.properties"})
+    void registersModuleConfigResources(String resource) {
+        RuntimeHints hints = new RuntimeHints();
+
+        new SynapseCoreRuntimeHints().registerHints(hints, getClass().getClassLoader());
+
+        assertThat(RuntimeHintsPredicates.resource().forResource(resource)).accepts(hints);
+    }
+
+    @Test
+    void isRegisteredInAotFactories() {
+        assertThat(SpringFactoriesLoader
+                .forResourceLocation("META-INF/spring/aot.factories")
+                .load(RuntimeHintsRegistrar.class))
+                .hasAtLeastOneElementOfType(SynapseCoreRuntimeHints.class);
+    }
+}

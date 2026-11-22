@@ -1,0 +1,2 @@
+# Turns Boot's JDBC repositories on, as config data (JdbcDefaultsEnvironmentPostProcessorTest).
+spring.data.jdbc.repositories.enabled: true

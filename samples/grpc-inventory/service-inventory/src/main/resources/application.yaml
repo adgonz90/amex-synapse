@@ -1,0 +1,65 @@
+# Configuration of the inventory sample. The synapse.* values below are the defaults unless a comment says otherwise;
+# they are listed to show what you can change while trying the service.
+# The table of every property is generated from the jars' configuration metadata when the documentation site is built
+# (docs/modules/ROOT/pages/reference/configuration-properties.adoc includes it); IDEs with Spring Boot support complete
+# the keys from the same metadata.
+
+spring:
+  application:
+    # Not a default: the service's name, which is also the domain of every gRPC ErrorInfo it sends.
+    name: inventory
+  profiles:
+    # The environment: exactly one, with its own application-<env>.yaml. The platform sets ENV; local runs use local
+    # (application-local.yaml), and the tests use test (src/test/resources/application-test.yaml).
+    active: ${ENV}
+  threads:
+    virtual:
+      # Calls run on virtual threads; Synapse's concurrency limit (below) is then what caps the work in flight.
+      enabled: true
+  # Boot's gRPC server listens on spring.grpc.server.port, 9090 by default. There is no web server.
+
+synapse:
+  correlation:
+    # Read from this metadata key, in lower case (x-correlation-id; a new id is generated when it is absent or
+    # invalid), echoed in the response headers or trailers, errors included, and written to the logs as correlationId.
+    header: X-Correlation-Id
+  # Whether statuses carry their description (the formatted message): off unless include-detail is true.
+  # application-local.yaml turns it on for local runs.
+  # errors:
+  #   include-detail: true
+  # Paging (ListItems): core's settings, which every API plugin shares. Page sizes: default-size 20, max-size 100.
+  # paging:
+  #   # cursor.key: the base64 256-bit key that encrypts the page tokens; create one with: openssl rand -base64 32
+  #   # Unset (or blank), a key is generated at every start: tokens are then rejected after a restart or on another
+  #   # instance, and every start logs a WARN that says so. Give every instance the same key, from the environment or
+  #   # a secret store, never from a file in the repository. No line is needed here: Boot binds the environment
+  #   # variable SYNAPSE_PAGING_CURSOR_KEY to synapse.paging.cursor.key (dots become underscores, letters upper case).
+  api:
+    grpc:
+      context:
+        metadata:
+          # Not a default: maps the x-channel metadata to the request-context attribute "channel". CreateItem binds
+          # it into CreateItemRequest.channel (see InventoryGrpcConfiguration).
+          channel: x-channel
+      deadline:
+        # A call without a gRPC deadline gets the default; a longer one is capped at max for the request context.
+        default: 10s
+        max: 30s
+      # Calls in flight before the service answers UNAVAILABLE with RetryInfo. Health and reflection are never limited.
+      max-concurrent-calls: 200
+      operations:
+        adjust-stock:
+          errors:
+            # Not a default: OUT_OF_STOCK is a CONFLICT, which is ABORTED; for adjust-stock it is FAILED_PRECONDITION
+            # (the stock doesn't allow the change; retrying the same call won't help). The code is in brackets, and
+            # quoted, so YAML keeps the brackets as part of the key.
+            status: { "[OUT_OF_STOCK]": FAILED_PRECONDITION }
+
+management:
+  otlp:
+    metrics:
+      export:
+        # Not a default. Boot pushes metrics to an OpenTelemetry collector at http://localhost:4318 every minute and
+        # logs a WARN when none is there. Turn it on (and set management.otlp.metrics.export.url) when you run one.
+        # Traces and logs are exported only once their endpoints are set (management.opentelemetry.*.export.otlp).
+        enabled: false

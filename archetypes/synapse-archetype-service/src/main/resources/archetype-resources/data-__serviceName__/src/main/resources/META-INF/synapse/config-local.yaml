@@ -1,0 +1,13 @@
+# The ${serviceName} store in the local environment: the ${serviceName}-db container of compose.yaml (docker compose
+# up -d). Local compose only. The user name and password are those of that throwaway container. In every deployed
+# environment they come from the environment variables SYNAPSE_DATA_STORES_${serviceName.toUpperCase()}_USERNAME and
+# SYNAPSE_DATA_STORES_${serviceName.toUpperCase()}_PASSWORD, never from a file, and that environment's config-<env>.yaml
+# sets only the url. (config-build.yaml is not a deployed environment: its credentials are placeholders for a build
+# that never connects.)
+synapse:
+  data:
+    stores:
+      ${serviceName}:
+        url: jdbc:postgresql://localhost:5432/${serviceName}
+        username: ${serviceName}
+        password: ${serviceName}

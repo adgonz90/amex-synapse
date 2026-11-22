@@ -1,0 +1,1088 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2020 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    Root aggregator and internal build parent for Synapse's own modules.
+    Consumers never inherit from this POM: they use synapse-parent or import synapse-bom.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.americanexpress.synapse</groupId>
+    <artifactId>synapse</artifactId>
+    <version>2.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>
+        Synapse is a set of Spring Boot starters that expose protocol-agnostic service operations over REST, gRPC,
+        GraphQL and cloud functions, with prescriptive conventions for clients, data and messaging.
+    </description>
+    <url>https://github.com/americanexpress/synapse</url>
+
+    <licenses>
+        <license>
+            <name>The Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>American Express Travel Related Services, Inc.</name>
+            <organizationUrl>https://americanexpress.com</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <url>https://github.com/americanexpress/synapse</url>
+        <connection>scm:git:https://github.com/americanexpress/synapse.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/americanexpress/synapse.git</developerConnection>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub Issues</system>
+        <url>https://github.com/americanexpress/synapse/issues</url>
+    </issueManagement>
+
+    <modules>
+        <module>bom/synapse-bom</module>
+        <module>parent/synapse-parent</module>
+        <module>core/synapse-core</module>
+        <module>core/synapse-test</module>
+        <module>core/synapse-logging-log4j2</module>
+        <module>api/synapse-api-rest</module>
+        <module>api/synapse-api-rest-openapi</module>
+        <module>api/synapse-test-rest</module>
+        <module>api/synapse-api-grpc</module>
+        <module>api/synapse-test-grpc</module>
+        <module>data/synapse-data-core</module>
+        <module>data/synapse-data-jpa</module>
+        <module>data/synapse-data-jdbc</module>
+        <module>data/synapse-test-data</module>
+        <module>data/synapse-data-postgres</module>
+        <!-- Runnable samples; never published. -->
+        <module>samples/rest-books</module>
+        <module>samples/hello-rest</module>
+        <module>samples/grpc-inventory</module>
+        <module>samples/multi-store</module>
+        <module>samples/reference-bookstore</module>
+        <!-- Archetypes, which generate projects in the samples' shape. -->
+        <module>archetypes/synapse-archetype-quickstart</module>
+        <module>archetypes/synapse-archetype-service</module>
+        <!-- Build-rule tests; never published. -->
+        <module>tests/synapse-build-rules-tests</module>
+        <!-- Tests of several data modules together; never published. -->
+        <module>tests/synapse-data-mixed-tests</module>
+        <!-- Synapse's log lines on Logback; never published. -->
+        <module>tests/synapse-logging-logback-tests</module>
+    </modules>
+
+    <properties>
+        <!-- Java: built with JDK 25, bytecode and API level 21 (see specs/v2/BUILD.md) -->
+        <java.release>21</java.release>
+        <build.java.version>[25,)</build.java.version>
+        <!-- Set to true only by synapse-test and the synapse-test-<plugin> slices, the modules allowed to export test
+             libraries in compile scope. -->
+        <synapse.enforcer.allowTestLibraries>false</synapse.enforcer.allowTestLibraries>
+        <maven.compiler.release>${java.release}</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <project.build.outputTimestamp>2026-10-27T00:00:00Z</project.build.outputTimestamp>
+
+        <!-- Platform. Keep in sync with the parent version in parent/synapse-parent/pom.xml. -->
+        <spring-boot.version>4.1.2</spring-boot.version>
+        <!--
+            Same values as spring-boot-dependencies 4.1.2; the root build doesn't inherit Boot's parent, so the protobuf
+            plugin's coordinates are repeated here. Bump them with Boot.
+        -->
+        <protobuf-maven-plugin.version>5.1.11</protobuf-maven-plugin.version>
+        <protobuf-java.version>4.36.2</protobuf-java.version>
+        <grpc-java.version>1.84.1</grpc-java.version>
+
+        <!-- Static analysis -->
+        <error-prone.version>2.51.0</error-prone.version>
+        <nullaway.version>0.14.3</nullaway.version>
+        <!-- Source paths (a regular expression) Error Prone skips, passed as -XepExcludedPaths. Only for code generated
+             without a @Generated annotation Error Prone recognizes (protoc, grpc-java); a module can exclude paths
+             here, never disable checks. The default, ^$, matches no path. -->
+        <synapse.errorprone.excludedPaths>^$</synapse.errorprone.excludedPaths>
+
+        <!--
+            Eclipse JDT formatter engine used by Spotless. Pinned so a Spotless upgrade can't silently reformat the
+            codebase; bump deliberately, run ./mvnw spotless:apply and commit the result separately.
+        -->
+        <eclipse-formatter.version>4.41</eclipse-formatter.version>
+
+        <!--
+            Test quality gates (specs/v2/BUILD.md, Quality gates and CI):
+            - per-module coverage floor (JaCoCo, unit + integration tests merged)
+            - 90% coverage of changed lines per pull request (diff-cover in CI)
+            - mutation score for modules that opt in to PIT (nightly)
+        -->
+        <jacoco.line.minimum>0.80</jacoco.line.minimum>
+        <jacoco.branch.minimum>0.70</jacoco.branch.minimum>
+        <jacoco.skip>false</jacoco.skip>
+        <!-- JUnit tag expression for integration tests; empty runs all. CI sets it to smoke on the JDK 21 leg. -->
+        <synapse.it.groups></synapse.it.groups>
+        <pitest.skip>true</pitest.skip>
+        <pitest.mutation.threshold>70</pitest.mutation.threshold>
+        <pitest-maven.version>1.30.1</pitest-maven.version>
+        <pitest-junit5-plugin.version>1.2.3</pitest-junit5-plugin.version>
+        <!-- The phase of synapse-release's placeholder javadoc jar: none, except in an archetype module (the
+             archetype-module profile sets package). Internal, not a setting. -->
+        <synapse.javadoc.placeholder.phase>none</synapse.javadoc.placeholder.phase>
+
+        <!-- Plugins -->
+        <maven-antrun-plugin.version>3.2.0</maven-antrun-plugin.version>
+        <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
+        <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
+        <maven-deploy-plugin.version>3.2.0</maven-deploy-plugin.version>
+        <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
+        <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
+        <maven-failsafe-plugin.version>3.6.1</maven-failsafe-plugin.version>
+        <maven-help-plugin.version>3.5.2</maven-help-plugin.version>
+        <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
+        <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
+        <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
+        <maven-resources-plugin.version>3.5.0</maven-resources-plugin.version>
+        <maven-site-plugin.version>3.22.0</maven-site-plugin.version>
+        <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
+        <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
+        <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
+        <jacoco-maven-plugin.version>0.8.16</jacoco-maven-plugin.version>
+        <spotless-maven-plugin.version>3.10.4</spotless-maven-plugin.version>
+        <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
+        <!-- Same value as spring-boot-dependencies 4.1.2, which synapse-parent's consumers get it from (the root build
+             doesn't inherit Boot's plugin management). Bump it with Boot. -->
+        <build-helper-maven-plugin.version>3.6.2</build-helper-maven-plugin.version>
+        <maven-invoker-plugin.version>3.10.1</maven-invoker-plugin.version>
+        <!-- maven-archetype-plugin and the archetype-packaging extension (build extensions below) are released
+             together, and need Maven >= 3.6.3: https://github.com/apache/maven-archetype/releases -->
+        <maven-archetype-plugin.version>3.4.1</maven-archetype-plugin.version>
+
+        <!-- Architecture rules for consumers (synapse-test, archunit support); not managed by Spring Boot. -->
+        <archunit.version>1.5.1</archunit.version>
+        <!-- OpenAPI for REST bindings (synapse-api-rest-openapi): not managed by Spring Boot; 3.2.x is built on Boot
+             4.1.2, see https://github.com/springdoc/springdoc-openapi/releases/tag/v3.2.0. The Swagger UI recipe in
+             samples/rest-books/README.md and docs/modules/ROOT/pages/openapi.adoc repeats this version as a literal
+             (the BOM doesn't manage the UI starter): bump them together. -->
+        <springdoc.version>3.2.0</springdoc.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Synapse modules. Mirrors bom/synapse-bom (a reactor BOM can't be imported by its own build). -->
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-logging-log4j2</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-rest</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-rest-openapi</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-rest</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-api-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-grpc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-jpa</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-jdbc</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-data-postgres</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-test-data</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <!-- The next four third-party entries are repeated from synapse-bom, and synapse-parent repeats them too;
+                 the bom-guava-pin build-rules test keeps all three equal. -->
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit-junit5</artifactId>
+                <version>${archunit.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <!--
+                CVE pin: guava 33.6.0 (what grpc-java 1.84.1 brings) is affected by GHSA-xxph-c9ww-hj94 /
+                CVE-2026-102554; 33.7.2 is the first fixed release. It also gives convergence for grpc-java 1.84.1's
+                transitives (33.6.0-android and 33.6.0-jre); not managed by Spring Boot 4.1.2.
+                Remove when grpc-java brings guava >= 33.7.2 and its transitives agree on one guava version;
+                otherwise keep it as a convergence pin.
+            -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>33.7.2-jre</version>
+            </dependency>
+            <!-- Convergence for grpc-java 1.84.1's transitives; not managed by Spring Boot 4.1.2.
+                 Remove when grpc-java's transitives agree on one error_prone_annotations version. -->
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_annotations</artifactId>
+                <version>2.50.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <extensions>
+            <!-- The maven-archetype packaging of the archetypes/ modules. Same release as maven-archetype-plugin:
+                 https://github.com/apache/maven-archetype/releases -->
+            <extension>
+                <groupId>org.apache.maven.archetype</groupId>
+                <artifactId>archetype-packaging</artifactId>
+                <version>${maven-archetype-plugin.version}</version>
+            </extension>
+        </extensions>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-clean-plugin</artifactId>
+                    <version>${maven-clean-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>${maven-resources-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                    <configuration>
+                        <release>${java.release}</release>
+                        <parameters>true</parameters>
+                        <showWarnings>true</showWarnings>
+                        <annotationProcessorPathsUseDepMgmt>true</annotationProcessorPathsUseDepMgmt>
+                        <compilerArgs>
+                            <arg>-Xlint:all,-processing,-serial</arg>
+                            <arg>-XDcompilePolicy=simple</arg>
+                            <arg>--should-stop=ifError=FLOW</arg>
+                            <arg>-Xplugin:ErrorProne -XepDisableWarningsInGeneratedCode -Xep:NullAway:ERROR -XepOpt:NullAway:JSpecifyMode=true -XepOpt:NullAway:OnlyNullMarked=true -XepExcludedPaths:${synapse.errorprone.excludedPaths}</arg>
+                        </compilerArgs>
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>com.google.errorprone</groupId>
+                                <artifactId>error_prone_core</artifactId>
+                                <version>${error-prone.version}</version>
+                            </path>
+                            <path>
+                                <groupId>com.uber.nullaway</groupId>
+                                <artifactId>nullaway</artifactId>
+                                <version>${nullaway.version}</version>
+                            </path>
+                            <path>
+                                <groupId>org.springframework.boot</groupId>
+                                <artifactId>spring-boot-configuration-processor</artifactId>
+                            </path>
+                        </annotationProcessorPaths>
+                    </configuration>
+                </plugin>
+                <!--
+                    Tests: Mockito is attached as a -javaagent (dynamic agent loading is deprecated on JDK 21+).
+                    Pass -Djvm=<path to java> to run tests on another JDK (CI uses this for JDK 21).
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                    <configuration>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${maven-failsafe-plugin.version}</version>
+                    <configuration>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
+                        <groups>${synapse.it.groups}</groups>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-antrun-plugin</artifactId>
+                    <version>${maven-antrun-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>${maven-dependency-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>${maven-jar-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-install-plugin</artifactId>
+                    <version>${maven-install-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-deploy-plugin</artifactId>
+                    <version>${maven-deploy-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-site-plugin</artifactId>
+                    <version>${maven-site-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-source-plugin</artifactId>
+                    <version>${maven-source-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>${maven-javadoc-plugin.version}</version>
+                    <configuration>
+                        <release>${java.release}</release>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-help-plugin</artifactId>
+                    <version>${maven-help-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>${maven-enforcer-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>com.diffplug.spotless</groupId>
+                    <artifactId>spotless-maven-plugin</artifactId>
+                    <version>${spotless-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.pitest</groupId>
+                    <artifactId>pitest-maven</artifactId>
+                    <version>${pitest-maven.version}</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.pitest</groupId>
+                            <artifactId>pitest-junit5-plugin</artifactId>
+                            <version>${pitest-junit5-plugin.version}</version>
+                        </dependency>
+                    </dependencies>
+                    <configuration>
+                        <skip>${pitest.skip}</skip>
+                        <targetClasses>
+                            <param>io.americanexpress.synapse.*</param>
+                        </targetClasses>
+                        <!-- Unit tests only, as surefire: integration tests are failsafe's. PIT runs every test class
+                             in one JVM, where a @SpringBootTest IT would reconfigure logging for the unit tests. -->
+                        <excludedTestClasses>
+                            <param>**.*IT</param>
+                        </excludedTestClasses>
+                        <mutationThreshold>${pitest.mutation.threshold}</mutationThreshold>
+                        <failWhenNoMutations>false</failWhenNoMutations>
+                        <timestampedReports>false</timestampedReports>
+                        <outputFormats>
+                            <param>HTML</param>
+                            <param>XML</param>
+                        </outputFormats>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.cyclonedx</groupId>
+                    <artifactId>cyclonedx-maven-plugin</artifactId>
+                    <version>${cyclonedx-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-invoker-plugin</artifactId>
+                    <version>${maven-invoker-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-archetype-plugin</artifactId>
+                    <version>${maven-archetype-plugin.version}</version>
+                </plugin>
+                <!-- Configured as spring-boot-starter-parent 4.1.2 does; modules add their own executions. -->
+                <plugin>
+                    <groupId>io.github.ascopes</groupId>
+                    <artifactId>protobuf-maven-plugin</artifactId>
+                    <version>${protobuf-maven-plugin.version}</version>
+                    <configuration>
+                        <protoc>${protobuf-java.version}</protoc>
+                        <plugins>
+                            <plugin kind="binary-maven">
+                                <groupId>io.grpc</groupId>
+                                <artifactId>protoc-gen-grpc-java</artifactId>
+                                <version>${grpc-java.version}</version>
+                                <options>@generated=omit</options>
+                            </plugin>
+                        </plugins>
+                    </configuration>
+                </plugin>
+                <!-- Used by the snapshot workflow to stamp pull request versions (2.0.0-pr123-SNAPSHOT). -->
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>versions-maven-plugin</artifactId>
+                    <version>${versions-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>build-helper-maven-plugin</artifactId>
+                    <version>${build-helper-maven-plugin.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>enforce</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>${build.java.version}</version>
+                                    <message>Synapse is built with JDK 25 (it targets Java 21 bytecode via --release).</message>
+                                </requireJavaVersion>
+                                <requireMavenVersion>
+                                    <version>[3.9.6,)</version>
+                                </requireMavenVersion>
+                                <dependencyConvergence/>
+                                <banDuplicatePomDependencyVersions/>
+                                <bannedDependencies>
+                                    <message>Banned dependency: see the Quality gates section of specs/v2/BUILD.md.</message>
+                                    <excludes>
+                                        <!-- Legacy or vulnerable logging APIs. (commons-logging is allowed:
+                                             Spring Framework 7 depends on commons-logging 1.3, which bridges to SLF4J/Log4j.) -->
+                                        <exclude>org.slf4j:slf4j-ext</exclude>
+                                        <exclude>log4j:log4j</exclude>
+                                        <!-- JUnit 4 -->
+                                        <exclude>junit:junit</exclude>
+                                        <!-- Synapse jars must not choose a logging backend -->
+                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:compile</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-logging:*:*:runtime</exclude>
+                                    </excludes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <!-- Test libraries stay out of compile/runtime scope. synapse-test and the synapse-test-<plugin> slices
+                         exist to export them and set synapse.enforcer.allowTestLibraries=true in their POMs. -->
+                    <execution>
+                        <id>enforce-test-scope</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${synapse.enforcer.allowTestLibraries}</skip>
+                            <rules>
+                                <bannedDependencies>
+                                    <message>Test libraries must stay in test scope (only synapse-test and the synapse-test-&lt;plugin&gt; slices may export them): see the Quality gates section of specs/v2/BUILD.md.</message>
+                                    <excludes>
+                                        <exclude>org.junit.jupiter:*:*:*:compile</exclude>
+                                        <exclude>org.junit.jupiter:*:*:*:runtime</exclude>
+                                        <exclude>org.mockito:*:*:*:compile</exclude>
+                                        <exclude>org.mockito:*:*:*:runtime</exclude>
+                                        <exclude>org.assertj:*:*:*:compile</exclude>
+                                        <exclude>org.assertj:*:*:*:runtime</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-test:*:*:compile</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-test:*:*:runtime</exclude>
+                                        <exclude>org.testcontainers:*:*:*:compile</exclude>
+                                        <exclude>org.testcontainers:*:*:*:runtime</exclude>
+                                    </excludes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!--
+                Code style: the Synapse Eclipse formatter profile (.config/synapse-java-format.xml).
+                Local builds format files in place; CI (env CI=true) only checks. See the spotless-* profiles below.
+            -->
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <configuration>
+                    <lineEndings>UNIX</lineEndings>
+                    <java>
+                        <!--
+                            The default includes, the test sources shared by two modules (src/shared-it/java, in
+                            synapse-logging-log4j2), and the Java sources of the samples (samples/**), which inherit
+                            synapse-parent and so don't go through this build parent. Only the root has samples/ below it,
+                            so for the modules the extra pattern matches nothing. Archetype templates hold ${package} and
+                            Velocity syntax and are deliberately not formatted (see the license-header-samples check).
+                        -->
+                        <includes>
+                            <include>src/main/java/**/*.java</include>
+                            <include>src/test/java/**/*.java</include>
+                            <include>src/shared-it/java/**/*.java</include>
+                            <include>samples/**/src/**/*.java</include>
+                        </includes>
+                        <eclipse>
+                            <version>${eclipse-formatter.version}</version>
+                            <file>${maven.multiModuleProjectDirectory}/.config/synapse-java-format.xml</file>
+                        </eclipse>
+                        <importOrder>
+                            <order>java|javax|jakarta,,io.americanexpress.synapse,\#</order>
+                        </importOrder>
+                        <removeUnusedImports/>
+                        <trimTrailingWhitespace/>
+                        <endWithNewline/>
+                        <licenseHeader>
+                            <file>${maven.multiModuleProjectDirectory}/.config/license-header.txt</file>
+                        </licenseHeader>
+                    </java>
+                </configuration>
+            </plugin>
+            <!--
+                Spotless never checks the license header of package-info.java or module-info.java (the step skips
+                them by file name, whatever the delimiter), so this check covers those two files.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>license-header-package-info</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <fileset id="without-license-header" dir="${project.basedir}/src" erroronmissingdir="false">
+                                    <include name="**/package-info.java"/>
+                                    <include name="**/module-info.java"/>
+                                    <not>
+                                        <contains text="Licensed under the Apache License, Version 2.0"/>
+                                    </not>
+                                </fileset>
+                                <pathconvert property="files-without-license-header" refid="without-license-header" pathsep="${line.separator}" setonempty="false"/>
+                                <fail if="files-without-license-header" message="Missing license header (Spotless does not check package-info.java or module-info.java); copy .config/license-header.txt into:${line.separator}${files-without-license-header}"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <!--
+                        Root only (not inherited): the samples inherit synapse-parent, not this POM, so they carry none
+                        of the checks above. This covers every Java file of the samples, and of the archetype templates
+                        (whose ${package} lines Spotless can't parse, so Spotless skips them), including the
+                        package-info.java files Spotless never checks.
+                    -->
+                    <execution>
+                        <id>license-header-samples</id>
+                        <inherited>false</inherited>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <fileset id="samples-without-license-header" dir="${project.basedir}" erroronmissingdir="false">
+                                    <include name="samples/**/src/**/*.java"/>
+                                    <include name="archetypes/**/src/main/resources/archetype-resources/**/*.java"/>
+                                    <not>
+                                        <contains text="Licensed under the Apache License, Version 2.0"/>
+                                    </not>
+                                </fileset>
+                                <pathconvert property="samples-files-without-license-header" refid="samples-without-license-header" pathsep="${line.separator}" setonempty="false"/>
+                                <fail if="samples-files-without-license-header" message="Missing license header; copy .config/license-header.txt into:${line.separator}${samples-files-without-license-header}"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Local builds: format sources in place, so formatting never fails a developer's build. -->
+        <profile>
+            <id>spotless-apply</id>
+            <activation>
+                <property>
+                    <name>!env.CI</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.diffplug.spotless</groupId>
+                        <artifactId>spotless-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>spotless-apply</id>
+                                <phase>process-sources</phase>
+                                <goals>
+                                    <goal>apply</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- CI (GitHub Actions sets CI=true): fail on unformatted code. -->
+        <profile>
+            <id>spotless-check</id>
+            <activation>
+                <property>
+                    <name>env.CI</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.diffplug.spotless</groupId>
+                        <artifactId>spotless-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>spotless-check</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Mutation testing (test quality, not just coverage). Run nightly: ./mvnw -Pmutation verify
+            Applied to modules that set <pitest.skip>false</pitest.skip>.
+        -->
+        <profile>
+            <id>mutation</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pitest</groupId>
+                        <artifactId>pitest-maven</artifactId>
+                        <executions>
+                            <execution>
+                                <id>mutation-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>mutationCoverage</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Applied to every archetype (activated by its archetype descriptor): with -Psynapse-release it attaches the
+             placeholder javadoc jar (see synapse-release). -->
+        <profile>
+            <id>archetype-module</id>
+            <activation>
+                <file>
+                    <exists>${basedir}/src/main/resources/META-INF/maven/archetype-metadata.xml</exists>
+                </file>
+            </activation>
+            <properties>
+                <synapse.javadoc.placeholder.phase>package</synapse.javadoc.placeholder.phase>
+            </properties>
+        </profile>
+
+        <!-- -Djvm=<path to java> (CI's JDK 21 legs) also reaches the projects the archetype ITs generate, so their tests
+             run on that JVM too. -->
+        <profile>
+            <id>archetype-it-jvm</id>
+            <activation>
+                <property>
+                    <name>jvm</name>
+                </property>
+            </activation>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-archetype-plugin</artifactId>
+                            <configuration>
+                                <properties>
+                                    <jvm>${jvm}</jvm>
+                                </properties>
+                            </configuration>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+            </build>
+        </profile>
+
+        <!-- Applied to every module that produces a jar (activated by the presence of src/main/java). -->
+        <profile>
+            <id>java-module</id>
+            <activation>
+                <file>
+                    <exists>${basedir}/src/main/java</exists>
+                </file>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <!-- Exposes ${org.mockito:mockito-core:jar} for the surefire/failsafe argLine. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>dependency-paths</id>
+                                <goals>
+                                    <goal>properties</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- Sets synapse.mockitoAgentArg to the Mockito -javaagent when the module has Mockito, and to
+                             nothing otherwise, so the test JVM never gets an unresolved agent path. As in
+                             parent/synapse-parent/pom.xml, which explains the regex. -->
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>mockito-agent-arg</id>
+                                <phase>process-test-classes</phase>
+                                <goals>
+                                    <goal>regex-property</goal>
+                                </goals>
+                                <configuration>
+                                    <name>synapse.mockitoAgentArg</name>
+                                    <value>"-javaagent:${org.mockito:mockito-core:jar}"</value>
+                                    <regex>^"-javaagent:\$\{.*|^(.+)$</regex>
+                                    <replacement>$1</replacement>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- Declared before JaCoCo so it runs ahead of the coverage check: JaCoCo skips the check
+                             when there is no data, which would let a module with no tests pass. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>require-coverage-data</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${jacoco.skip}</skip>
+                                    <rules>
+                                        <requireFilesExist>
+                                            <message>No test coverage data for a module with main sources: add tests (see the Quality gates section of specs/v2/BUILD.md).</message>
+                                            <files>
+                                                <file>${project.build.directory}/jacoco-merged.exec</file>
+                                            </files>
+                                        </requireFilesExist>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>prepare-agent</id>
+                                <goals>
+                                    <goal>prepare-agent</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>prepare-agent-integration</id>
+                                <goals>
+                                    <goal>prepare-agent-integration</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>merge-results</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>merge</goal>
+                                </goals>
+                                <configuration>
+                                    <fileSets>
+                                        <fileSet>
+                                            <directory>${project.build.directory}</directory>
+                                            <includes>
+                                                <include>jacoco.exec</include>
+                                                <include>jacoco-it.exec</include>
+                                            </includes>
+                                        </fileSet>
+                                    </fileSets>
+                                    <destFile>${project.build.directory}/jacoco-merged.exec</destFile>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>report</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>report</goal>
+                                </goals>
+                                <configuration>
+                                    <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>check</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                                    <rules>
+                                        <rule>
+                                            <element>BUNDLE</element>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>${jacoco.line.minimum}</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>${jacoco.branch.minimum}</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Snapshot: sources only, unsigned (Central doesn't validate snapshots). Used by the snapshot build job, which
+            deploys to a local staging directory without secrets; the publish job uploads the staged files with
+            .github/scripts/central-publish.sh.
+        -->
+        <profile>
+            <id>synapse-snapshot</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Release: sources, javadoc and the aggregate CycloneDX SBOM (target/bom.json, target/bom.xml). Used by the
+            release workflow's build job, which deploys to a local staging directory without secrets; its publish job
+            signs and uploads the staged files with .github/scripts/central-publish.sh.
+        -->
+        <profile>
+            <id>synapse-release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!--
+                        Maven Central requires a -javadoc.jar for every artifact that isn't a pom, and accepts a
+                        placeholder with a README (https://central.sonatype.org/publish/requirements/). An archetype has
+                        no Java sources, so maven-javadoc-plugin attaches none; this attaches archetypes/javadoc-placeholder
+                        (a README) as the javadoc jar instead. Bound only in an archetype module (the archetype-module
+                        profile sets synapse.javadoc.placeholder.phase), so a Java module keeps its real Javadoc.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>placeholder-javadoc</id>
+                                <phase>${synapse.javadoc.placeholder.phase}</phase>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                                <configuration>
+                                    <classifier>javadoc</classifier>
+                                    <classesDirectory>${maven.multiModuleProjectDirectory}/archetypes/javadoc-placeholder</classesDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.cyclonedx</groupId>
+                        <artifactId>cyclonedx-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>makeAggregateBom</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Tests are skipped on purpose (for example a packaging-only run), so there is no coverage data to require.
+             Activation takes a single property, hence one profile for each. Only the value true activates them, so
+             -DskipTests=false or -Dmaven.test.skip=false keeps the coverage gate (a bare -DskipTests sets true). -->
+        <profile>
+            <id>skip-tests-coverage</id>
+            <activation>
+                <property>
+                    <name>skipTests</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <properties>
+                <jacoco.skip>true</jacoco.skip>
+            </properties>
+        </profile>
+        <profile>
+            <id>skip-tests-coverage-maven-test-skip</id>
+            <activation>
+                <property>
+                    <name>maven.test.skip</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <properties>
+                <jacoco.skip>true</jacoco.skip>
+            </properties>
+        </profile>
+    </profiles>
+</project>

@@ -1,0 +1,29 @@
+# The local environment: ENV=local java -jar ..., or ./mvnw ... spring-boot:run (the pom sets
+# spring-boot.run.profiles=local). Only local conveniences belong here.
+synapse:
+  errors:
+    # Problem responses carry "detail" (the formatted message), which helps while trying the service. Every other
+    # environment keeps the default (off).
+    include-detail: true
+  # Paging cursors: no key is set, so every start generates one and logs a WARN, and a cursor from an earlier start is
+  # rejected. To keep cursors across restarts, create one key per shell and pass it to each start:
+  #   KEY=$(openssl rand -base64 32)
+  #   SYNAPSE_PAGING_CURSOR_KEY=$KEY ENV=local java -jar ...
+  # Boot binds SYNAPSE_PAGING_CURSOR_KEY to synapse.paging.cursor.key (dots become underscores, letters upper case).
+  # Never write a key in this file: keys don't belong in the repository.
+  api:
+    rest:
+      cors:
+        # Lets a front end served locally on port 3000 (npm start, for example) call the API from the browser. CORS
+        # is off without origins, the default in every environment: a real environment lists the exact origins of its
+        # own front ends in its application-<env>.yaml. Actuator's paths are left to management.endpoints.web.cors.*.
+        allowed-origins:
+          - http://localhost:3000
+
+springdoc:
+  api-docs:
+    # Serves the OpenAPI document at /v3/api-docs. It describes every route to anyone who can reach the service, so
+    # it is off by default in every environment; an environment that wants it (here, local runs) turns it on. This
+    # sample builds without Spring AOT (-Paot is opt-in): with AOT-generated artifacts the build's value decides
+    # instead, and a run in local fails at startup (see the reference bookstore).
+    enabled: true

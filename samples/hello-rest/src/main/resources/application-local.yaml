@@ -1,0 +1,7 @@
+# The local environment: ENV=local java -jar ..., or ./mvnw ... spring-boot:run (the pom sets
+# spring-boot.run.profiles=local). Only local conveniences belong here.
+synapse:
+  errors:
+    # Problem responses carry "detail" (the formatted message), which helps while trying the service. Every other
+    # environment keeps the default (off).
+    include-detail: true

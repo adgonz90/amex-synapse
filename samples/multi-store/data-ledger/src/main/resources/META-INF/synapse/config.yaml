@@ -1,0 +1,19 @@
+# The ledger store's settings for every environment. They ship in this module's jar, so a service that depends on the
+# module gets them without referencing anything; the service's own application*.yaml files win over them. Where to
+# connect is not here: it differs per environment (config-<env>.yaml), and the tests connect to a container.
+#
+# The store doesn't set health.readiness, so it stays out of the readiness group: the service keeps taking traffic
+# while the ledger is down, and /actuator/health shows the ledger DOWN. The orders store opts in (data-orders).
+synapse:
+  data:
+    stores:
+      ledger:
+        hikari:
+          # At most 5 connections per instance (Hikari's default is 10). Startup logs the budget of every store.
+          maximum-pool-size: 5
+          # How long a caller waits for a ledger connection: 2 seconds, in milliseconds as Hikari takes it (its
+          # default is 30 seconds). A placement writes the ledger inside its orders transaction, so it holds an orders
+          # connection while it waits. With the ledger down and the default, five placements at once would hold all
+          # five orders connections for 30 seconds, and every orders read would wait behind them. With 2 seconds, a
+          # placement fails fast with 503 UNAVAILABLE, the order is rolled back, and its orders connection returns.
+          connection-timeout: 2000

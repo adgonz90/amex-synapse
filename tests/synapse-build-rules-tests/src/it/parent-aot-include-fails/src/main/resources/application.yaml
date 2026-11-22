@@ -1,0 +1,6 @@
+spring:
+  profiles:
+    active: ${ENV}
+    # A feature profile turned on for every environment: during AOT processing Boot would then ignore the build
+    # environment (the default profile), so Synapse fails the AOT build.
+    include: kafka

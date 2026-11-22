@@ -1,0 +1,16 @@
+# The fixture data module's settings for every environment, as a data module ships them in its jar: the pools and
+# migrations of its two stores. Where to connect is not here: each environment's file, or a test's container, says so.
+synapse:
+  data:
+    stores:
+      books:
+        hikari:
+          maximum-pool-size: 4
+        migrations:
+          locations: classpath:db/migration/books
+      legacy:
+        hikari:
+          maximum-pool-size: 3
+        migrations:
+          flyway:
+            validate-migration-naming: true

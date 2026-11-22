@@ -1,0 +1,62 @@
+# Configuration of the bookstore. The books store is not configured here: data-books ships its settings in its jar
+# (META-INF/synapse/config.yaml and config-<env>.yaml), and a key set here would override the module's. The synapse.*
+# values that are commented out are the defaults, listed to show what you can change.
+# The table of every property is generated from the jars' configuration metadata when the documentation site is built
+# (docs/modules/ROOT/pages/reference/configuration-properties.adoc includes it); IDEs with Spring Boot support complete
+# the keys from the same metadata.
+
+spring:
+  application:
+    # Not a default: the service's name, which is also the domain of every gRPC ErrorInfo it sends.
+    name: bookstore
+  profiles:
+    # The environment: exactly one, with its own application-<env>.yaml. The platform sets ENV; local runs use local
+    # (application-local.yaml), and the tests use test (src/test/resources/application-test.yaml).
+    active: ${ENV}
+  threads:
+    virtual:
+      # Requests and calls run on virtual threads; Synapse's concurrency limits are then what cap the work in flight.
+      enabled: true
+  # The REST API listens on server.port (8080 by default) and the gRPC API on spring.grpc.server.port (9090 by
+  # default). Both call the same operations.
+
+synapse:
+  correlation:
+    # Read from this request header or gRPC metadata key (a new id is generated when it is absent or invalid), echoed
+    # on every response, errors included, and written to the logs as correlationId.
+    header: X-Correlation-Id
+  # Whether problem responses (REST) and statuses (gRPC) carry the formatted message: off unless include-detail is
+  # true. application-local.yaml turns it on for local runs.
+  # errors:
+  #   include-detail: true
+  # Paging (GET /books and SearchBooks): core's settings, which both protocols share, so a page token issued over one
+  # protocol pages over the other. Page sizes: default-size 20, max-size 100.
+  # paging:
+  #   # The largest offset a caller may request (REST offset, gRPC skip); a larger one is a violation.
+  #   max-offset: 1000
+  #   # cursor.key: the base64 256-bit key that encrypts the page tokens; create one with: openssl rand -base64 32
+  #   # Unset (or blank), a key is generated at every start: tokens are then rejected after a restart or on another
+  #   # instance, and every start logs a WARN that says so. Give every instance the same key, from the environment or
+  #   # a secret store, never from a file in the repository. No line is needed here: Boot binds the environment
+  #   # variable SYNAPSE_PAGING_CURSOR_KEY to synapse.paging.cursor.key (dots become underscores, letters upper case).
+  # The user that the audit columns (created_by, modified_by) record when no principal is signed in. Nothing signs
+  # callers in yet, so every write records it.
+  # data:
+  #   auditing:
+  #     system-user: system
+
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          # Not a default: the readiness group also answers at /health on the server's port, where a load balancer
+          # checks it.
+          additional-path: server:/health
+  otlp:
+    metrics:
+      export:
+        # Not a default. Boot pushes metrics to an OpenTelemetry collector at http://localhost:4318 every minute and
+        # logs a WARN when none is there. Turn it on (and set management.otlp.metrics.export.url) when you run one.
+        # Traces and logs are exported only once their endpoints are set (management.opentelemetry.*.export.otlp).
+        enabled: false

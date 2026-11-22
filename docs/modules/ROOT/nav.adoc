@@ -1,0 +1,17 @@
+* xref:index.adoc[Overview]
+* Getting started
+** xref:archetypes.adoc[Archetypes]
+** xref:samples.adoc[Samples]
+* Guides
+** xref:core.adoc[Core]
+** xref:environments.adoc[Environments]
+** xref:rest.adoc[REST]
+** xref:openapi.adoc[OpenAPI]
+** xref:grpc.adoc[gRPC]
+** xref:data.adoc[Data]
+** xref:testing.adoc[Testing]
+** xref:logging-log4j2.adoc[Log4j2 logging]
+** xref:opentelemetry-agent.adoc[OpenTelemetry Java agent]
+** xref:parent.adoc[Parent POM]
+* Reference
+** xref:reference/configuration-properties.adoc[Configuration properties]

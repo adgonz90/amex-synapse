@@ -1,0 +1,349 @@
+= OpenAPI
+
+`synapse-api-rest-openapi` documents the routes of your `RestBindings` beans in an OpenAPI 3.1 document, which
+springdoc serves at `/v3/api-docs`. Every route is in it unless springdoc's path filters leave it out, with its
+parameters, request and response schemas, statuses and problem responses, named as the application's `JsonMapper`
+reads and writes them.
+
+The document is off by default, in every environment: an environment's file turns it on (see <<exposure>>). Under
+AOT and in a native image the setting is fixed when the application is built, not per environment (see
+<<aot-toggle>>).
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-api-rest-openapi</artifactId>
+</dependency>
+----
+
+The module depends on `synapse-api-rest` and on springdoc's `springdoc-openapi-starter-webmvc-api` (3.2.0, in the
+Synapse BOM), without springdoc's logging starter. It is active in servlet web applications, and documents routes
+when the application has a `RestBindings` bean. There is no Synapse configuration.
+
+springdoc brings Jackson 2, swagger-core and their dependencies onto the service's class path. Synapse's schemas don't
+use Jackson 2: they come from Boot's Jackson 3 `JsonMapper`, the one that writes the responses. Only springdoc's own
+schemas, for escape-hatch controllers (see <<controllers>>), are built with Jackson 2.
+
+== What is documented
+
+One operation per declared route, at its served path (`+/v2/books/{id}+` for a route with `.version("2")`). The implicit
+`HEAD` of a `GET` route and the `OPTIONS` fallback are not documented.
+
+* *Operation.* `operationId` is the operation name. When one operation has several routes, its first declared route
+  keeps the name and its later routes, in declaration order, get `-2`, `-3` and so on, so adding a route (a
+  `.version("2")` route that reuses an operation, say) never renames an existing one. Client generators name their
+  methods from operationIds, so give a versioned route an operation of its own (`get-book-v2`) for a stable name. An
+  operation with `@OperationGroup("books")` gets the tag `books`.
+* *Parameters.*
+** Path variables are required.
+** Query parameters (one per component of a query record), cookies and headers are required when the component is not
+   nullable.
+** `If-Match` and `If-None-Match` are strings described as `An entity tag ("5"), or *.`, required when their
+   `VersionCondition` component is not nullable, as the edge requires them. `If-None-Match` is also documented on an
+   `.etag` read.
+** Paging routes get `cursor`, `offset` (0 to `synapse.paging.max-offset`), `size` (1 to `synapse.paging.max-size`,
+   with the default size) and, with `.sortable`, `sort`: an array of the allowed keys and their `-` forms, sent
+   comma-separated.
+** Every operation takes the correlation header and the deadline header, both optional.
+** Components from `.context(...)` and `.from(...)` are not documented: the server derives them.
+* *Request body* (`application/json`): the input record when every component comes from the body, otherwise an object
+  of the body components, or the component of `.body(...)`. It is required when a body component is not nullable.
+* *Success responses.*
+** The status: `.status(201)` documents 201, `.status(fn)` documents `2XX`, `.created` 201 and `.accepted` 202 (both
+   with `Location`), a `void` output or a `DELETE` without `.status` 204, anything else 200. `.emptyAs(n)` adds `n`
+   without content.
+** The body: the output's schema; an array for a `List`; for a `PageResult`, the `<Item>Page` component
+   (`{items, nextCursor, hasNext, total}`). Header-mapped components are left out unless `.alsoInBody()`.
+** The headers: output headers; `ETag`, `Cache-Control` and `Vary` on an `.etag` response; `Link` on a paged `GET`
+   or `HEAD`.
+** An `.etag` read whose success is 200 or `2XX` also documents 304, with `ETag`, `Cache-Control` and `Vary`.
+* *Problem responses* (`application/problem+json`, the `SynapseProblem` schema). Each status the route's errors can
+  get is documented once, through the same status rules as the edge, so status overrides show, and its description
+  lists the codes:
+** `VALIDATION_FAILED` and `MALFORMED_REQUEST` when the input isn't `Void`;
+** the `.notFound` code (by default `NOT_FOUND`) for an `Optional` output or a route with path variables;
+** `PAYLOAD_TOO_LARGE` and `UNSUPPORTED_MEDIA_TYPE` with a request body;
+** `PRECONDITION_FAILED` on a write that binds `If-Match` or `If-None-Match`, `STALE_VERSION` on a write that binds
+   an optional `If-Match`, and `PRECONDITION_REQUIRED` (428) on a write that requires `If-Match` or `If-None-Match`;
+** `default` for every other error: 406, 500, 503, 504, and the codes the operations throw.
+* Every response carries the correlation header.
+
+An excerpt of the `samples/rest-books` document, its version 2 read:
+
+[source,json]
+----
+"/v2/books/{id}": {
+  "get": {
+    "operationId": "get-book-v2",
+    "parameters": [
+      { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      { "name": "If-None-Match", "in": "header", "description": "An entity tag (\"5\"), or *.", "required": false,
+        "schema": { "type": "string" } },
+      { "name": "X-Correlation-Id", "in": "header", "required": false, ... },
+      { "name": "Request-Timeout", "in": "header", "required": false, ... }
+    ],
+    "responses": {
+      "200": { "description": "OK", "headers": { "X-Correlation-Id": ..., "ETag": ..., "Cache-Control": ..., "Vary": ... },
+               "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BookV2" } } } },
+      "304": { "description": "Not Modified", "headers": { ... } },
+      "400": { "description": "Bad Request: VALIDATION_FAILED, MALFORMED_REQUEST",
+               "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/SynapseProblem" } } } },
+      "404": { "description": "Not Found: BOOK_NOT_FOUND", ... },
+      "default": { "description": "Any other error.", ... }
+    }
+  }
+}
+...
+"BookV2": {
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "isbn": { "type": "string" },
+    "title": { "type": "string" },
+    "authors": { "type": "array", "items": { "type": "string" } },
+    "year": { "type": [ "integer", "null" ], "format": "int32" },
+    "version": { "type": "integer", "format": "int64" }
+  },
+  "required": [ "authors", "id", "isbn", "title", "version" ]
+}
+----
+
+[#schemas]
+=== Schemas
+
+Synapse's own schema generator describes the types, on the application's `JsonMapper` and `Validator`:
+
+* Strings, `UUID` (`uuid`), `URI` (`uri`), booleans, `char` (a one-character string), integers (`int32` or `int64`),
+  `BigInteger`, floating-point numbers (`float` or `double`) and `BigDecimal` map to their JSON types.
+* `Instant`, `OffsetDateTime` and `ZonedDateTime` are `date-time` strings, `LocalDate` a `date`, `Duration` a
+  `duration`, and other `java.time` types strings; `Year` is an integer.
+* `byte[]` is a `byte` string. Other arrays, `List` and `Collection` are arrays (`Set` adds `uniqueItems`), and a
+  `Map` is an object with `additionalProperties`, whatever its key type.
+* `Optional<T>` is `T`, nullable; `OptionalInt`, `OptionalLong` and `OptionalDouble` are nullable numbers.
+* An enum in a body is a component that lists its constants as the mapper writes them: strings, or integers for a
+  numeric `@JsonValue` (and `Month`). A path variable, query parameter, cookie or header of an enum type (or an
+  `Optional`, array or collection of one) is bound by Spring's `ConversionService`, which reads the constant names, so
+  it is an inline `string` enum of the constant names (`Enum.name()`): `ACTIVE` for
+  `@JsonProperty("active") ACTIVE`, and `JANUARY` to `DECEMBER` for `Month`.
+* A record is a component, referenced with `$ref`. Its properties are the components the mapper writes (for an
+  output) or reads (for an input), named by Jackson 3 introspection of the application's mapper, in component order:
+  naming strategy, `@JsonProperty` and `@JsonIgnore` all apply. When a record is read with other names or properties
+  than it is written, its input is a second component, `<name>Input`.
+* `required` lists the non-nullable components (JSpecify). In an output, only those the mapper always writes.
+  A nullable property is `type: [<type>, "null"]`, or `anyOf` with `{"type": "null"}` for a reference.
+* Components are named by the type's simple name; a generic record by its arguments (`EnvelopeOfBook`). When two
+  types claim one name, both take their fully qualified name, and so does a type named `SynapseProblem` or
+  `SynapseViolation`.
+* Constraints come from the `Validator`'s metadata (the `Default` group): `@NotNull` (required), `@NotBlank` and
+  `@NotEmpty` (required, length or items at least 1), `@Size`, `@Min`, `@Max`, `@DecimalMin`, `@DecimalMax`,
+  `@Positive`, `@PositiveOrZero`, `@Negative`, `@NegativeOrZero`, `@Pattern` and `@Email`. Other constraints are not
+  described.
+
+Anything else is `{}` (any value); see <<undescribed>>.
+
+== Settings
+
+The document is tuned with springdoc's own properties; Synapse adds no alias. Synapse sets three defaults, at the
+lowest precedence, so any value you set wins:
+
+[cols="3,1,4",options="header"]
+|===
+|Property |Synapse default |Effect
+|`springdoc.api-docs.enabled` |`false` |Serves the document. Turn it on in the files of the environments that
+should serve it (see <<exposure>>).
+|`springdoc.api-docs.version` |`openapi_3_1` |The OpenAPI version. Synapse writes JSON Schema 2020-12, so
+`openapi_3_0` fails startup.
+|`springdoc.swagger-ui.enabled` |`false` |Swagger UI, which Synapse doesn't ship (see <<swagger-ui>>).
+|===
+
+`springdoc.paths-to-match` and `springdoc.paths-to-exclude` apply to Synapse's routes as springdoc applies them to
+its own handlers: Ant-style patterns, matched against the path as it is documented. A route is documented when no
+pattern to match is set or one matches it, and no pattern to exclude matches it. With
+`+springdoc.paths-to-exclude: /internal/**+`, the routes under `/internal` are left out of the document; they still
+answer. `springdoc.packages-to-scan` and `springdoc.packages-to-exclude` don't apply to Synapse's routes (see
+<<limits>>).
+
+`springdoc.api-docs.path` (default `/v3/api-docs`) moves the document. With `openapi_3_0`, the service prints:
+
+[source,text]
+----
+Description:
+
+springdoc.api-docs.version is openapi_3_0, but Synapse documents its REST routes in OpenAPI 3.1 (JSON Schema 2020-12)
+
+Action:
+
+Remove springdoc.api-docs.version, or set it to openapi_3_1.
+----
+
+[#exposure]
+=== Who can read it
+
+The document describes every route, escape-hatch controllers included, to anyone who can reach the service. So,
+like every exposure in Synapse, it is off by default in every environment (see
+xref:environments.adoc#safe-defaults[Safe defaults]), and `/v3/api-docs` answers 404 `ROUTE_NOT_FOUND`. Turn it on
+in the file of each environment that should serve it:
+
+[source,yaml]
+----
+# application-local.yaml (and, say, application-e1.yaml for a development environment)
+springdoc:
+  api-docs:
+    enabled: true
+----
+
+Turning it on in `application.yaml` serves it in every environment. Where it is on, decide who can read it:
+
+* Spring Security can require authentication for `/v3/api-docs/**`, or a network rule can keep the path internal, as
+  for Actuator's paths.
+* `springdoc.paths-to-exclude` (or `springdoc.paths-to-match`) leaves some routes out of the document, Synapse's and
+  the controllers' alike; the routes still answer. `springdoc.packages-to-scan` and `springdoc.packages-to-exclude`
+  don't leave Synapse's routes out.
+
+While the document is off, Synapse still documents the routes at startup and logs its warnings (see
+<<undescribed>>). That is deliberate: no Synapse bean depends on `springdoc.api-docs.enabled`, and a route that can't
+be described is reported in every environment, not only where the document is served. The startup pass honours
+`springdoc.paths-to-match` and `springdoc.paths-to-exclude` whether the document is on or off, so a route those
+leave out is not reported either.
+
+[#aot-toggle]
+=== Under AOT and in a native image
+
+springdoc's beans depend on the setting: springdoc 3.2.0 declares its configuration (`SpringDocConfiguration`,
+`SpringDocWebMvcConfiguration`, `SpringDocConfigProperties`) with
+`@ConditionalOnProperty(name = "springdoc.api-docs.enabled", matchIfMissing = true)`. AOT processing evaluates
+conditions when the application is built (`process-aot`), so an application that runs with its AOT-generated
+artifacts (a native image, or the JVM with `-Dspring.aot.enabled=true`) serves the document exactly when the build
+had it on:
+
+* The value at runtime has no effect. An environment file that turns it on, or off, changes nothing.
+* With Synapse's default, an AOT build that doesn't set it never serves the document, in any environment.
+* An AOT build that turns it on serves it in every environment that runs those artifacts.
+
+To serve the document from AOT artifacts, set the value for the build, either with the environment of the AOT run
+(`application-build.yaml`, the file of the build environment that `synapse-parent` gives `process-aot` in its opt-in
+`aot` profile; see xref:parent.adoc#_build_environment[Build environment]) or with a system property of the AOT JVM:
+
+[source,bash]
+----
+./mvnw -Paot package -Dspring-boot.aot.jvmArguments=-Dspringdoc.api-docs.enabled=true
+----
+
+Build separate artifacts for environments that differ, or keep one artifact with the document on and protect the path
+(see <<exposure>>).
+
+A mismatch can't go unnoticed: the property is a build-time switch (see
+xref:environments.adoc#aot-switches[AOT and native images] for the rule and its message). The build's value is
+whether springdoc's `SpringDocWebMvcConfiguration` bean exists, and the value now is read as springdoc reads it: off
+for `false`, on when unset or any other value.
+
+[#swagger-ui]
+== Swagger UI
+
+To browse the document, add springdoc's UI starter. The Synapse BOM doesn't manage it, so give it the version of
+`springdoc-openapi-starter-webmvc-api` (3.2.0), and exclude Boot's logging starter as for the other starters:
+
+[source,xml]
+----
+<dependency>
+  <groupId>org.springdoc</groupId>
+  <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+  <version>3.2.0</version>
+  <exclusions>
+    <exclusion>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-logging</artifactId>
+    </exclusion>
+  </exclusions>
+</dependency>
+----
+
+Turn it on where you want it, with the document it loads, for example in `application-local.yaml` only:
+
+[source,yaml]
+----
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+----
+
+It is then at `/swagger-ui.html`, which redirects to `/swagger-ui/index.html` and loads `/v3/api-docs`.
+
+== The info section
+
+Without more, the document's `info` is springdoc's default, `{"title":"OpenAPI definition","version":"v0"}`. springdoc
+starts the document from your `OpenAPI` bean, so define one, next to the bindings in `api.rest`:
+
+[source,java]
+----
+@Bean
+OpenAPI booksOpenApi() {
+    return new OpenAPI().info(new Info().title("Book catalog").version("2.0").description("Books and their versions."));
+}
+----
+
+Synapse adds the paths and components to it and leaves the rest of the bean as it is.
+
+[#controllers]
+== Escape-hatch controllers
+
+springdoc documents `@RestController` classes itself, with its own schemas built by Jackson 2. Their property names
+follow Jackson 2's view of the classes, not Boot's Jackson 3 settings, so a name that comes from
+`spring.jackson.*` (a naming strategy, say) can differ from what the controller actually writes.
+
+Synapse merges its routes into springdoc's document:
+
+* A Synapse operation replaces springdoc's for the same path and method. Two templates are the same path when they
+  differ only in variable names (`+/books/{id}+` and `+/books/{bookId}+`): the path keeps Synapse's template, and the
+  controller's other methods on it are kept, with their path variables renamed.
+* springdoc's other paths are kept.
+* Synapse's components replace springdoc's of the same name. A controller that returns its own class named `Book` then
+  points at Synapse's `Book` schema. Give such classes their own names.
+
+[#undescribed]
+== Types documented as `{}`
+
+A type the generator can't describe is documented as `{}`, and startup logs one WARN per type on
+`io.americanexpress.synapse.api.rest.openapi`, with the first route that uses it and, for a limit or a Jackson failure,
+why. A Jackson failure's stack trace is logged at DEBUG.
+
+----
+OpenAPI: no schema for com.example.books.model.Shelf (GET /shelves/{id} (get-shelf)); documented as {}
+OpenAPI: no schema for com.example.books.model.Clash (GET /clash (get-clash)); documented as {}, because Jackson failed on it: java.lang.IllegalArgumentException: Conflicting getter definitions for property "x": com.example.books.model.Clash#a() vs com.example.books.model.Clash#b()
+OpenAPI: no schema for com.example.books.model.Chain4 (GET /chains (list-chains)); documented as {}, because the schema budget was reached (10000 types, 200000 schemas), so every type after it is documented as {} too
+----
+
+These types are documented as `{}`:
+
+* a type that is not one of those in <<schemas>>, such as a class that isn't a record, an interface or `Object`;
+* on the output side, a record written by its own code: `@JsonSerialize(using = ...)` or `(converter = ...)`,
+  `@JsonValue`, or `@JsonFormat(shape = ARRAY)`;
+* on the input side, a record read by its own code: `@JsonDeserialize(using = ...)`, `(converter = ...)` or
+  `(builder = ...)`, a delegating creator, or `@JsonFormat(shape = ARRAY)`;
+* a type over the size limits: a schema name longer than 512 characters, or a component that needs more than 5,000
+  schemas;
+* past the budget of 10,000 types or 200,000 schemas, the first type over it and every later one (one WARN says the
+  budget was reached);
+* a type Jackson fails on; the WARN gives the failure's class and message.
+
+The generator can't know the shape such code writes or reads, so it doesn't guess.
+
+[#limits]
+== Limits
+
+* `.context(...)` and `.from(...)` components are not documented.
+* `springdoc.packages-to-scan` and `springdoc.packages-to-exclude` select springdoc's controllers by package; they
+  don't apply to Synapse's routes, which are all documented whatever their operations' packages. To leave routes out,
+  use `springdoc.paths-to-exclude` or `springdoc.paths-to-match` (see <<exposure>>). There is no per-route switch.
+* `java.time` formats assume Boot's Jackson 3 defaults, which write ISO strings. A mapper set to write dates as
+  numbers makes those schemas wrong.
+* Types the generator can't describe are `{}`, with the startup WARN (see <<undescribed>>).
+* springdoc groups (`GroupedOpenApi`) are not supported.
+* The REST slice (`@SynapseRestTest`) doesn't include the OpenAPI auto-configuration, so it doesn't serve the
+  document; test `/v3/api-docs` with `@SpringBootTest` and `springdoc.api-docs.enabled=true` (tests run as `test`,
+  where it is off unless `application-test.yaml` turns it on).
+* Spring's AOT processing of the module is tested on the JVM. springdoc and the schema generator in a native image are
+  not verified yet. Under AOT, `springdoc.api-docs.enabled` is decided at build time (see <<aot-toggle>>).

@@ -1,0 +1,5 @@
+= Configuration properties
+
+Every `synapse.*` property, generated from each module's configuration metadata at build time.
+
+include::partial$properties/all.adoc[]

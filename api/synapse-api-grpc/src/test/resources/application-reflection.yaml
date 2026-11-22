@@ -1,0 +1,6 @@
+# The reflection environment: GrpcReflectionIT runs in it to prove that an environment file turns server reflection on.
+spring:
+  grpc:
+    server:
+      reflection:
+        enabled: true

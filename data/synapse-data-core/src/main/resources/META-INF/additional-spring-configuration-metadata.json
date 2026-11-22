@@ -1,0 +1,127 @@
+{
+  "properties": [
+    {
+      "name": "synapse.data.stores.*.url",
+      "type": "java.lang.String",
+      "description": "JDBC URL of the store's database. No default. It must not carry a user name or password (set username and password instead). Replace * with the store name, for example synapse.data.stores.books.url.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties"
+    },
+    {
+      "name": "synapse.data.stores.*.username",
+      "type": "java.lang.String",
+      "description": "User name the store connects with. No default; set it from an environment variable such as SYNAPSE_DATA_STORES_BOOKS_USERNAME.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties"
+    },
+    {
+      "name": "synapse.data.stores.*.password",
+      "type": "java.lang.String",
+      "description": "Password the store connects with. May be empty. No default; set it from an environment variable such as SYNAPSE_DATA_STORES_BOOKS_PASSWORD.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties"
+    },
+    {
+      "name": "synapse.data.stores.*.driver-class-name",
+      "type": "java.lang.String",
+      "description": "JDBC driver class. Derived from the URL when not set.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties"
+    },
+    {
+      "name": "synapse.data.stores.*.primary",
+      "type": "java.lang.Boolean",
+      "description": "Whether the store's beans are the primary ones when the service has several stores. A single store is always primary.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "synapse.data.stores.*.database-version",
+      "type": "java.lang.String",
+      "description": "Version of the database the store's SQL is generated for. Defaults to the vendor module's version.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties"
+    },
+    {
+      "name": "synapse.data.stores.*.allow-ddl-auto",
+      "type": "java.lang.Boolean",
+      "description": "Whether ddl-auto may create, drop or update the store's schema at startup.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "synapse.data.stores.*.migrations.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether the store's migrations run at startup.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties$Migrations",
+      "defaultValue": true
+    },
+    {
+      "name": "synapse.data.stores.*.migrations.locations",
+      "type": "java.util.List<java.lang.String>",
+      "description": "Where the store's migrations are. Defaults to classpath:db/migration/ followed by the store name.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties$Migrations"
+    },
+    {
+      "name": "synapse.data.stores.*.migrations.flyway",
+      "type": "java.util.Map<java.lang.String,java.lang.String>",
+      "description": "Flyway settings for the store, by Flyway's own key without the flyway. prefix, such as baseline-on-migrate. url, user, password and locations are rejected: Flyway uses the store's DataSource and migrations.locations.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties$Migrations"
+    },
+    {
+      "name": "synapse.data.stores.*.health.readiness",
+      "type": "java.lang.Boolean",
+      "description": "Whether the store's health is part of the readiness group.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties$Health",
+      "defaultValue": false
+    },
+    {
+      "name": "synapse.data.stores.*.health.timeout",
+      "type": "java.time.Duration",
+      "description": "How long the store's health indicator waits for a connection.",
+      "sourceType": "io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreProperties$Health",
+      "defaultValue": "1s"
+    },
+    {
+      "name": "synapse.data.stores.*.hikari",
+      "type": "java.util.Map<java.lang.String,java.lang.Object>",
+      "description": "Hikari pool settings for the store, bound the way Spring Boot binds spring.datasource.hikari, such as maximum-pool-size. Timeouts are in milliseconds. The pool is named after the store unless pool-name is set. jdbc-url, username, password, data-source-class-name, data-source-jndi, schema, catalog, connection-init-sql, connection-test-query and the data-source-properties user, username, password and url are rejected: use the store's own keys, and name the schema in the url."
+    },
+    {
+      "name": "synapse.data.stores.*.jdbc.template.fetch-size",
+      "type": "java.lang.Integer",
+      "description": "Number of rows fetched from the database at a time by the store's JdbcTemplate. Use -1 for the driver's default.",
+      "defaultValue": -1
+    },
+    {
+      "name": "synapse.data.stores.*.jdbc.template.max-rows",
+      "type": "java.lang.Integer",
+      "description": "Maximum number of rows the store's JdbcTemplate reads. Use -1 for the driver's default.",
+      "defaultValue": -1
+    },
+    {
+      "name": "synapse.data.stores.*.jdbc.template.query-timeout",
+      "type": "java.time.Duration",
+      "description": "Query timeout of the store's JdbcTemplate. The driver's default when not set. A duration without a unit is in seconds."
+    },
+    {
+      "name": "synapse.data.stores.*.jdbc.template.ignore-warnings",
+      "type": "java.lang.Boolean",
+      "description": "Whether the store's JdbcTemplate ignores SQL warnings instead of throwing.",
+      "defaultValue": true
+    },
+    {
+      "name": "synapse.data.stores.*.jdbc.template.skip-results-processing",
+      "type": "java.lang.Boolean",
+      "description": "Whether the store's JdbcTemplate skips results processing when the results are not needed.",
+      "defaultValue": false
+    },
+    {
+      "name": "synapse.data.stores.*.jdbc.template.skip-undeclared-results",
+      "type": "java.lang.Boolean",
+      "description": "Whether the store's JdbcTemplate skips undeclared results.",
+      "defaultValue": false
+    },
+    {
+      "name": "synapse.data.stores.*.jdbc.template.results-map-case-insensitive",
+      "type": "java.lang.Boolean",
+      "description": "Whether the store's JdbcTemplate reads results into case-insensitive maps.",
+      "defaultValue": false
+    }
+  ]
+}

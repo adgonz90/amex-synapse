@@ -1,0 +1,8 @@
+# Settings for the tests: Synapse's test slices and the integration tests activate the test environment, which loads
+# this file. Error detail is off by default in every environment; turning it on here lets the slice tests check the
+# detail message. ServiceJvmIT turns it off again, so the scenarios run against the defaults. The ${serviceName}
+# store's settings come from data-${serviceName}'s config.yaml, as in every environment, and the integration tests
+# connect the store to a PostgreSQL container with @StoreConnection.
+synapse:
+  errors:
+    include-detail: true

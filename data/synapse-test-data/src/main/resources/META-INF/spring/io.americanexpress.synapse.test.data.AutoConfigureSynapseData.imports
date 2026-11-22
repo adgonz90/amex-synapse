@@ -1,0 +1,9 @@
+io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration
+io.americanexpress.synapse.test.operation.SynapseTestClockAutoConfiguration
+io.americanexpress.synapse.data.autoconfigure.SynapseDataAutoConfiguration
+optional:io.americanexpress.synapse.data.jpa.autoconfigure.SynapseDataJpaAutoConfiguration
+optional:io.americanexpress.synapse.data.jdbc.autoconfigure.SynapseDataJdbcAutoConfiguration
+optional:io.americanexpress.synapse.data.postgres.autoconfigure.SynapsePostgresAutoConfiguration
+org.springframework.boot.transaction.autoconfigure.TransactionAutoConfiguration
+org.springframework.boot.transaction.autoconfigure.TransactionManagerCustomizationAutoConfiguration
+io.americanexpress.synapse.test.data.SynapseDataTestAutoConfiguration

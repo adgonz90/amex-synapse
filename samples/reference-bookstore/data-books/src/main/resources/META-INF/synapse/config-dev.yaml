@@ -1,0 +1,11 @@
+# The books store in the dev environment (ENV=dev): the shared dev database. The host below is an example; a real
+# service puts its dev database's address here. The user name and password are not here: they come from the
+# environment variables SYNAPSE_DATA_STORES_BOOKS_USERNAME and
+# SYNAPSE_DATA_STORES_BOOKS_PASSWORD, which the platform sets, and startup fails without them. A run that points dev at
+# another database, such as the AOT tests at their container, sets SYNAPSE_DATA_STORES_BOOKS_URL, which wins over
+# this file.
+synapse:
+  data:
+    stores:
+      books:
+        url: jdbc:postgresql://books-db.dev.example.internal:5432/books

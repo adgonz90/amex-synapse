@@ -1,0 +1,16 @@
+{
+  "properties": [
+    {
+      "name": "synapse.api.rest.errors.status.*",
+      "type": "java.lang.Integer",
+      "description": "HTTP status for an error code, for every operation. Write the error code in brackets, for example synapse.api.rest.errors.status.[BOOK_NOT_FOUND]=423.",
+      "sourceType": "io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestProperties$Errors"
+    },
+    {
+      "name": "synapse.api.rest.operations.*.errors.status.*",
+      "type": "java.lang.Integer",
+      "description": "HTTP status for an error code, for one operation; it wins over synapse.api.rest.errors.status. Replace the first * with the operation name and write the error code in brackets, for example synapse.api.rest.operations.get-book.errors.status.[BOOK_NOT_FOUND]=410.",
+      "sourceType": "io.americanexpress.synapse.api.rest.autoconfigure.SynapseRestProperties$Errors"
+    }
+  ]
+}

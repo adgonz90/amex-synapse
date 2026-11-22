@@ -1,0 +1,48 @@
+# Configuration of the orders service. The stores are not configured here: each data module ships its store's settings
+# in its jar (META-INF/synapse/config.yaml and config-<env>.yaml), and a key set here would override the module's.
+# The table of every property is generated from the jars' configuration metadata when the documentation site is built
+# (docs/modules/ROOT/pages/reference/configuration-properties.adoc includes it); IDEs with Spring Boot support complete
+# the keys from the same metadata.
+
+spring:
+  application:
+    name: orders
+  profiles:
+    # The environment: exactly one, with its own application-<env>.yaml. The platform sets ENV; local runs use local
+    # (application-local.yaml), and the tests use test (src/test/resources/application-test.yaml).
+    active: ${ENV}
+  threads:
+    virtual:
+      # Requests run on virtual threads; Synapse's concurrency limit is then what caps the work in flight.
+      enabled: true
+
+synapse:
+  correlation:
+    # Read from this request header (a new id is generated when it is absent or invalid), echoed on every response,
+    # errors included, and written to the logs as correlationId.
+    header: X-Correlation-Id
+  # Whether problem responses carry "detail" (the formatted message): off unless include-detail is true.
+  # application-local.yaml turns it on for local runs.
+  # errors:
+  #   include-detail: true
+  # The user that audit columns record when no principal is signed in, for every store. Nothing signs callers in yet,
+  # so every write records it: created_by in orders, entry_created_by in the ledger.
+  # data:
+  #   auditing:
+  #     system-user: system
+
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          # Not a default: the readiness group also answers at /health on the server's port, where a load balancer
+          # checks it.
+          additional-path: server:/health
+  otlp:
+    metrics:
+      export:
+        # Not a default. Boot pushes metrics to an OpenTelemetry collector at http://localhost:4318 every minute and
+        # logs a WARN when none is there. Turn it on (and set management.otlp.metrics.export.url) when you run one.
+        # Traces and logs are exported only once their endpoints are set (management.opentelemetry.*.export.otlp).
+        enabled: false

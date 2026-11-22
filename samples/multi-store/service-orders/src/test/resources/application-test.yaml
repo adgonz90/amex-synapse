@@ -1,0 +1,7 @@
+# Settings for the tests: Synapse's test slices and the integration tests activate the test environment, which loads
+# this file. Error detail is off by default in every environment; turning it on here lets the tests check the detail
+# message. The stores' settings come from the data modules' config.yaml files, as in every environment, and the
+# integration tests connect each store to a PostgreSQL container with @StoreConnection.
+synapse:
+  errors:
+    include-detail: true

@@ -1,0 +1,397 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2020 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    Parent POM for applications built with Synapse. Brings Spring Boot (via spring-boot-starter-parent),
+    the Synapse BOM and Synapse's build conventions for consumer projects.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!-- Keep in sync with spring-boot.version in the root pom.xml. -->
+        <version>4.1.2</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.americanexpress.synapse</groupId>
+    <artifactId>synapse-parent</artifactId>
+    <version>2.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Parent POM for applications built with Synapse.</description>
+    <url>https://github.com/americanexpress/synapse</url>
+
+    <licenses>
+        <license>
+            <name>The Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>American Express Travel Related Services, Inc.</name>
+            <organizationUrl>https://americanexpress.com</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <url>https://github.com/americanexpress/synapse</url>
+        <connection>scm:git:https://github.com/americanexpress/synapse.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/americanexpress/synapse.git</developerConnection>
+    </scm>
+
+    <properties>
+        <!-- Minimum Java for Synapse applications; consumers may raise it. -->
+        <java.version>21</java.version>
+        <!--
+            Must equal this POM's own version (checked by the enforcer below). It can't be ${project.version}, which
+            would resolve to the consumer's version. release-please updates the marked line.
+        -->
+        <synapse.version>2.0.0-SNAPSHOT</synapse.version> <!-- x-release-please-version -->
+        <!-- Surefire's and Failsafe's @{argLine} stays literal when no property of that name exists (JaCoCo defines it). -->
+        <argLine></argLine>
+        <!-- The environment that AOT processing (as the default profile, with -Paot) and the image's training run (as the
+             one active Spring profile) use. -->
+        <synapse.build.environment>build</synapse.build.environment>
+        <!-- The JVM version the Paketo image runs (BP_JVM_VERSION). -->
+        <synapse.image.jvm-version>25</synapse.image.jvm-version>
+        <!-- Whether the image profile skips its check for the build environment's file: true in a module that isn't a
+             service; the service-module profiles below set it to false. Internal, not a setting. -->
+        <synapse.image.notService>true</synapse.image.notService>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+                The synapse-bom third-party pins, repeated here because an explicit entry beats every imported BOM,
+                including a consumer's own import (guava-bom, a cloud libraries BOM), which Maven processes before the
+                inherited synapse-bom import. The bom-guava-pin build-rules test keeps these equal to synapse-bom and
+                the root pom.xml; parent-effective-pom checks that the guava pin beats an older imported guava-bom.
+            -->
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit-junit5</artifactId>
+                <version>1.5.1</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>3.2.0</version>
+            </dependency>
+            <!-- CVE pin GHSA-xxph-c9ww-hj94 / CVE-2026-102554; remove with the pin in synapse-bom. -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>33.7.2-jre</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_annotations</artifactId>
+                <version>2.50.0</version>
+            </dependency>
+            <dependency>
+                <groupId>io.americanexpress.synapse</groupId>
+                <artifactId>synapse-bom</artifactId>
+                <version>${synapse.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <configuration>
+                        <!--
+                            build-image: Paketo's variables. BP_SPRING_AOT_ENABLED is deliberately not set: Paketo fails the
+                            build of an AOT-processed jar when it and TRAINING_RUN_JAVA_TOOL_OPTIONS are both set.
+                            The garbage collector is pinned to G1 for the training run and for every run of the image
+                            (BPE_APPEND_JAVA_TOOL_OPTIONS, with a space as the delimiter, appends to the image's
+                            JAVA_TOOL_OPTIONS), so every run uses the collector the cache was trained with. Left to the
+                            JVM, the choice depends on the machine: in a 512 MB container it picked the Serial collector,
+                            and the JVM stopped at startup. The cause is Serial's small default initial heap there: at
+                            8 MB, its old generation (about 5504 KB) can't hold the bookstore cache's 6074 KB of
+                            archived objects (parent.adoc, The garbage collector). To use another collector, set it in
+                            both.
+                        -->
+                        <image>
+                            <env>
+                                <BP_JVM_VERSION>${synapse.image.jvm-version}</BP_JVM_VERSION>
+                                <BP_JVM_AOTCACHE_ENABLED>true</BP_JVM_AOTCACHE_ENABLED>
+                                <TRAINING_RUN_JAVA_TOOL_OPTIONS>-XX:+UseG1GC -Dspring.profiles.active=${synapse.build.environment}</TRAINING_RUN_JAVA_TOOL_OPTIONS>
+                                <BPE_DELIM_JAVA_TOOL_OPTIONS xml:space="preserve"> </BPE_DELIM_JAVA_TOOL_OPTIONS>
+                                <BPE_APPEND_JAVA_TOOL_OPTIONS>-XX:+UseG1GC</BPE_APPEND_JAVA_TOOL_OPTIONS>
+                            </env>
+                        </image>
+                    </configuration>
+                </plugin>
+                <!--
+                    Tests: Mockito is attached as a -javaagent (dynamic agent loading is deprecated on JDK 21+).
+                    -Xshare:off: Mockito's inline mock maker appends to the bootstrap class path on its first mock, and
+                    with class data sharing on the JVM then warns "Sharing is only supported for boot loader classes".
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <configuration>
+                        <argLine>@{argLine} @{synapse.mockitoAgentArg} -Xshare:off</argLine>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+        <plugins>
+            <!-- Exposes ${org.mockito:mockito-core:jar} for the surefire/failsafe argLine. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>dependency-paths</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!--
+                Sets synapse.mockitoAgentArg to the Mockito -javaagent when the module has Mockito, and to nothing
+                otherwise, so the test JVM never gets an unresolved agent path. Without mockito-core the value keeps
+                the unresolved ${org.mockito:mockito-core:jar}, which the first alternative matches and replaces with
+                nothing; with it, the second alternative keeps the whole value. The regex always matches, so the goal
+                logs nothing. (An antrun condition with exportAntProperties would print a warning for every Maven
+                property: "Ant property ... clashes with an existing Maven property".) The version is Spring Boot's.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>mockito-agent-arg</id>
+                        <phase>process-test-classes</phase>
+                        <goals>
+                            <goal>regex-property</goal>
+                        </goals>
+                        <configuration>
+                            <name>synapse.mockitoAgentArg</name>
+                            <value>"-javaagent:${org.mockito:mockito-core:jar}"</value>
+                            <regex>^"-javaagent:\$\{.*|^(.+)$</regex>
+                            <replacement>$1</replacement>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Lets `./mvnw spotless:apply|check` run from the repo root. Not inherited by consumer projects. -->
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>3.10.4</version>
+                <inherited>false</inherited>
+            </plugin>
+            <!-- Fails the build if synapse.version drifts from this POM's version. The execution is not inherited by
+                 consumers; the plugin is, so that the image profile's check below reaches them. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.6.3</version>
+                <executions>
+                    <execution>
+                        <id>synapse-version-matches</id>
+                        <inherited>false</inherited>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireProperty>
+                                    <property>synapse.version</property>
+                                    <regex>\Q${project.version}\E</regex>
+                                    <regexMessage>synapse.version must equal the synapse-parent version (${project.version}).</regexMessage>
+                                </requireProperty>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+            Spring AOT processing is opt-in: ./mvnw -Paot package runs process-aot and puts the generated code in the jar
+            (java -Dspring.aot.enabled=true -jar runs it). Without the profile no process-aot runs, and a service needs
+            no build environment file. The execution is in plugin management, as in Boot's native profile, so it binds
+            in a module that declares spring-boot-maven-plugin.
+        -->
+        <profile>
+            <id>aot</id>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-maven-plugin</artifactId>
+                            <executions>
+                                <!--
+                                    The id of the execution in Boot's native profile, so AOT processing runs once. The
+                                    build environment is the default profile, with no active profile: Spring's AOT code
+                                    generation activates every profile that is active during processing at run time too
+                                    (the goal's profiles parameter, -Dspring.profiles.active and an active-profile
+                                    argument all are), but no default profile. The empty spring.profiles.active
+                                    outranks application.yaml's ${ENV} and the platform's SPRING_PROFILES_ACTIVE;
+                                    synapse-core counts the default profile as the environment only during AOT
+                                    processing.
+                                -->
+                                <execution>
+                                    <id>process-aot</id>
+                                    <goals>
+                                        <goal>process-aot</goal>
+                                    </goals>
+                                    <configuration>
+                                        <!-- A plugin-level <profiles> (for spring-boot:run) would reach process-aot too. -->
+                                        <profiles combine.self="override"/>
+                                        <arguments>
+                                            <argument>--spring.profiles.active=</argument>
+                                            <argument>--spring.profiles.default=${synapse.build.environment}</argument>
+                                        </arguments>
+                                    </configuration>
+                                </execution>
+                            </executions>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+            </build>
+        </profile>
+        <!--
+            The container image: ./mvnw -Pimage package builds it with Paketo (the build-image env above) in each module
+            that declares spring-boot-maven-plugin, after repackage. build-image-no-fork is bound in plugin management,
+            as process-aot is in the aot profile, so contract and data modules, which don't declare the plugin, build
+            no image: spring-boot:build-image on the command line would run in every module of a reactor and fail in
+            those ("Unable to find main class").
+            The image's AOT-cache training run starts the service in the build environment, so before Paketo runs,
+            the enforcer requires the service's file for it (application-${synapse.build.environment}.yaml, .yml or
+            .properties in src/main/resources). Without it the training run fails to start, and Paketo keeps a partial
+            cache and builds the image anyway. A service is a module with application.yaml, application.yml or
+            application.properties in src/main/resources; library modules have none (their settings are in
+            META-INF/synapse/), so the check skips them. spring-boot:build-image on the command line doesn't run this
+            check.
+        -->
+        <profile>
+            <id>image</id>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-maven-plugin</artifactId>
+                            <executions>
+                                <execution>
+                                    <id>build-image</id>
+                                    <phase>package</phase>
+                                    <goals>
+                                        <goal>build-image-no-fork</goal>
+                                    </goals>
+                                </execution>
+                            </executions>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+                <plugins>
+                    <!-- synapse.image.notService is true, unless a service-module profile below sets it to false. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>image-build-environment</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${synapse.image.notService}</skip>
+                                    <rules>
+                                        <requireFilesExist>
+                                            <files>
+                                                <file>${project.basedir}/src/main/resources/application-${synapse.build.environment}.yaml</file>
+                                                <file>${project.basedir}/src/main/resources/application-${synapse.build.environment}.yml</file>
+                                                <file>${project.basedir}/src/main/resources/application-${synapse.build.environment}.properties</file>
+                                            </files>
+                                            <satisfyAny>true</satisfyAny>
+                                            <message>-Pimage builds an image whose AOT-cache training run starts this service in the build environment (synapse.build.environment=${synapse.build.environment}), but the service has no file for it. Add src/main/resources/application-${synapse.build.environment}.yaml (comments only is fine), and a placeholder config-${synapse.build.environment}.yaml in each library module whose store or client needs settings to start (parent.adoc, Images).</message>
+                                        </requireFilesExist>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!--
+            A service is a module with application.yaml, application.yml or application.properties in
+            src/main/resources. Each of these profiles, active in such a module, marks it as one for the image profile's
+            check (synapse.image.notService). File activation takes one file per profile, hence three. They set nothing
+            else.
+        -->
+        <profile>
+            <id>synapse-service-application-yaml</id>
+            <activation>
+                <file>
+                    <exists>${basedir}/src/main/resources/application.yaml</exists>
+                </file>
+            </activation>
+            <properties>
+                <synapse.image.notService>false</synapse.image.notService>
+            </properties>
+        </profile>
+        <profile>
+            <id>synapse-service-application-yml</id>
+            <activation>
+                <file>
+                    <exists>${basedir}/src/main/resources/application.yml</exists>
+                </file>
+            </activation>
+            <properties>
+                <synapse.image.notService>false</synapse.image.notService>
+            </properties>
+        </profile>
+        <profile>
+            <id>synapse-service-application-properties</id>
+            <activation>
+                <file>
+                    <exists>${basedir}/src/main/resources/application.properties</exists>
+                </file>
+            </activation>
+            <properties>
+                <synapse.image.notService>false</synapse.image.notService>
+            </properties>
+        </profile>
+    </profiles>
+</project>

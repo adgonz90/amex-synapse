@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright 2026 American Express Travel Related Services Company, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+    in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software distributed under the License
+    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the License for the specific language governing permissions and limitations under
+    the License.
+-->
+<!--
+    The files of the generated project, shaped like samples/reference-bookstore: an aggregator and the modules
+    contract-${serviceName}, data-${serviceName} and service-${serviceName}. The templates are Velocity: ${package},
+    ${packageInPathFormat}, ${groupId}, ${rootArtifactId}, ${version} and ${serviceName} are replaced, an undefined
+    reference such as ${ENV} stays as it is, and a line starting with ## is a Velocity comment (so the README escapes
+    its headings: #[[## …]]#). In a path, __serviceName__ is replaced. In a module, ${artifactId} is the module's id as
+    written here, before ${serviceName} is replaced, so the module poms spell their artifactIds out. The template
+    pom.xml files are always generated; their synapse-parent version was filled in when this archetype was built.
+    Every fileSet but the Maven Wrapper's is filtered, including those with nothing to replace: the generator writes a
+    filtered file with the platform's line separator and copies an unfiltered one as is, so this keeps a project
+    generated on Windows on one line ending. The generated .gitattributes then normalizes them to LF in git.
+-->
+<archetype-descriptor xmlns="https://maven.apache.org/plugins/maven-archetype-plugin/archetype-descriptor/1.1.0"
+                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                      xsi:schemaLocation="https://maven.apache.org/plugins/maven-archetype-plugin/archetype-descriptor/1.1.0 https://maven.apache.org/xsd/archetype-descriptor-1.1.0.xsd"
+                      name="synapse-archetype-service">
+    <requiredProperties>
+        <!-- The service's name: the module suffix, spring.application.name, the data store (synapse.data.stores.<name>,
+             db/migration/<name>), a package segment (data.<name>) and the .proto's directory. Lower-case letters and
+             digits only, and not a Java keyword or literal, so it is all of these at once. Hyphens are not allowed,
+             since a package segment can't hold one. -->
+        <requiredProperty key="serviceName">
+            <defaultValue>example</defaultValue>
+            <validationRegex>^(?!(?:abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|false|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|null|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|true|try|void|volatile|while)$)[a-z][a-z0-9]*$</validationRegex>
+        </requiredProperty>
+    </requiredProperties>
+    <fileSets>
+        <fileSet filtered="true" encoding="UTF-8">
+            <directory></directory>
+            <includes>
+                <include>.gitattributes</include>
+                <include>README.md</include>
+                <include>compose.yaml</include>
+            </includes>
+        </fileSet>
+        <!-- The Maven Wrapper: the repository's mvnw, mvnw.cmd and maven-wrapper.properties, byte for byte (the
+             archetype-drift build-rules test checks it). Unfiltered, for two reasons: Velocity would read the scripts'
+             ${...} and # lines as its own, and an unfiltered file is copied as is, so mvnw keeps LF and mvnw.cmd keeps
+             CRLF on every platform. The post-generation script sets mvnw executable. -->
+        <fileSet filtered="false">
+            <directory></directory>
+            <includes>
+                <include>mvnw</include>
+                <include>mvnw.cmd</include>
+                <include>.mvn/wrapper/maven-wrapper.properties</include>
+            </includes>
+        </fileSet>
+    </fileSets>
+    <modules>
+        <module id="contract-${serviceName}" dir="contract-__serviceName__" name="contract-${serviceName}">
+            <fileSets>
+                <fileSet filtered="true" packaged="true" encoding="UTF-8">
+                    <directory>src/main/java</directory>
+                    <includes>
+                        <include>**/*.java</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" encoding="UTF-8">
+                    <directory>src/main/proto</directory>
+                    <includes>
+                        <include>**/*.proto</include>
+                    </includes>
+                </fileSet>
+            </fileSets>
+        </module>
+        <module id="data-${serviceName}" dir="data-__serviceName__" name="data-${serviceName}">
+            <fileSets>
+                <fileSet filtered="true" packaged="true" encoding="UTF-8">
+                    <directory>src/main/java</directory>
+                    <includes>
+                        <include>**/*.java</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" encoding="UTF-8">
+                    <directory>src/main/resources</directory>
+                    <includes>
+                        <include>**/*.yaml</include>
+                        <include>**/*.sql</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" packaged="true" encoding="UTF-8">
+                    <directory>src/test/java</directory>
+                    <includes>
+                        <include>**/*.java</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" encoding="UTF-8">
+                    <directory>src/test/resources</directory>
+                    <includes>
+                        <include>**/*.yaml</include>
+                    </includes>
+                </fileSet>
+            </fileSets>
+        </module>
+        <module id="service-${serviceName}" dir="service-__serviceName__" name="service-${serviceName}">
+            <fileSets>
+                <fileSet filtered="true" packaged="true" encoding="UTF-8">
+                    <directory>src/main/java</directory>
+                    <includes>
+                        <include>**/*.java</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" encoding="UTF-8">
+                    <directory>src/main/resources</directory>
+                    <includes>
+                        <include>**/*.yaml</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" packaged="true" encoding="UTF-8">
+                    <directory>src/test/java</directory>
+                    <includes>
+                        <include>**/*.java</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" encoding="UTF-8">
+                    <directory>src/test/resources</directory>
+                    <includes>
+                        <include>**/*.yaml</include>
+                    </includes>
+                </fileSet>
+                <fileSet filtered="true" encoding="UTF-8">
+                    <directory></directory>
+                    <includes>
+                        <include>Dockerfile</include>
+                        <include>.dockerignore</include>
+                    </includes>
+                </fileSet>
+            </fileSets>
+        </module>
+    </modules>
+</archetype-descriptor>

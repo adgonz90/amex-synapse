@@ -1,0 +1,48 @@
+# The local environment: ENV=local java -jar ... In a service whose contract and data modules are installed,
+# ./mvnw ... spring-boot:run runs it too (the pom sets spring-boot.run.profiles=local). Only local conveniences belong
+# here. The books store's local connection is in data-books' config-local.yaml: the books-db container of compose.yaml
+# (docker compose up -d).
+synapse:
+  errors:
+    # Problem responses carry "detail" and gRPC statuses their description (the formatted message), which helps while
+    # trying the service. Every other environment keeps the default (off).
+    include-detail: true
+  # Page tokens: no key is set, so every start generates one and logs a WARN, and a token from an earlier start is
+  # rejected. To keep tokens across restarts, create one key per shell and pass it to each start:
+  #   KEY=$(openssl rand -base64 32)
+  #   SYNAPSE_PAGING_CURSOR_KEY=$KEY ENV=local java -jar ...
+  # Boot binds SYNAPSE_PAGING_CURSOR_KEY to synapse.paging.cursor.key (dots become underscores, letters upper case).
+  # Never write a key in this file: keys don't belong in the repository.
+  api:
+    rest:
+      cors:
+        # Lets a front end served locally on port 3000 (npm start, for example) call the REST API from the browser.
+        # CORS is off without origins, the default in every environment: a deployed environment lists the exact
+        # origins of its own front ends in its application-<env>.yaml. Actuator's paths are left to
+        # management.endpoints.web.cors.*.
+        allowed-origins:
+          - http://localhost:3000
+
+spring:
+  grpc:
+    server:
+      reflection:
+        # Server reflection lets grpcurl list and describe the services without the .proto. It publishes the whole
+        # API to any caller, so Synapse turns it off in every environment; an environment that wants it (here, local
+        # runs) turns it on. With AOT-generated artifacts the build's value decides: the build keeps it off
+        # (application-build.yaml), so such a run fails at startup with this file.
+        enabled: true
+
+springdoc:
+  api-docs:
+    # Serves the OpenAPI document of the REST API at /v3/api-docs. It describes every route to anyone who can reach
+    # the service, so Synapse's default is off, in every environment; an environment that wants it (here, local runs)
+    # turns it on. With AOT-generated artifacts the build's value decides, as for reflection above.
+    enabled: true
+
+management:
+  endpoint:
+    health:
+      # /actuator/health lists the books store's indicator (db/books), so you can watch it go down with the container.
+      # Boot's default, never, shows only the overall status.
+      show-components: always

@@ -1,0 +1,72 @@
+name: Workflow lint
+
+# Checks the GitHub Actions workflows and their scripts: actionlint for syntax, expressions and embedded shell
+# (shellcheck), zizmor for security problems (injection, credential persistence, dangerous triggers, unpinned
+# actions), and the tests of .github/scripts/central-publish.sh and snapshot-check.sh (paths .github/** include
+# .github/scripts/**).
+# Findings fail the job; a deliberate exception gets an inline "# zizmor: ignore[<audit>]" with a reason.
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/**']
+  push:
+    branches: [main]
+    paths: ['.github/**']
+
+permissions:
+  contents: read # check out the workflows
+
+concurrency:
+  group: workflow-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Official image (bundles shellcheck), pinned by digest.
+      - uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+        with:
+          args: -color
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # advanced-security: false makes findings fail this job instead of only creating code-scanning alerts.
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          advanced-security: false
+          # The action defaults to the newest zizmor; pin it so results don't change under us.
+          version: 1.31.1
+          # Also report the findings zizmor hides by default (undocumented permissions, concurrency, names...).
+          persona: auditor
+
+  publish-script-tests:
+    name: Publish script tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fake curl and gpg only; nothing reaches Central. On ubuntu this covers the zip branch of the bundle step
+      # (local Windows runs use the JDK's jar) and case 9 signs with a real throwaway gpg key.
+      - name: Test central-publish.sh
+        run: bash .github/scripts/test-central-publish.sh
+
+      # Fake gh only; nothing reaches the GitHub API.
+      - name: Test snapshot-check.sh
+        run: bash .github/scripts/test-snapshot-check.sh

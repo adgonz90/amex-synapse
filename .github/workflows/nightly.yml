@@ -1,0 +1,167 @@
+name: Nightly
+
+# Slow checks that don't run on every pull request: mutation testing, the full JDK 21 run, the reference bookstore
+# with Spring AOT (-Paot) and its container images now; commercial-database integration tests (Oracle, SQL Server, DB2) are added
+# here when those modules exist.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read # check out the code
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  mutation-testing:
+    name: Mutation testing (PIT)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Verify with mutation testing
+        run: ./mvnw --batch-mode --no-transfer-progress -Pmutation verify
+
+  full-jdk21:
+    # Builds with JDK 25 and runs every unit and integration test on JDK 21 (pull requests only run the smoke subset).
+    name: Full build (tests on JDK 21)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          # The last entry becomes JAVA_HOME (runs Maven/javac); both are exported as JAVA_HOME_<n>_X64.
+          java-version: |
+            21
+            25
+          cache: maven
+
+      - name: Build and run all tests on JDK 21
+        run: ./mvnw --batch-mode --no-transfer-progress verify -Djvm="$JAVA_HOME_21_X64/bin/java"
+
+  aot-reference:
+    # Spring AOT processing is opt-in (synapse-parent's aot profile), and pull requests build without it. This job
+    # builds the reference bookstore with -Paot, so process-aot runs in the build environment, and runs its tests,
+    # BookstoreAotIT among them: every scenario against the AOT-processed jar. The ITs need Docker (Testcontainers).
+    # BookstoreAotIT then runs again on JDK 21 (acceptance 18: the reference app's ITs pass on JDK 21 and 25); no other
+    # job runs it, because only -Paot builds the AOT-generated code it needs.
+    name: Reference bookstore with Spring AOT (-Paot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          # The last entry becomes JAVA_HOME (runs Maven/javac); both are exported as JAVA_HOME_<n>_X64.
+          java-version: |
+            21
+            25
+          cache: maven
+
+      - name: Build the reference bookstore with AOT processing and run its tests
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Paot
+          -pl samples/reference-bookstore/service-bookstore -am verify
+
+      - name: Run BookstoreAotIT on JDK 21
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Paot
+          -pl samples/reference-bookstore/service-bookstore -am verify
+          -Djvm="$JAVA_HOME_21_X64/bin/java" -Dit.test=BookstoreAotIT -Dtest=NONE
+          -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false -Djacoco.skip=true
+
+  image-reference:
+    # The reference bookstore's container images, both ways a service builds one: spring-boot:build-image with
+    # synapse-parent's Paketo settings (its image profile, -Pimage), and its Dockerfile. Each image
+    # records an AOT cache in a training run, which starts in the build environment with no database; the smoke script
+    # then runs it in dev against PostgreSQL as a 512 MB, one-CPU pod, with -XX:AOTMode=on, so a JVM that can't use
+    # the cache fails instead of starting without it. Needs Docker, which the runner has.
+    name: Reference bookstore images (build-image, Dockerfile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build the image with Paketo (spring-boot:build-image)
+        shell: bash
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Pimage
+          -pl samples/reference-bookstore/service-bookstore -am package
+          -Dspring-boot.build-image.imageName=bookstore:paketo
+          | tee "$RUNNER_TEMP/build-image.log"
+
+      - name: Smoke-test the Paketo image
+        env:
+          SMOKE_JAVA_TOOL_OPTIONS: -XX:AOTMode=on
+          # A small pod, where the JVM would pick the Serial collector: the images pin G1 so the cache still loads.
+          SMOKE_DOCKER_OPTIONS: --memory=512m --cpus=1 -e BPL_JVM_THREAD_COUNT=50
+        run: samples/reference-bookstore/scripts/image-smoke.sh bookstore:paketo "$RUNNER_TEMP/build-image.log"
+
+      - name: Build the image with the Dockerfile
+        shell: bash
+        run: >-
+          docker build --progress=plain -t bookstore:dockerfile samples/reference-bookstore/service-bookstore 2>&1
+          | tee "$RUNNER_TEMP/docker-build.log"
+
+      - name: Smoke-test the Dockerfile image
+        env:
+          SMOKE_JAVA_TOOL_OPTIONS: -XX:AOTMode=on
+          # A small pod, where the JVM would pick the Serial collector: the images pin G1 so the cache still loads.
+          SMOKE_DOCKER_OPTIONS: --memory=512m --cpus=1 -e BPL_JVM_THREAD_COUNT=50
+        run: samples/reference-bookstore/scripts/image-smoke.sh bookstore:dockerfile "$RUNNER_TEMP/docker-build.log"
+
+  report-failure:
+    # Keeps one open issue per ongoing failure streak: later failures comment on it instead of opening duplicates.
+    name: Report failure
+    needs: [full-jdk21, mutation-testing, aot-reference, image-reference]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write # create the nightly-failure label; open or comment on the nightly-failure issue
+    steps:
+      - name: Open or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Creates the label if it's missing (--force updates it otherwise), so the report never fails on it.
+          gh label create nightly-failure --force --color B60205 \
+            --description "Opened by the nightly workflow when a nightly job fails"
+          existing="$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "The nightly build failed again: ${RUN_URL}"
+          else
+            gh issue create --label nightly-failure --title "Nightly build failed" \
+              --body "The nightly build failed: ${RUN_URL}"
+          fi

@@ -1,0 +1,170 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// Conditional writes: a VersionCondition travels in the request's string field etag, with REST's entity tag token
+// ("5" with its quotes, or *), and .etag(...) fills the response's string field etag.
+syntax = "proto3";
+
+package synapse.fixture.v1;
+
+import "google/protobuf/empty.proto";
+
+option java_package = "io.americanexpress.synapse.api.grpc.fixture.proto";
+option java_multiple_files = true;
+
+service DocService {
+  rpc GetDoc(GetDocRequest) returns (Doc);
+  rpc CreateDoc(CreateDocRequest) returns (Doc);
+  rpc UpdateDoc(UpdateDocRequest) returns (Doc);
+  rpc DeleteDoc(DeleteDocRequest) returns (google.protobuf.Empty);
+}
+
+// If-None-Match semantics in the if_none_match field, and a write whose request carries a token its input doesn't
+// bind.
+service DocConditionsService {
+  // A create-only (if_none_match *) or unless-at-version put.
+  rpc PutDoc(PutDocRequest) returns (Doc);
+  // A read that passes if_none_match to the operation.
+  rpc ReadDoc(ReadDocRequest) returns (Doc);
+  // A write whose input has no VersionCondition, although its request has an etag field.
+  rpc RenameDoc(RenameDocRequest) returns (Doc);
+}
+
+message PutDocRequest {
+  string id = 1;
+  string text = 2;
+  string if_none_match = 3;
+}
+
+message ReadDocRequest {
+  string id = 1;
+  string if_none_match = 2;
+}
+
+message RenameDocRequest {
+  string id = 1;
+  string text = 2;
+  string etag = 3;
+}
+
+// One-method services whose messages startup rejects for a VersionCondition or .etag(...).
+
+// The request has no etag field.
+service NoRequestEtagService {
+  rpc Delete(GetDocRequest) returns (google.protobuf.Empty);
+}
+
+// The request's etag is not a string.
+service NumberRequestEtagService {
+  rpc Delete(NumberEtagRequest) returns (google.protobuf.Empty);
+}
+
+// The request's etag is repeated.
+service ListRequestEtagService {
+  rpc Delete(ListEtagRequest) returns (google.protobuf.Empty);
+}
+
+// The request's etag is a member of a oneof.
+service OneofRequestEtagService {
+  rpc Delete(OneofEtagRequest) returns (google.protobuf.Empty);
+}
+
+// The response has no etag field.
+service NoResponseEtagService {
+  rpc Get(GetDocRequest) returns (PlainDoc);
+}
+
+message OneofEtagRequest {
+  string id = 1;
+  oneof pick {
+    string etag = 2;
+    string other = 3;
+  }
+}
+
+message OneofEtagDoc {
+  string id = 1;
+  string text = 2;
+  int64 version = 3;
+  oneof pick {
+    string etag = 4;
+    string note = 5;
+  }
+}
+
+message StampedDoc {
+  string id = 1;
+  string modified = 2;
+  string etag = 3;
+}
+
+message Doc {
+  string id = 1;
+  string text = 2;
+  int64 version = 3;
+  // The strong entity tag of the version, on GetDoc and CreateDoc only.
+  string etag = 4;
+  optional string label = 5;
+}
+
+message PlainDoc {
+  string id = 1;
+  string text = 2;
+  int64 version = 3;
+}
+
+message NumberDoc {
+  string id = 1;
+  string text = 2;
+  int64 version = 3;
+  int64 etag = 4;
+}
+
+message GetDocRequest {
+  string id = 1;
+}
+
+message CreateDocRequest {
+  string text = 1;
+}
+
+message UpdateDocRequest {
+  string id = 1;
+  string text = 2;
+  // Optional: empty for an unconditional update.
+  string etag = 3;
+  // Bound only by tests that give the input an If-None-Match condition; otherwise a value is refused on a write.
+  string if_none_match = 4;
+}
+
+message DeleteDocRequest {
+  string id = 1;
+  // Required.
+  string etag = 2;
+}
+
+message OptionalEtagRequest {
+  string id = 1;
+  optional string etag = 2;
+}
+
+message NumberEtagRequest {
+  string id = 1;
+  int64 etag = 2;
+}
+
+message ListEtagRequest {
+  string id = 1;
+  repeated string etag = 2;
+}

@@ -1,0 +1,3 @@
+io.americanexpress.synapse.data.autoconfigure.SynapseDataAutoConfiguration
+io.americanexpress.synapse.data.autoconfigure.SynapseDataStoreChecksAutoConfiguration
+io.americanexpress.synapse.data.autoconfigure.SynapseDataHealthAutoConfiguration

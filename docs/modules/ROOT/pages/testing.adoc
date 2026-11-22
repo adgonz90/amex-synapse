@@ -1,0 +1,522 @@
+= Testing
+
+`synapse-test` is added in `test` scope. It runs the real pipeline in tests.
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+== SynapseOperations.invoke
+
+Runs an operation (or a `BusinessOperation`) through the pipeline around a plain instance, with no Spring context.
+Validation, deadline and exception translation apply, as in the application. A `ConstraintViolationException` about
+the input itself (every violation's root bean is the input passed in, such as an operation validating it by hand)
+becomes `VALIDATION_FAILED`, unless a translator declares a lower order than that translator's `@Order(0)` (such as
+`@Order(-1)`). One thrown about anything else, by the operation or a collaborator, is `INTERNAL` before any
+translator runs (see xref:core.adoc#errors[Errors]). A business operation's input violation is `INTERNAL` too: assert
+it with `hasCode("INTERNAL")` and read the `VALIDATION_FAILED` and its violations from the cause:
+
+[source,java]
+----
+assertThatSynapseException(() -> SynapseOperations.invoke(new TitleRule(), new CreateBookRequest(" ")))
+        .hasCode("INTERNAL")
+        .satisfies(failure -> assertThat(((SynapseException) failure.getCause()).violations())
+                .extracting(Violation::field)
+                .containsExactly("title"));
+----
+
+Translators added with `translator(...)` are tried in the order the application tries their beans: by `@Order` or
+`Ordered` first (Synapse's data translators declare one), then those that declare no order, in the order added. A
+lambda, anonymous, record or final operation class is rejected with an `IllegalArgumentException` that gives the
+reason.
+
+[source,java]
+----
+Book book = SynapseOperations.invoke(new GetBookOperation(books), new GetBookRequest("1"));
+
+OperationInvoker invoker = SynapseOperations.with()
+        .clock(clock)
+        .translator(new MyTranslator())
+        .maxPageSize(50)
+        .invoker();
+----
+
+== RequestContexts
+
+Opens a context as an inbound edge does, with the application's default limits (16 entries, 4KB, 128-character
+ids). Attributes keep the order they were added in, and the ones past the limits are dropped. It is closed afterwards,
+also on failure.
+
+[source,java]
+----
+RequestContexts.with()
+        .correlationId("c-9")
+        .attribute("tenant", "acme")
+        .deadline(clock.instant().plusSeconds(5))
+        .run(() -> SynapseOperations.invoke(operation, input));
+----
+
+== assertThatSynapseException
+
+[source,java]
+----
+import static io.americanexpress.synapse.test.assertj.SynapseAssertions.assertThatSynapseException;
+
+assertThatSynapseException(() -> SynapseOperations.invoke(operation, new CreateBookRequest("")))
+        .hasCode(SynapseErrors.VALIDATION_FAILED)
+        .hasCategory(ErrorCategory.INVALID_INPUT)
+        .hasViolation("title");
+----
+
+`hasViolation(field, message)` also checks the message.
+
+== @SynapseOperationTest
+
+A slice that starts only operation and business beans with the real pipeline: validation, observation, tracing,
+translation and context. It has no web server, binding, data store or other component. It includes the OpenTelemetry
+bridge (no exporters), so the tracing requirement is met, and the transaction auto-configuration when it is on the
+classpath. Replace collaborators with `@MockitoBean` or a `@TestConfiguration`. A `MutableClock` fixed at
+`2026-01-01T00:00:00Z` is registered unless you define a `Clock`.
+
+The slice activates the `test` environment and turns nothing else on, so the module needs
+`src/test/resources/application-test.yaml` (it may hold only a comment), and test settings go there (see
+xref:environments.adoc#tests[Tests]).
+
+The slice finds operation and business beans by type (`ServiceOperation`, `BusinessOperation`), not by package. A
+business helper bean that isn't a `BusinessOperation` (a strategy, mapper, validator or listener in the `business`
+package) is not in the slice: a test replaces it with `@MockitoBean` or adds it with `@Import(Helper.class)`.
+
+An operation or business bean can itself be replaced with `@MockitoBean` or `@TestBean`. The double is used as it is,
+without the pipeline (no validation, observation or translation of its own calls); the other operations still run
+through the pipeline when they call it. `@MockitoSpyBean` keeps the pipeline.
+
+Spring's test context cache shares one context, and so one `MutableClock` bean, between the test classes that have the
+same configuration. A class that advances the clock leaves it advanced for the next class, so set the instant a test
+depends on with `clock.set(...)` (for example in a `@BeforeEach` method) instead of relying on the initial one.
+
+[source,java]
+----
+@SynapseOperationTest
+class GetBookOperationTest {
+
+    @Autowired GetBookOperation operation;
+    @MockitoBean BookRepository books;
+
+    @Test
+    void failsWhenMissing() {
+        assertThatSynapseException(() -> operation.execute(new GetBookRequest("9")))
+                .hasCode(BookErrors.BOOK_NOT_FOUND);
+    }
+}
+----
+
+== @SynapseRestTest
+
+A slice for the REST layer, in `synapse-test-rest`:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test-rest</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+It starts the xref:rest.adoc[REST plugin] (routes, edge filters, problem responses) on `MockMvc`, with no web server,
+together with the classes that declare a `RestBindings` or `RestConventions` `@Bean`, and the application's
+controllers, controller advice, `WebMvcConfigurer`s, converters and servlet filters. Operations, business beans and
+every other component are left out. Calls are made with the autowired `RestTestClient`, which is bound to `MockMvc`.
+As in `@SynapseOperationTest`, the `test` environment is active, the module needs `application-test.yaml`, and a
+`MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you define a `Clock`. Problem responses carry
+their `detail` only when `application-test.yaml` sets `synapse.errors.include-detail: true`.
+
+Declare a `@MockitoBean` (or a `@TestBean`) for each operation the bindings use:
+
+[source,java]
+----
+@SynapseRestTest
+class BooksRestTest {
+
+    @Autowired RestTestClient client;
+    @MockitoBean GetBookOperation getBook;
+    @MockitoBean SearchBooksOperation searchBooks;
+
+    @Test
+    void getsABook() {
+        given(getBook.execute(new GetBookRequest(1))).willReturn(Optional.of(new Book(1, "Dune")));
+
+        client.get().uri("/books/1")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody().jsonPath("$.title").isEqualTo("Dune");
+    }
+
+    @Test
+    void missingBookIsProblemJson() {
+        willThrow(new SynapseException(BookErrors.BOOK_NOT_FOUND, 1)).given(getBook).execute(any());
+
+        client.get().uri("/books/1")
+                .exchange()
+                .expectStatus().isNotFound()
+                .expectBody().jsonPath("$.code").isEqualTo("BOOK_NOT_FOUND");
+    }
+}
+----
+
+When an operation has no double, the slice fails before any bean is created and names every missing operation and
+the `@Bean` method that binds it. The check covers operations that are parameters of a `@Bean` method returning
+`RestBindings`. Operations reached another way, or bindings registered without a `@Bean` method, are not checked; a
+missing one then fails the test with Spring's own error.
+
+The check is `io.americanexpress.synapse.test.slice.BoundOperationMocksCheck`, registered as the bean
+`synapseRestBoundOperationMocksCheck`. Define a bean with that name in a `@TestConfiguration` to replace it. The
+back-off is by name, so the gRPC slice's check never hides this one.
+
+The doubles are used as they are, without the pipeline: Jakarta Validation, observation, translation and failure
+logging of the operation don't run. Request binding (with its violations), response mapping, the edge filters and the
+error responses do. A `@MockitoSpyBean` needs a real operation bean, which the slice doesn't create: add the
+operation with `@Import(GetBookOperation.class)` and replace its collaborators with `@MockitoBean`.
+
+== @SynapseGrpcTest
+
+A slice for the gRPC layer, in `synapse-test-grpc`:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test-grpc</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+It starts the xref:grpc.adoc[gRPC plugin] (compiled bindings, edge interceptors, error details) on Boot's in-process
+test transport, with no network server, together with the classes that declare a `GrpcBindings` `@Bean`, and the
+application's hand-written services (`BindableService` components), `@GrpcAdvice` classes, `GrpcExceptionHandler`s
+and `ServerInterceptor`s. Operations, business beans and every other component are left out. Components are kept by
+their own type, as in Boot's slices: a configuration class that declares an interceptor, exception handler or service
+as a `@Bean` is left out, and the test brings it in with `@Import`. Calls are made with client stubs, which
+`@ImportGrpcClients` registers on the in-process channel. As in the other slices, the `test` environment is active,
+the module needs `application-test.yaml`, and a `MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless
+you define a `Clock`. Statuses carry their description only when `application-test.yaml` sets
+`synapse.errors.include-detail: true`.
+
+Declare a `@MockitoBean` (or a `@TestBean`) for each operation the bindings use:
+
+[source,java]
+----
+@SynapseGrpcTest
+@ImportGrpcClients(types = BookServiceGrpc.BookServiceBlockingStub.class)
+class BooksGrpcTest {
+
+    @Autowired BookServiceGrpc.BookServiceBlockingStub books;
+    @MockitoBean GetBookOperation getBook;
+    @MockitoBean CreateBookOperation createBook;
+
+    @Test
+    void missingBookIsNotFound() {
+        given(getBook.execute(any())).willReturn(Optional.empty());
+
+        StatusRuntimeException e = catchThrowableOfType(StatusRuntimeException.class,
+                () -> books.getBook(GetBookRequest.newBuilder().setId("00000000-0000-0000-0000-000000000001").build()));
+
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+    }
+}
+----
+
+When an operation has no double, the slice fails before any bean is created and names every missing operation and
+the `@Bean` method that binds it. The check covers operations that are parameters of a `@Bean` method returning
+`GrpcBindings`. The operations `.bindAllByName()` finds are not parameters, so they can't be named in advance: a
+method whose operation has no double fails startup with the *no operation is bound* failure (see
+xref:grpc.adoc#startup-failures[Startup failures]), whose action ends with
+`In @SynapseGrpcTest, declare a @MockitoBean for it.`
+
+The check is the same `io.americanexpress.synapse.test.slice.BoundOperationMocksCheck`, registered as the bean
+`synapseGrpcBoundOperationMocksCheck`. Define a bean with that name in a `@TestConfiguration` to replace it.
+
+The doubles are used as they are, without the pipeline, as in `@SynapseRestTest`. Message mapping (with its
+violations), the edge and the error details run.
+
+Boot's in-process test server applies no server builder customizers, so the slice runs without what they set up on
+the application's server. Test these against the application's server, in a `@SpringBootTest` on a random port
+(`spring.grpc.server.port=0` and `@LocalGrpcServerPort`):
+
+* the inbound message and metadata size limits (`spring.grpc.server.inbound.*`): an oversized message or metadata is
+  accepted;
+* keepalive;
+* Synapse's fallback handlers: a call to a method no service declares gets grpc-java's own `UNIMPLEMENTED`, not
+  Synapse's `METHOD_NOT_FOUND` details;
+* the virtual-thread executor of `spring.threads.virtual.enabled`.
+
+[#synapse-data-test]
+== @SynapseDataTest
+
+A slice for one data store (see xref:data.adoc[Data]), in `synapse-test-data`:
+
+[source,xml]
+----
+<dependency>
+  <groupId>io.americanexpress.synapse</groupId>
+  <artifactId>synapse-test-data</artifactId>
+  <scope>test</scope>
+</dependency>
+----
+
+`@SynapseDataTest("books")` starts the `@SynapseDataStore("books")` class with its pool, migrations, entities,
+repositories and auditing, and leaves out every other store and component. Each test runs in a transaction of that
+store, rolled back afterwards, as with `@DataJpaTest`. As in the other slices, the `test` environment is active, the
+module needs `application-test.yaml`, and a `MutableClock` fixed at `2026-01-01T00:00:00Z` is registered unless you
+define a `Clock`, so audit timestamps and UUIDv7 ids follow it. The application's test settings may configure other
+stores: the slice expects their settings and doesn't start them.
+
+`@StoreConnection("books")` on a `static` field holding a Testcontainers `JdbcDatabaseContainer` connects the store to
+that container's database, instead of its `url`, `username` and `password`. `SynapseContainers.postgres()` returns a
+PostgreSQL container shared by every test class of the JVM, started on first use; `postgres("<key>")` gives another
+one per key, such as one per store.
+
+[source,java]
+----
+@SynapseDataTest("books")
+class BookRepositoryTest {
+
+    @StoreConnection("books")
+    static PostgreSQLContainer books = SynapseContainers.postgres();
+
+    @Autowired BookRepository repository;
+
+    @Test
+    void findsByIsbn() {
+        repository.save(new Book("978-0-00-000000-1", "Dune"));
+
+        assertThat(repository.findByIsbn("978-0-00-000000-1")).isPresent();
+    }
+}
+----
+
+A store name that no `@SynapseDataStore` declares fails the context:
+`@SynapseDataTest("bokks") names a store that no @SynapseDataStore("bokks") declares. Declared stores: books. Scanned packages: com.example.books.`
+(action `Name one of the declared stores, such as @SynapseDataTest("books").`). An invalid name fails with
+`'Books' is not a valid store name (@SynapseDataTest("Books")).`
+
+Limits:
+
+* The slice runs no operations: it has no pipeline. To assert a data error code, call the code under test through
+  `SynapseOperations.with().translator(...)` with the slice's `synapseDataExceptionTranslator` and
+  `synapseJpaExceptionTranslator` beans, or use a `@SpringBootTest` of the service.
+* Each test's transaction rolls back, so a failure that happens only at commit (a unique violation flushed by the
+  commit) never happens. Such a test sets `@Transactional(propagation = Propagation.NOT_SUPPORTED)` and makes a
+  committing call, or runs as a `@SpringBootTest`.
+* `@StoreConnection` works on `static` fields only. Containers defined by `@Bean` methods are not supported.
+* `@StoreConnection` registers its connection bean with an instance supplier, so test contexts processed ahead of time
+  (AOT) are not supported.
+* A subclass or `@Nested` class can't replace a superclass's or enclosing class's `@StoreConnection` for the same
+  store: two fields for one store fail.
+
+`SynapseContainers.POSTGRES_IMAGE` pins `postgres:18.6-alpine` by its digest, so a re-pushed tag can't change the image
+under the tests. Nothing updates a digest in Java code automatically. To move to a new image, pull the new tag, read
+its digest with `docker buildx imagetools inspect postgres:<tag>`, and replace the digest and the tag in the Javadoc.
+
+== MutableClock
+
+[source,java]
+----
+MutableClock clock = MutableClock.at("2026-01-01T00:00:00Z");
+clock.advance(Duration.ofMinutes(5));
+clock.set(Instant.parse("2026-02-01T00:00:00Z"));
+----
+
+Always UTC and thread-safe. `withZone` returns a view that shares the instant.
+
+== JsonFixtures
+
+[source,java]
+----
+Book book = JsonFixtures.standard().read("fixtures/book.json", Book.class);
+String text = JsonFixtures.of(myMapper).text("fixtures/book.json");
+----
+
+Reads from the test classpath with a Jackson 3 `JsonMapper`.
+
+== SynapseArchitecture
+
+[source,java]
+----
+@Test
+void followsSynapseArchitecture() {
+    SynapseArchitecture.forApplication(BooksApplication.class).check();
+}
+----
+
+`forApplication` takes the package of the application class as the root. A module without an application class, such
+as a shared `business-<name>` module, names its roots: `SynapseArchitecture.forRoots("com.acme.pricing")`. `check()`
+imports the classes under the roots from the class path, without test classes; `check(classes)` checks classes you
+imported yourself.
+
+A service lists the roots of the `business-`, `client-`, `data-` and `publisher-` modules it uses next to its own, for
+example `SynapseArchitecture.forRoots("com.acme.books", "com.acme.pricing")`; `check()` imports them from their jars.
+Calls into a module whose root isn't listed are not checked. A module's classes are layer code only when they sit under
+`<root>.<layer>..`, for example `com.acme.pricing.business`.
+
+`DO_NOT_INCLUDE_TESTS` excludes test class directories only: a sibling module's `-tests.jar` resolved from `~/.m2` is
+imported as application code.
+
+Rules (each a constant on `SynapseArchitecture`):
+
+* `PROTOCOL_FREE`: operation, model, business and contract packages do not import Spring Web or HTTP, Servlet, gRPC,
+  GraphQL, protobuf, Kafka or `io.americanexpress.synapse.api..`. The layer is the first package segment below the
+  root, so `client` and `api` models may use protocol types. Classes generated from `.proto` (including protoc's outer
+  class) are exempt.
+* `CALL_DIRECTIONS`: an allow-list of the layers each layer may depend on (the table below): `api -> operation`;
+  `operation -> business | client | data | publisher` (and other operations); `business -> business | client | data |
+  publisher`. It is made of one rule per target layer, each of which can be left out on its own: `NOTHING_CALLS_API`,
+  `ONLY_API_AND_OPERATIONS_CALL_OPERATIONS`, `ONLY_OPERATIONS_AND_BUSINESS_CALL_BUSINESS`,
+  `ONLY_OPERATIONS_AND_BUSINESS_CALL_CLIENTS`, `ONLY_OPERATIONS_AND_BUSINESS_CALL_DATA`,
+  `ONLY_OPERATIONS_AND_BUSINESS_CALL_PUBLISHERS` and `ONLY_API_OPERATIONS_AND_BUSINESS_USE_THE_SERVICE_MODEL`.
+* `BUSINESS_DOES_NOT_USE_SERVICE_MODEL`: business code does not use the service's `model` except `model.event`.
+* `OPERATIONS_CALL_BUSINESS_THROUGH_CONTRACT`: operations use business code only through types that implement
+  `BusinessOperation`, and call only their `execute` method. An operation may not depend on a business Spring bean,
+  interface or abstract class that isn't a `BusinessOperation`. Business values are used directly: records, enums,
+  exceptions, sealed types (such as a sealed result), annotation types and every non-bean type in `business.model`.
+  An operation calls no `execute` overload (only `execute(I)`), constructs no business code other than business values
+  (`new PriceBook()` or `PriceBook::new` fails: inject the `BusinessOperation`), and calls no static method of another
+  concrete business class; a static call whose business callee ArchUnit cannot resolve (its class is not in the imported
+  set) is not flagged. An operation can construct only business values (records, enums, exceptions and `business.model`
+  types): a non-record builder or helper in `business` cannot be constructed by an operation. Code used only inside the
+  business layer (helpers, strategies, mappers, validators, listeners, configuration) needn't implement
+  `BusinessOperation`.
+* `NO_ENTITIES_IN_OPERATION_SIGNATURES`: no `@Entity`, `@Document`, `@Table` or Synapse data type as input or output.
+* `NO_SYNAPSE_INTERNALS`: no `..internal..` imports.
+* `NULL_MARKED_MODELS`: operation, model, business and contract packages, and every `..model..` package, are
+  `@NullMarked`.
+
+Call directions (row: the layer of the class; column: the layer it may depend on; "no layer" is a class under the root
+but in no layer, such as configuration):
+
+[cols="2,1,1,1,1,1,1,1,1"]
+|===
+| | api | operation | business | client | data | publisher | model | contract
+
+| api | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓
+| operation | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓
+| business | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | `model.event` ^1^ | ✓
+| client | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓
+| data | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓
+| publisher | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | `model.event` | ✓
+| model | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓
+| contract | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓
+| no layer | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓
+|===
+
+^1^ `CALL_DIRECTIONS` allows business code to use the model layer; `BUSINESS_DOES_NOT_USE_SERVICE_MODEL` narrows it to
+`model.event`.
+
+Only classes under the roots are checked. A class's layer is the first package segment below its root, when it is one
+of the exact, singular segments `api`, `operation`, `model`, `business`, `contract`, `client`, `data` or `publisher`:
+with the root `com.acme.books`, `com.acme.books.business.model` is in the business layer and `com.acme.books.config`
+is in no layer. Plural names are not layers. The root may itself contain a layer name: with the root
+`com.acme.data.orders`, `com.acme.data.orders.operation` is the operation layer. When roots are nested, a class
+belongs to the most specific one. Several roots are checked as one application. A dependency on a class outside the
+roots, such as a third-party `..api..` or `..model..` package or Synapse itself, is never a dependency on a layer.
+Classes that Spring generates are not checked: Spring AOT's classes (annotated `@Generated`, for example
+`BooksApplication__BeanFactoryRegistrations` after `process-aot`) and CGLIB subclasses (`..$$SpringCGLIB$$..`).
+`check` fails when no class under one of the roots was imported, so a mistyped root cannot pass.
+
+Classes in no layer (such as `config`, `util` or `common`) are not checked by `PROTOCOL_FREE`, and every layer may use
+them; the rules check direct dependencies only, so a call that goes through such a class is not checked. Configuration
+that wires api beans belongs under `api.<protocol>`, because no other class may depend on the api layer.
+
+Leave a rule out only with a reason:
+
+[source,java]
+----
+SynapseArchitecture.forApplication(BooksApplication.class)
+        .except(SynapseArchitecture.PROTOCOL_FREE, "legacy adapter, removed in 3.2")
+        .check();
+----
+
+Leaving out `CALL_DIRECTIONS` leaves out all of its parts. To keep the others, leave out only one direction, for
+example `except(SynapseArchitecture.ONLY_OPERATIONS_AND_BUSINESS_CALL_BUSINESS, "LegacyFeeAdapter, removed in 3.2")`.
+
+`asArchRule()` returns the set as one rule for an `@ArchTest` field.
+
+== AOT assertions
+
+[source,java]
+----
+SynapseAotAssertions.assertThatHints(new MyRuntimeHints())
+        .registersReflection(BookRequest.class)
+        .registersResource("META-INF/services/io.micrometer.context.ThreadLocalAccessor");
+----
+
+Also `registersReflection(type, categories...)` and `registersJdkProxy(interfaces...)`. A failure names the missing
+hint.
+
+[#parity-suite]
+== One scenario suite for every protocol
+
+A service that binds the same operations over REST and gRPC promises the same contract on both: the same inputs, the
+same error codes and categories, the same entity tags and page tokens (see xref:grpc.adoc[gRPC]). The slices test
+each protocol's bindings on their own, with the operations mocked; one scenario suite against the running service
+tests the promise itself. Synapse has no class for it, because the scenarios are the service's. The reference
+bookstore (`samples/reference-bookstore`, `scenario/` in the service module's tests) and the service archetype's
+projects (`scenario/ItemScenarios`) follow this pattern:
+
+* A protocol-neutral outcome record, what one request did, with no transport detail in it:
++
+[source,java]
+----
+public record Outcome(Kind kind, @Nullable ErrorCategory category, @Nullable String code, @Nullable BookView book,
+        @Nullable String etag, List<String> violations) {
+
+    public enum Kind { OK, CREATED, NO_CONTENT, FAILED }
+}
+----
++
+On a failure, `code` is REST's problem `code` or gRPC's `ErrorInfo.reason`, and `category` is that code's
+`ErrorDetails.category()`, looked up in `SynapseErrors` and the service's own error enum, never derived from the
+transport status. A 304 has no gRPC form, so it stays in the REST slice test.
+* One client interface with an implementation per protocol (`RestBookstoreClient` on the JDK's HTTP client,
+  `GrpcBookstoreClient` on the generated stub). Each turns its protocol's answer into an `Outcome`, and also asserts
+  its own transport status for the code (REST 400, 404, 409, 412 or 428; gRPC `INVALID_ARGUMENT`, `NOT_FOUND`,
+  `ALREADY_EXISTS`, `ABORTED` or `FAILED_PRECONDITION`), so a wrong status fails that protocol's run. A status that
+  depends on more than the code, such as gRPC's for `PRECONDITION_FAILED` (`ABORTED` for a stale `etag`,
+  `FAILED_PRECONDITION` for a weak one), is kept by the client (`GrpcBookstoreClient.lastStatus()`) and asserted by
+  the scenario that knows which case it sent, so the `Outcome` stays the same on both protocols.
+* An abstract scenario class whose tests are parameterized over the protocols and expect one `Outcome`, written
+  once:
++
+[source,java]
+----
+public abstract class BookstoreScenarios {
+
+    protected abstract Target target();          // where the service answers: ports and hosts
+
+    @ParameterizedTest
+    @EnumSource(Protocol.class)
+    void duplicateIsbnIsConflictAlreadyExists(Protocol protocol) {
+        String isbn = isbn();
+        client(protocol).create(isbn, "The Lathe of Heaven", AUTHOR, 1971);
+
+        Outcome duplicate = client(protocol).create(isbn, "Another title", AUTHOR, null);
+
+        assertThat(duplicate).isEqualTo(Outcome.failed(SynapseErrors.ALREADY_EXISTS));
+    }
+}
+----
++
+Cross-protocol scenarios take a value from one protocol to the other: an `ETag` read over REST updates over gRPC,
+and a page token from one protocol pages over the other.
+* A subclass per way of running the service. `BookstoreJvmIT` starts the application on free ports
+  (`server.port=0`, `spring.grpc.server.port=0`) with a PostgreSQL container. `BookstoreAotIT` (only with `-Paot`)
+  starts the packaged jar in AOT mode as its own process, with `AppProcess`, which picks free ports, waits for
+  `/health` and stops the process afterwards. The same scenarios then check every way the service is shipped.
+
+The scenarios share the service's database, so each works on data of its own (an ISBN and an author of its own, in the
+bookstore) and never assumes an empty table.

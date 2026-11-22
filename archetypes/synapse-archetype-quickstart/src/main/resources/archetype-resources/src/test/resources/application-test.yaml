@@ -1,0 +1,2 @@
+# The test environment: Synapse's test slices and HelloApplicationIT activate the test profile, which loads this file.
+# This service needs no test settings, so the tests run with Synapse's defaults (error detail off, for example).

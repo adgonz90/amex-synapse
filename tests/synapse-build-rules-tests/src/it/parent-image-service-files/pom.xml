@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    A reactor that inherits synapse-parent, for the image profile's service test: a service whose settings are an
+    application.yml, one whose settings are an application.properties (each with its build environment's file), and a
+    test-fixtures library that has an application.yaml against the convention and opts out of the check with
+    synapse.image.notService=true. -Pimage validate runs the check in both services and skips it in the library and
+    the aggregator; verify.groovy checks the log.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.americanexpress.synapse</groupId>
+        <artifactId>synapse-parent</artifactId>
+        <version>@project.version@</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>example</groupId>
+    <artifactId>parent-image-service-files</artifactId>
+    <version>1.0</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>svc-yml</module>
+        <module>svc-properties</module>
+        <module>fixtures</module>
+    </modules>
+</project>

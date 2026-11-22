@@ -1,0 +1,14 @@
+# Normalize line endings: LF in the repository and working tree on every OS (Spotless enforces the same).
+* text=auto eol=lf
+
+# Windows scripts need CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary files.
+*.jar binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.zip binary

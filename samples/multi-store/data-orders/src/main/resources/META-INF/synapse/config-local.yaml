@@ -1,0 +1,11 @@
+# The orders store in the local environment: the orders-db container of compose.yaml (docker compose up -d).
+# Local compose only. The user name and password are those of that throwaway container; in every other environment
+# they come from the environment variables SYNAPSE_DATA_STORES_ORDERS_USERNAME and SYNAPSE_DATA_STORES_ORDERS_PASSWORD,
+# never from a file, and that environment's config-<env>.yaml sets only the url.
+synapse:
+  data:
+    stores:
+      orders:
+        url: jdbc:postgresql://localhost:5433/orders
+        username: orders
+        password: orders

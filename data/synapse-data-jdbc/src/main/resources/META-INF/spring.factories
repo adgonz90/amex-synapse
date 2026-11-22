@@ -1,0 +1,6 @@
+# Environment Post Processors
+org.springframework.boot.EnvironmentPostProcessor=\
+io.americanexpress.synapse.data.jdbc.autoconfigure.JdbcDefaultsEnvironmentPostProcessor
+# The Spring Data JDBC access for Synapse data stores
+io.americanexpress.synapse.data.internal.store.StoreInfrastructure=\
+io.americanexpress.synapse.data.jdbc.internal.JdbcStoreInfrastructure

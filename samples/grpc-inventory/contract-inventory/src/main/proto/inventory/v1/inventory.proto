@@ -1,0 +1,151 @@
+/*
+ * Copyright 2026 American Express Travel Related Services Company, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+// The gRPC API of the inventory. Each method is bound to one operation in InventoryGrpcConfiguration. Synapse maps
+// each message field to the record component with the same name (lead_time to leadTime); the binding maps the rest
+// with .map(...): sku_code (the component is sku) and the members of oneof price. A nullable component needs a field
+// with presence: a message, a wrapper type, a oneof member or an enum whose zero value is unspecified.
+syntax = "proto3";
+
+package synapse.samples.inventory.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+// Unused by any message: grpcurl needs it, so that reflection serves the ErrorInfo and BadRequest it decodes.
+import "google/rpc/error_details.proto";
+
+option java_package = "io.americanexpress.synapse.samples.inventory.contract.proto";
+option java_multiple_files = true;
+
+service InventoryService {
+  // get-item. An unknown id is NOT_FOUND with the reason ITEM_NOT_FOUND. The response carries the item's etag.
+  rpc GetItem(GetItemRequest) returns (Item);
+  // create-item. The channel comes from the x-channel metadata, not from the message. The response carries the new
+  // item's etag.
+  rpc CreateItem(CreateItemRequest) returns (Item);
+  // list-items, one page at a time (AIP-158), optionally only the items in one status.
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  // adjust-stock. Removing more than is in stock is FAILED_PRECONDITION with the reason OUT_OF_STOCK. The response
+  // has no etag: read the item again for the new one.
+  rpc AdjustStock(AdjustStockRequest) returns (Item);
+  // delete-item. An unknown id is NOT_FOUND with the reason ITEM_NOT_FOUND.
+  rpc DeleteItem(DeleteItemRequest) returns (google.protobuf.Empty);
+}
+
+message Item {
+  // Whether the item is still sold. The zero value is "not set", which Synapse maps to null.
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_ACTIVE = 1;
+    STATUS_DISCONTINUED = 2;
+  }
+
+  // A UUID.
+  string id = 1;
+  // The stock-keeping unit; Item.sku in the record.
+  string sku_code = 2;
+  Status status = 3;
+  repeated string tags = 4;
+  map<string, string> attributes = 5;
+  Location location = 6;
+  // Units in stock.
+  int32 quantity = 7;
+  // When stock was last added; unset if it never was.
+  google.protobuf.Timestamp restocked_at = 8;
+  // How long a reorder takes to arrive; unset when not known.
+  google.protobuf.Duration lead_time = 9;
+  // Reorder when the quantity falls to this level; unset for no reorder level.
+  google.protobuf.Int32Value reorder_level = 10;
+  // At most one is set: Item.fixedPrice or Item.discountedPrice in the record. Unset when the item has no price.
+  oneof price {
+    Money fixed = 11;
+    Discount discounted = 12;
+  }
+  // The channel the item was created through (the x-channel metadata); unset when the caller sent none.
+  google.protobuf.StringValue created_via = 13;
+  // 1 when the item is created, plus 1 on every change.
+  int64 version = 14;
+  // The version as a strong entity tag, "1" with its double quotes. Set by GetItem and CreateItem only.
+  string etag = 15;
+}
+
+message Location {
+  string warehouse = 1;
+  string aisle = 2;
+  int32 bin = 3;
+}
+
+message Money {
+  // An ISO 4217 code, such as USD.
+  string currency_code = 1;
+  // A decimal number, such as "19.99".
+  string amount = 2;
+}
+
+message Discount {
+  Money list_price = 1;
+  // 1 to 99.
+  int32 percent_off = 2;
+}
+
+message GetItemRequest {
+  string id = 1;
+}
+
+message CreateItemRequest {
+  string sku_code = 1;
+  repeated string tags = 2;
+  map<string, string> attributes = 3;
+  Location location = 4;
+  int32 quantity = 5;
+  google.protobuf.Duration lead_time = 6;
+  google.protobuf.Int32Value reorder_level = 7;
+  oneof price {
+    Money fixed = 8;
+    Discount discounted = 9;
+  }
+}
+
+message ListItemsRequest {
+  // Only the items in this status; unset for every item.
+  Item.Status status = 1;
+  // 1 to 100; unset (0) is 20.
+  int32 page_size = 2;
+  // The next_page_token of the previous page; unset for the first page.
+  string page_token = 3;
+  // Sort keys, AIP-132: sku_code and quantity, each optionally followed by desc. Unset is by sku_code.
+  string order_by = 4;
+}
+
+message ListItemsResponse {
+  repeated Item items = 1;
+  // Empty on the last page.
+  string next_page_token = 2;
+  // Whether another page follows.
+  bool has_next = 3;
+  // The number of items that match, over every page.
+  optional int32 total_size = 4;
+}
+
+message AdjustStockRequest {
+  string id = 1;
+  // Units to add (positive) or remove (negative).
+  int32 delta = 2;
+}
+
+message DeleteItemRequest {
+  string id = 1;
+}

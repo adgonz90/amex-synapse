@@ -1,0 +1,28 @@
+# Builds the Synapse documentation site.
+#   cd docs && npm ci && npx antora antora-playbook.yml     -> docs/build/site
+#
+# Versions come from git: each content-source branch (or tag) with docs/antora.yml is one version of the docs.
+# While 2.0 is in development only the current branch is built; release branches are added here as they appear.
+site:
+  title: Synapse
+  start_page: synapse::index.adoc
+
+content:
+  sources:
+    - url: ..
+      branches: HEAD
+      start_path: docs
+
+antora:
+  extensions:
+    - require: '@antora/collector-extension'
+
+asciidoc:
+  attributes:
+    page-pagination: ''
+
+# The stock Antora UI, vendored so builds are reproducible (see docs/ui/README.md for its source and how to update it).
+# The path is relative to this playbook.
+ui:
+  bundle:
+    url: ./ui/ui-bundle.zip
