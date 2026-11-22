@@ -42,7 +42,8 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-core` | P1 | Contracts, invocation pipeline, `RequestContext`, errors, correlation, deadlines, JSON conventions, `@Masked`, `Clock`, observability contract, environment checks and module configuration files, AOT hints. |
 | `synapse-test` | P1 | Test support: operation harness and slices, ArchUnit rules, Testcontainers definitions, fixtures, AOT hint assertions. |
 | `synapse-test-rest` | P1 | @SynapseRestTest: the REST slice. Depends on synapse-test and synapse-api-rest. (gRPC and data slices get their own synapse-test-<plugin> artifacts in their plans.) |
-| `synapse-logging-log4j2` | P1 | Log4j2 backend for consumers (synchronous by default), structured JSON (ECS), optional failure-log burst limit. |
+| `synapse-logging-log4j2` | P1 | Opt-in Log4j2 backend for consumers (synchronous by default) with an optional failure-log burst limit. Logback, Boot's default, is the default backend; the ECS default is in `synapse-core`. |
+| `synapse-tracing-opentelemetry` | P1 (observability follow-up) | The tracing a service module declares: Micrometer Tracing's OpenTelemetry bridge and the OTLP span exporter, without an OTLP metrics registry, plus the OpenTelemetry Java agent recipe's auto-configuration. No properties. Never a dependency of a library module. |
 | `synapse-api-rest` | P1 (XML codec and `BinaryContent` in P4) | REST plugin: `RestBindings`, problem+json, paging, conditional requests, versioning, CORS, limits. |
 | `synapse-api-rest-openapi` | P1 (plan 2c) | OpenAPI 3.1 for `RestBindings` routes, served by springdoc (3.x) at /v3/api-docs: a Synapse customizer built from the resolved routes, with Synapse's own schema generator on Jackson 3. Depends on synapse-api-rest. |
 | `synapse-api-grpc` | P1 | gRPC plugin on Boot's gRPC server support. |
@@ -58,19 +59,22 @@ auto-configuration; there are no separate starter or autoconfigure artifacts.
 | `synapse-publisher-kafka`, `synapse-subscriber-kafka` | P3 | Kafka publisher (client role) and subscriber (inbound plugin role). |
 | `synapse-api-graphql` | P4 | GraphQL plugin on Spring for GraphQL. |
 | `synapse-api-function-aws` | P4 | AWS Lambda adapter. |
-| `synapse-security` | P4 | Optional security starter (OAuth2 resource server, identity source, browser security headers). |
 | `synapse-scheduling` | P4 | Scheduled and batch jobs: locks, per-run context, CronJob runner, Spring Batch conventions. |
 | `synapse-data-mysql`, `-oracle`, `-sqlserver`, `-mongodb`, `-redis` | P5 | Vendor/technology modules. |
 | `synapse-utilities` | P6 | Validators (`@OneOf`, `@AnyOf`, `@RequireIfPresent`, date-format check). |
-| Archetypes | P1 (plan 5; set revisited in P6) | `synapse-archetype-quickstart` (one service module, shaped like `samples/hello-rest`) and `synapse-archetype-service` (contract, service and data modules, shaped like `samples/reference-bookstore`). |
+| Archetypes | P1 (plan 5; set revisited in P6) | `synapse-archetype-quickstart` (one service module, shaped like `samples/hello-rest`) and `synapse-archetype-service` (contract, service and data modules, shaped like `samples/reference-bookstore`). Only the quickstart is published until P6 (decided 2026-11-20, maintainer): the service archetype sets `maven.deploy.skip=true`, so neither the release nor the snapshot publish carries it. It is still built, and its IT runs in every build. It is frozen: no new features (no client or Kafka modules), only fixes that keep it building. |
 
-Not published: `tests/synapse-build-rules-tests` (build-rule tests) and `samples/*`.
+Not published: `tests/*` (`synapse-build-rules-tests`, the build-rule tests; the cross-module tests, including
+`synapse-api-rules-tests`, which checks every auto-configuration's back-off and the `@Incubating` marks) and
+`samples/*`.
 
 Deferred to 2.x add-ons (do not build in 2.0): reactive stack (WebFlux plugin, reactive client, R2DBC, reactive
 NoSQL); `synapse-api-function-gcp`; `synapse-client-graphql`; `synapse-client-auth-token-relay`;
 `synapse-client-resilience4j` (circuit breaker, bulkhead); DB2, Cassandra and Couchbase modules; read replicas;
 multi-tenancy; Kafka exactly-once, named clusters, dedupe store, batch listeners, DLT replay, transactional outbox,
-Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
+Avro/Protobuf registry add-ons; protobuf REST codec; `synapse-security`, the optional security starter (OAuth2
+resource server, identity source, browser security headers; section 11), deferred whole by the maintainer on
+2026-11-20. See DESIGN.md *Roadmap*.
 
 ---
 
@@ -79,8 +83,10 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 ### 3.1 Auto-configuration
 - Every feature is a Spring Boot auto-configuration: `@AutoConfiguration`, registered in
   `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`, conditional on its key classes
-  and properties, with every bean `@ConditionalOnMissingBean` (or contributed through a customizer) so users can
-  replace it.
+  and properties, with every bean `@ConditionalOnMissingBean` (or contributed through a customizer), so it can be
+  replaced where the docs say so. A public extension point backs off by its public type, or by a documented
+  `synapse…` name where each plugin has its own bean of one type (the call limiters); an internal bean backs off by
+  its name only (see *API stability*).
 - Customize Boot through its customizer beans. Never define Boot's own single-instance infrastructure beans
   (`JsonMapper`, `KafkaTemplate`, `RestClient.Builder`, Boot's `DataSource`). Synapse builds *its own* instances
   (named data stores, clients built from bindings, per-client mappers) with Boot's builders and property binding,
@@ -157,14 +163,39 @@ Avro/Protobuf registry add-ons; protobuf REST codec. See DESIGN.md *Roadmap*.
 ### 3.5 API stability
 - Public API is everything outside `..internal..` packages. `japicmp` against the last release fails on
   binary-incompatible changes in minor and patch releases (from 2.0.0 GA).
-- `@Incubating` (in `synapse-core`) marks APIs that may still change in a minor; japicmp ignores them.
+- `@Incubating` (in `synapse-core`, `RUNTIME` retention so tooling can read it) marks APIs that may still change in a
+  minor; japicmp ignores them. The rule (decided 2026-11-20, maintainer): a public type or member whose design is
+  provisional (a DESIGN.md row marked provisional, or an open question about it) carries `@Incubating`, and so does
+  every new SPI until a minor release has shipped it. Settling the row removes the mark. The P6 API pass reviews every
+  `@Incubating` before GA. The docs call such an API "incubating".
 - A gate diffs each module's `spring-configuration-metadata.json` against the last release: a removed or renamed
   property must be kept as `@DeprecatedConfigurationProperty` with its replacement.
 - Deprecations happen in a minor; removal only in the next major.
 - `SynapseArchitecture.forApplication(…)` includes a rule that consumer code never imports
   `io.americanexpress.synapse..internal..`.
 - A bean the docs call replaceable has a public type outside `..internal..`, or the docs don't call it replaceable.
-  Synapse's internal beans back off by bean name. The P6 API pass applies this rule to the existing beans.
+  Synapse's internal beans back off by bean name, and their names start with `synapse`. Every type a
+  `@ConditionalOnMissingBean` names, or the return type of a bare one, is public; a build test over every
+  auto-configuration enforces it (the API-surface follow-up plan, 2026-11-20, converts the existing beans before M1).
+- The public extension points beyond Spring's own (decided 2026-11-20, maintainer), all `@Incubating`:
+  - **Status mapping**, one per protocol, on the model of Boot's `HttpCodeStatusMapper`: properties for the simple
+    case (`synapse.api.<protocol>.errors.status.[CODE]`), a bean for full control. `RestErrorStatusMapper`
+    (`io.americanexpress.synapse.api.rest.error`) returns an HTTP status and `GrpcErrorStatusMapper`
+    (`io.americanexpress.synapse.api.grpc.error`) a `Status.Code`. Both take the `SynapseException` and the
+    operation name, because each protocol's default reads more than the code (REST: a Spring exception's kept
+    status; gRPC: the stale-etag cause). A mapper returns only a status: it never changes
+    the code, the message or the body, so REST's problem `code` still equals gRPC's `ErrorInfo.reason`. Synapse's
+    default implements it and backs off by type.
+  - **Inbound call limits:** `InboundCallLimiter` (`io.americanexpress.synapse.core.limit`), protocol-neutral, on the
+    model of Netflix concurrency-limits' `Limiter`: `tryAcquire()` returns a permit or none, and the permit is
+    released once with an outcome (`SUCCESS`, `IGNORED`, `DROPPED`). Synapse's default is a semaphore sized by the
+    plugin's limit property. Each plugin has its own limiter bean, `synapseRestCallLimiter` and
+    `synapseGrpcCallLimiter`, which back off by name, so one plugin's replacement never becomes the other's.
+  - **No Synapse handler SPI:** Spring's `HandlerExceptionResolver`, `@ControllerAdvice` and `ErrorController` (REST)
+    and Spring gRPC's `GrpcExceptionHandler` and `@GrpcAdvice` are the extension points; Synapse's own handlers back
+    off by name. **No deadline-policy SPI:** the deadline properties are the tuning surface (REST resolves the
+    deadline before routing, so a per-operation policy would be a design change).
+  - Compilers, inventories, factories, writers and policies stay internal.
 
 ### 3.6 Environments and module configuration
 - **The environment is the one active Spring profile.** Each service's `application.yaml` maps the platform's variable:
@@ -337,7 +368,7 @@ Business → `model` is allowed here and narrowed to `model.event` by the *Forbi
 | `CommandOperation<I, O>` | Non-sealed. Changes state. REST POST/PUT/PATCH/DELETE and GraphQL `Mutation`. |
 | `BusinessOperation<I, O>` | `O execute(I input)`. A separate interface, never bindable to a protocol (bindings reject it at startup). Mandatory for business logic that operations call: the only way an operation calls business code. |
 | `PublisherOperation<E>` | `void publish(E event)` blocks until the broker acknowledges; `CompletableFuture<Void> publishAsync(E event)`. Broker-neutral. |
-| `RequestContext` | Read-only view: correlation id, principal (verified identity, if any), locale, deadline (optional), string attributes. `RequestContext.current()`. Never contains servlet, gRPC or GraphQL types. |
+| `RequestContext` | Read-only view: correlation id, principal (verified identity, if any; empty at the REST and gRPC edges in 2.0, because the security module that sets it there is deferred to 2.x, 6.1; AWS functions take it from the authorizer context, 6.5), locale, deadline (optional), string attributes. `RequestContext.current()`. Never contains servlet, gRPC or GraphQL types. |
 | `PageQuery`, `PageResult<T>` | `PageQuery`: cursor **or** offset, size, sort. `PageResult<T>`: items, next cursor, optional total. One-call conversion from Spring Data `Page`/`Slice`. |
 | `VersionCondition<V>` | The version a conditional write depends on, protocol-neutral and sealed: `AnyVersion` (any current version; REST `If-Match: *`) or `Version(v)` (exactly `v`; one entity tag). A `null` component means the request named no version. `matches(current)` compares. On a write route, every input component bound from `If-Match` or `If-None-Match` is a `VersionCondition<V>` (startup check), so `*` and an absent header never look alike. Its nullability is the operation's contract on every protocol: `@Nullable` makes the condition optional, and a non-null component makes it required (a request without it is `PRECONDITION_REQUIRED` before the operation runs). |
 | `BinaryContent` | Protocol-neutral file/stream content: stream supplier, content type, filename, size (see *REST*). |
@@ -362,9 +393,16 @@ outermost first:
    with violations. Then, for an input record, each required `VersionCondition` component (not `@Nullable`) that is
    `null` fails the call with `PRECONDITION_REQUIRED`, one violation per component, so no caller reaches an operation
    without a required condition (plan 2026-11-13, D6). Only the outermost call's input is the caller's own: in a
-   nested call either failure is `INTERNAL`, with it as the logged cause (plan 2026-11-13, Q11). Outermost is per
-   thread, so an operation run on another thread keeps its own rejection, which reaches the caller only if the
-   calling operation unwraps and rethrows it.
+   nested call either failure is `INTERNAL`, with it as the logged cause (plan 2026-11-13, Q11). Each rejection
+   records the call that raised it, so the rule holds on every thread: a call that receives a pipeline rejection
+   raised by another call (an operation run on another thread, its failure unwrapped from a `Future` and rethrown)
+   turns it into `INTERNAL`, with the rejection as the logged cause. A `SynapseException` that code builds itself is
+   not a pipeline rejection and passes as it is (maintainer, 2026-11-19; plan 2026-11-20 contract, decision 3).
+   A violation's field is the path of the rejected value: property names joined with dots, and `[index]` for a list
+   or array element, a scalar element included (`tags[0]`, `items[2].sku`). Jakarta's container element node names
+   (`<list element>` and the like) are left out, a `Set` element has no index, and a map key is never written: a
+   constraint on a key or a whole value names the map (`labels`), and one inside a value continues with the value's
+   property (`authorsByRank.countryCode`). Each API plugin renames the path to its wire names (6.1).
 5. **Execute.** A Spring `@Transactional` boundary, if present, sits inside the Synapse advisor (Synapse never opens
    transactions itself).
 6. **Translation:** `SynapseException` passes through; other exceptions go through the `ExceptionTranslator`s;
@@ -385,14 +423,23 @@ and a business bean joins it by default.
 An operation may call other operations (same pipeline, same `RequestContext`).
 
 ### 5.3 Context propagation
-- **Tracing is required.** `synapse-core` depends on Boot's Micrometer Tracing module; service modules add the
-  OpenTelemetry bridge (`spring-boot-starter-opentelemetry`, added by the archetype). Startup fails with a clear message
-  when no tracer is present or tracing/baggage is disabled while Synapse context is in use. The message names the
+- **Tracing is required.** `synapse-core` depends on Boot's Micrometer Tracing module; service modules add
+  `synapse-tracing-opentelemetry` (added by the archetypes): Boot's Micrometer Tracing OpenTelemetry bridge and the
+  OTLP span exporter, without Micrometer's OTLP metrics registry. Boot exports no span until an endpoint is set
+  (`management.opentelemetry.tracing.export.otlp.endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT`), and metrics export
+  stays the team's choice. Startup fails with a clear message, which names that module, when no tracer is present or
+  tracing/baggage is disabled while Synapse context is in use. The message names the
   cause: when baggage was turned off by `OTEL_PROPAGATORS` without `baggage` (Boot maps `OTEL_*` variables to
-  properties), it names that variable and the fix; with the OpenTelemetry Java agent, the app keeps the starter and
-  defines an `OpenTelemetry` bean returning `GlobalOpenTelemetry.get()`. `synapse.observability.require-tracing=false`
+  properties), it names that variable and the fix. With the OpenTelemetry Java agent, the app keeps the module, whose
+  auto-configuration makes the agent's SDK (`GlobalOpenTelemetry.get()`) the `OpenTelemetry` bean when the agent's
+  class is present and the service defines none (it backs off by the `OpenTelemetry` type, as Boot's SDK does), and fails an AOT-processed start under the agent. `OTEL_SDK_DISABLED=true` doesn't break
+  correlation (probed 2026-11-20), so the check accepts it. `synapse.observability.require-tracing=false`
   (default `true`) turns the check off (one INFO line if tracing cannot carry the context), and a bean named
   `synapseTracingRequirementCheck` replaces it.
+- Boot's Micrometer Tracing owns the MDC (its baggage correlation fields); `synapse-core` never writes the MDC itself.
+  Correlation doesn't depend on sampling: on an unsampled request the MDC, the baggage and outbound propagation carry
+  the correlation id as on a sampled one (pinned by a test at `management.tracing.sampling.probability=0.0`).
+  Synapse sets no sampling default (Boot's is 0.1).
 - `RequestContext` reads one Synapse context value (correlation id, allow-listed attributes, principal, locale,
   deadline) registered with Micrometer's context-propagation library (`ThreadLocalAccessor`). Whenever Synapse opens a
   context (an inbound edge, or the pipeline when there is none), it opens tracing baggage for the correlation id and
@@ -445,11 +492,30 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 - Synapse uses Boot's `JsonMapper` and customizes it only through Jackson 3 builder customizers. Naming and other
   Jackson settings use Boot's own properties (e.g. `spring.jackson.property-naming-strategy`). Client and publisher
   bindings may declare their own wire format (see *Clients*, *Publisher*).
-- `@Masked` (maskers: all characters, fixed length `***`, last four) redacts fields in **everything Synapse logs**
-  (payload logging masks before it logs, so it works with any backend). Applications can use the same masking for
-  their own log lines. It never applies to API responses, outbound client requests, published events or persisted
-  data. (v1's national-identifier, telephone and postal-code serializers formatted values and are not maskers; they
-  are not carried over.)
+- `@Masked` (maskers: all characters, fixed length `***`, last four) redacts fields in the payload lines Synapse
+  logs (payload logging masks before it logs, so it works with any backend). Applications can use the same masking
+  for their own log lines. A type Jackson writes with its own serializer (`@JsonValue`, a class-level
+  `@JsonSerialize(using = …)`, a module serializer) and that declares a `@Masked` member is written whole as `"***"`.
+  It never applies to API responses, outbound client requests, published events or persisted data. (v1's
+  national-identifier, telephone and postal-code serializers formatted values and are not maskers; they are not
+  carried over.)
+- **What Synapse guarantees beyond the payload line:** Synapse writes no value from a caller's input or from a
+  `@Masked` member into a log line or span it produces itself.
+  - Constraint violations are logged by the same path the caller gets (a map key is never written), and by message
+    template only when the template is a single message key; otherwise by the constraint's name.
+  - A `ConstraintViolationException` anywhere in a logged or recorded failure (the whole cause chain and the
+    suppressed exceptions, with a cycle guard) is replaced by that sanitized form.
+  - An `SQLException` in a logged or recorded failure's cause chain shows only its SQLState, vendor code and class,
+    never its message, and the wrappers above it lose their messages too (they repeat the database's text). The
+    database's text appears only with `synapse.errors.log-database-messages=true` (default `false`), a log setting
+    separate from `synapse.errors.include-detail`, which only decides what callers get. The stand-in keeps the
+    driver's stack trace. Hibernate logs the database's text itself (`org.hibernate.orm.jdbc.error`); the docs give
+    the `logging.level` line that silences it.
+  - Both rules apply to the operation's failure line, a `SynapseException`'s logged cause, the REST and gRPC edges'
+    unhandled-error lines and both span kinds. A span records no more than the failure line logs.
+  - DEBUG lines about unreadable input name the exception class, never its message.
+  - Not covered, and documented: a value logged through its `toString()`, a `SynapseException` argument (it is part
+    of the message), and a library that logs the exception itself.
 
 ### 5.7 Observability
 - Micrometer Observation around every operation, binding, client call and Kafka record; export through Boot's own
@@ -475,12 +541,18 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   operation (`synapse.operations.<operation-name>.logging.payloads=true`) at DEBUG with `@Masked` fields redacted,
   on the logger `io.americanexpress.synapse.payload`, a sibling of the failure logger so failure-logger filters never
   apply to payloads.
-- `synapse-logging-log4j2`: Log4j2 2.x, **synchronous** by default, Boot structured JSON logging (defaults
-  `logging.structured.format.console=ecs` at lowest precedence), an optional burst limit on failure logs (off unless
-  `synapse.logging.failure-burst.rate` and `.max-burst` are set; a Log4j2 `BurstFilter` at ERROR on the failure logger,
-  so WARN and ERROR failure lines are limited and FATAL never is). Masking is done by Synapse before logging (see *JSON
-  and masking*). Async is opt-in (add `com.lmax:disruptor` and set one documented property). It ships no
-  configuration file that would override the application's.
+- **Backend:** Logback, Boot's default, through the starters a service declares (`spring-boot-starter-actuator`,
+  `spring-boot-starter-test`). Synapse ships nothing Logback-specific: no module, no configuration file and no burst
+  limit. `synapse-core` defaults `logging.structured.format.console=ecs` at lowest precedence, for either backend.
+  The docs warn against Logback's `DuplicateMessageFilter` on the failure logger: every failure line has the same raw
+  message, so it would drop all but the first few.
+- `synapse-logging-log4j2` (opt-in): Log4j2 2.x, **synchronous** by default, and an optional burst limit on failure
+  logs (off unless `synapse.logging.failure-burst.rate` and `.max-burst` are set; a Log4j2 `BurstFilter` at WARN on the
+  failure logger, so WARN and less severe failure lines share the budget and ERROR and FATAL always pass; it is
+  installed again whenever the Log4j2 configuration changes). Startup fails when Logback is also present. When the
+  burst properties are set without the module, startup logs a WARN that they have no effect. Masking is done by
+  Synapse before logging (see *JSON and masking*). Async is opt-in (add `com.lmax:disruptor` and set one documented
+  property). It ships no configuration file that would override the application's.
 
 ### 5.9 Inbound load and shutdown
 - **Concurrency limit:** every inbound plugin caps concurrent in-flight work (`synapse.api.rest.max-concurrent-requests`,
@@ -489,7 +561,11 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   Defaults: REST 200, counting every request except Actuator management paths (which are never limited), with
   `Retry-After: 1`; gRPC 200, counting every call except the gRPC health and reflection services, answered
   `UNAVAILABLE` with `google.rpc.RetryInfo` (1 s); the GraphQL default is set in its plan. (With virtual threads,
-  Boot's thread-pool settings no longer limit concurrency.)
+  Boot's thread-pool settings no longer limit concurrency.) The limit is an `InboundCallLimiter` bean per plugin
+  (3.5), so an adaptive limiter can replace the semaphore. A permit's outcome follows Netflix concurrency-limits'
+  adapters: `DROPPED` for a call that ran out of time (REST 504 or an async timeout; gRPC `DEADLINE_EXCEEDED`) or
+  that the client cancelled (gRPC), `IGNORED` when the handler threw past the edge, `SUCCESS` otherwise. What is
+  never counted (management paths, gRPC health and reflection) is unchanged.
 - **Shutdown order** (Spring waits for each phase at most `spring.lifecycle.timeout-per-shutdown-phase`): stop inbound
   (HTTP, gRPC, GraphQL, Kafka consumers, schedulers) → drain in-flight operations (the pipeline counts them) → flush
   publishers (`publishAsync` futures) → close clients and pools. The drain thread itself waits at most 10 minutes, so a
@@ -501,8 +577,12 @@ An operation may call other operations (same pipeline, same `RequestContext`).
 ### 5.10 Health
 - Spring Boot Actuator probes. Liveness reflects internal state only. **Readiness reflects the application's own
   state only by default.** Each data store and client can opt in: `synapse.data.stores.<name>.health.readiness=true`,
-  `synapse.client.<name>.health.readiness=true`. A store's readiness check uses its own short timeout so a busy pool
-  doesn't flip it.
+  `synapse.client.<name>.health.readiness=true`. A store's readiness check uses its own short timeout
+  (`health.timeout`). A saturated pool (connections, none idle) is judged by progress, not by waiting: the check
+  answers at once from its own borrow, which runs in the background, and the store is DOWN only when that borrow
+  failed, or got no connection within the pool's `connectionTimeout` (at most 30 s). Otherwise it is UP with
+  `pool: busy` and the number of waiting threads (decided 2026-11-20, maintainer). Whether Synapse defaults PgJDBC's
+  `socketTimeout` is a separate open question (DESIGN.md §6).
 - Load-balancer paths use Boot's health-group `additional-path` (e.g. `/health`); Synapse adds no alias. Setting a
   key of the `readiness` group defines the group, and Boot then keeps it instead of its own probe group, whose only
   member is `readinessState`; a group without `include` has every indicator. So when an application configures the
@@ -510,6 +590,11 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   precedence; an application's `include` replaces it; otherwise Synapse sets no `include`, and Boot's probe group
   keeps its settings (the stores that opt in still join it). The readiness setup is then the group's
   `additional-path` alone (stores that opt in are added to the group).
+- The same rule applies to the `liveness` group: when an application sets a `management.endpoint.health.group.liveness.*`
+  key other than `include`, Synapse defaults its `include` to `livenessState` at lowest precedence, so a bare
+  `additional-path` never puts the stores in liveness. Neither default is set when
+  `spring.autoconfigure.exclude` lists Boot's `AvailabilityProbesAutoConfiguration` (an exclusion through
+  `@SpringBootApplication(exclude = …)` isn't visible to Synapse; documented).
 - Actuator exposure stays at Boot's default (health only).
 
 ---
@@ -525,14 +610,55 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   isn't part of the route's input or output type; a non-nullable input component has no source; two sources target
   the same component; a `BusinessOperation` is bound; a `CommandOperation` is bound to GET/HEAD or a GraphQL `Query`
   field, or a `QueryOperation` to a GraphQL `Mutation`; a bound type is a persistence entity.
+- **Parity check timing** (decided 2026-11-20, maintainer): core's parity check between protocols runs once every
+  singleton exists. Each plugin keeps its bindings eager under `spring.main.lazy-initialization=true` with a
+  `LazyInitializationExcludeFilter` (REST: the `synapseRestRoutes` bean by name; gRPC: every `BindableService` bean
+  by type, which Spring gRPC creates at server start anyway). A binding that registers after the check has run (an
+  explicitly `@Lazy` bindings bean, for example) fails startup, naming the binding: no binding is ever left unchecked.
+- **Identity in 2.0** (security deferred whole to 2.x, maintainer, 2026-11-20; section 11): no edge reads Spring
+  Security's `Authentication`. The REST and gRPC edges open the context without a principal, so on those edges
+  `RequestContext.principal()` is empty in 2.0 and audits record the system user unless the application supplies
+  its own `AuditorAware<String>` (8.2). AWS functions (6.5, P4) are the exception: the function plugin takes the
+  principal from the authorizer context, which is its own feature and not part of the security module. A service
+  can still authenticate with Boot's resource-server starter, and the REST edge passes Spring Security's exceptions
+  from escape-hatch controllers through to Security (6.2, *Errors from Spring MVC*), but method security inside an
+  operation answers `INTERNAL` (section 11).
 - **Input conflicts:** the declared location wins; if another location carries the same component with a different
   value (path `/books/1`, body `"id": 2`), the request fails with `INVALID_INPUT`. Unknown fields are ignored.
+- **Collections:** a non-null collection (`List`, `Set`, `Collection`) or `Map` component is never `null`. Absent, or
+  JSON `null` over REST, it binds empty on every protocol, as proto3 binds an absent `repeated` or `map` field
+  (proto3 can't tell absent from empty). "At least one item" is declared with `@NotEmpty` (or `@Size(min = 1)`),
+  AIP-203's meaning of a required repeated field, and gives the same violation on every protocol. A `@Nullable`
+  collection component of the input record stays legal for REST-only operations (absent binds `null`; one inside a
+  nested body record binds empty); gRPC can't bind it (6.3). Responses are
+  unchanged (plan 2026-11-20 contract).
+- **Required scalars:** a non-null scalar component (a string, number, boolean, enum or bytes, a primitive included)
+  is missing when the caller doesn't send it, on every protocol: REST answers `must not be null`, and so does gRPC,
+  because a gRPC binding of one must use a field with presence (proto3 `optional`, a wrapper, or an enum whose zero
+  value is unspecified); startup fails otherwise, listing every such component and field in one failure (6.3;
+  plan 2026-11-20 contract).
+- **Violation names:** a violation's field is the core path (5.2) in the protocol's wire names: REST the JSON
+  property as Jackson reads it, the query parameter, header, cookie or path variable as declared (6.2); gRPC the proto
+  field path (6.3). One format on both: dots plus `[index]`, as `google.rpc.BadRequest.FieldViolation.field`
+  prescribes; never JSON Pointer. A map key is never written.
+- **Parity check:** startup fails when the bindings of one operation over two protocols declare `.notFound`,
+  `.etag` or `.sortable` differently (plan 2026-11-13, D10). The check pairs bindings by major version, as AIP-185
+  ties the proto package's `vN` to the REST path's version: a gRPC method whose package ends in `vN` (`v1`,
+  `v1beta1`) is compared with the REST routes of version N (`.version("1")`, `"1.2"`). When either binding of a pair
+  is unversioned, they are compared, as before. A binding with no counterpart of its version over the other protocol
+  (a gRPC `v1` method with only REST `v2` routes) is not compared, and startup lists every such binding in one WARN
+  (maintainer, 2026-11-20; plan 2026-11-20 contract, decision 5).
 - **Errors:** each plugin maps `ErrorCategory` to its protocol (table below). Overrides are keyed by error code,
   globally or per operation (`synapse.api.rest.errors.status.[CODE]`, `synapse.api.rest.operations.<op>.errors.status.[CODE]`,
   `synapse.api.grpc.errors.status.[CODE]`, `synapse.api.grpc.operations.<op>.errors.status.[CODE]`); precedence:
   per-operation > global > (gRPC only) `ABORTED` for a stale `etag` (6.3) > a built-in code's fixed status (REST: a
   `RestErrors` code's own status, 428 for `PRECONDITION_REQUIRED`; gRPC: `ALREADY_EXISTS`, `METHOD_NOT_FOUND`)
-  > category default.
+  > category default. A status-mapper bean (`RestErrorStatusMapper`, `GrpcErrorStatusMapper`; see 3.5) replaces
+  this whole table: the override properties then have no effect, and startup WARNs naming each one that is set.
+  A mapper reads the error and returns a status; it can't change the code. REST's default keeps the contract plan's
+  order (6.2): a configured override, then the status kept from a Spring exception Synapse has no code for
+  (`CLIENT_ERROR`, `SERVER_ERROR`), then the built-in and category statuses; a replacement mapper receives the same
+  exception and decides all of them.
 - **Exposure inventory:** at startup each plugin logs every exposed operation with protocol, route/method and port.
 
 | Category | REST | gRPC | GraphQL (`ErrorType`) |
@@ -580,7 +706,9 @@ RestBindings books(GetBookOperation getBook, SearchBooksOperation searchBooks, C
 }
 ```
 The verb is always explicit. `@RestController` classes that inject operations remain the escape hatch and get the same
-pipeline, error mapping and correlation handling.
+pipeline and correlation handling. Their errors get Synapse's mapping after the application's own handlers: Spring
+MVC's `@ExceptionHandler` methods and `@ControllerAdvice` classes answer first (see *Errors from Spring MVC* below;
+maintainer, 2026-11-20, decision 13, which reverses the earlier "same error mapping" rule).
 
 **Input binding** (a per-route declaration beats an app convention, which beats a default convention):
 
@@ -598,11 +726,27 @@ App-wide conventions are declared once in a `RestConventions` bean and apply **b
 record type (e.g. `.query(WriteOptions.class)` binds all of `WriteOptions` from the query string) and framework
 types. Values are converted with Spring's `ConversionService`; validation runs once on the assembled record.
 
+A component that is not a collection or an array takes one value. A repeated query parameter or header line for it is
+`must have a single value` (plan 2026-11-13, Q12). A repeated cookie is the exception: a single-valued cookie
+component takes the first copy, as Spring's `@CookieValue` does, because a browser stores cookies, a sibling host can
+plant a second copy, and a 400 would last until a copy expires. The duplicate is logged at DEBUG by cookie name only,
+and counted by the Micrometer counter `synapse.rest.cookie.duplicates` (tags `cookie`, the declared binding name, and
+`operation`; registered at startup for each single-valued cookie binding, a no-op without a `MeterRegistry`). A
+`List` component gets every copy and is never counted; `@Size(max = 1) List<String>` rejects duplicates for a
+component that wants it (maintainer, 2026-11-20, decision 6).
+
 **Paging safety:** sort keys must be allow-listed per route (`.sortable(SearchBooksRequest.SortKey.class)` or a set of
 names). The syntax is `sort=title,-published` (a comma list; `-` means descending). An unknown key, or `sort` on a
 route without `.sortable`, is `INVALID_INPUT`. Offsets are capped (`synapse.paging.max-offset`, default
 1000). Page size defaults to `synapse.paging.default-size` (20) and is capped by `synapse.paging.max-size` (100). The
 plugin checks size and offset before the pipeline and reports violations under the parameter names.
+
+When the next offset of a page would pass the cap while `hasNext` is true, the page still gets a next token (in the
+body's `nextCursor`, and on GET/HEAD in `Link: next` as the `cursor` parameter), so a client that follows tokens
+never stops silently. The token fails when used: `VALIDATION_FAILED` on the token's parameter, with the message
+`has reached the offset limit (1000); narrow the query or use keyset paging` (the cap's value). gRPC's
+`next_page_token` follows the same rule (6.3), so the token is empty only at the real end of the collection, as
+AIP-158 asks (maintainer, 2026-11-20).
 
 Cursors are opaque. The edge wraps an operation's cursor with core's `CursorCodec` bean, which every API plugin shares
 and an app can replace. By default it is AES-256-GCM authenticated encryption, bound to the operation, the sort and a
@@ -621,7 +765,7 @@ raw cursor never reaches the client.
 | GET with a value | 200 | `.status(...)` |
 | `Optional` empty | 404 problem+json, code `NOT_FOUND` | `.notFound(BookErrors.BOOK_NOT_FOUND)`; `.emptyAs(204)` |
 | Empty list | 200 with `[]` | none |
-| `PageResult` | 200 with `{"items":[…],"nextCursor":"…","hasNext":true,"total":42}` (`nextCursor` and `total` omitted when null); GET/HEAD also send `Link: <relative URL>; rel="next"` with the next cursor, or with the next offset while it is within `max-offset` | none (output `.header`, `.body` and `.etag` fail startup) |
+| `PageResult` | 200 with `{"items":[…],"nextCursor":"…","hasNext":true,"total":42}` (`nextCursor` and `total` omitted when null); GET/HEAD also send `Link: <relative URL>; rel="next"` with the next cursor, or with the next offset while it is within `max-offset`, and past it with the capped token (above) | none (output `.header`, `.body` and `.etag` fail startup) |
 | POST | 201 + `Location` when `.created(fn)` is declared; otherwise 200 | `.status(...)` |
 | Accepted for async processing | none | `.accepted(fn)`: 202 + `Location` of the status resource, also linked in the body |
 | `void`/`null` | 204 | `.status(...)` |
@@ -650,7 +794,9 @@ raw cursor never reaches the client.
   - a weak `If-Match` is 412 without calling the operation.
 
   A `STALE_VERSION` failure is 412 `PRECONDITION_FAILED` when the request carried a bound `If-Match`, and 409
-  otherwise. Other failures map as usual, and a missing resource is 404. An `If-Match` or `If-None-Match` on an unsafe
+  otherwise. Other failures map as usual, and a missing resource is 404, with or without `If-Match`: the request
+  would be 404 without it, and RFC 9110 §13.2.1 says such a failure takes precedence over preconditions (an upsert
+  that would create answers a false `If-Match` 412). An `If-Match` or `If-None-Match` on an unsafe
   route that doesn't bind it is 412: the precondition can't be verified. `If-Unmodified-Since` and
   `If-Modified-Since` are ignored (Synapse emits no `Last-Modified`). Whether a precondition is required is the
   operation's input contract, not a route setting: a write whose `If-Match` or `If-None-Match` component is a
@@ -658,13 +804,57 @@ raw cursor never reaches the client.
   missing header, before the operation runs (`*` counts as present). It comes after binding's 400s and the 412s
   above. A `@Nullable` component keeps the header optional. On `GET`/`HEAD` the component must be `@Nullable`.
 - Errors are RFC 9457 `application/problem+json` with extension members `code`, `correlationId` and `violations[]`
-  (each `{field, message}`). With `synapse.errors.type-base-uri` unset, `type` is `about:blank` and `title` is the HTTP
+  (each `{field, message}`; the field in REST's wire names: a body property as Jackson reads it, with the mapper's
+  naming strategy and `@JsonProperty`, aliases excluded; a query parameter, header, cookie or path variable as the
+  binding declares it; a `.context` or `.from` component, or a part of the path Jackson can't name, by its component
+  name, the path cut there). With `synapse.errors.type-base-uri` unset, `type` is `about:blank` and `title` is the HTTP
   status phrase; when set, `type` is the base URI plus the code and `title` comes from the category. `status` always
   equals the real status. `violations` is omitted when empty. With `type-base-uri` set, `type` is the base URI, `/`
   and the code, and the category title can be overridden with the `MessageSource` key `synapse.category.<CATEGORY>`.
   A 401 without `synapse-security` carries `WWW-Authenticate: Bearer`.
 - No generic `{data, meta}` wrapper: a single resource is the body itself, and a `PageResult` is the page object above.
   The correlation id, the paging `Link` and `ETag` travel in headers.
+
+**Errors from Spring MVC** (maintainer, 2026-11-20, decision 13; it reverses the rule that Synapse's resolver runs
+before Spring's, for escape-hatch controllers only). Synapse's resolver is no longer a `HandlerExceptionResolver`
+bean. A `WebMvcConfigurer` bean (`synapseRestExceptionResolverConfigurer`, backing off by name) adds two instances of
+it through `extendHandlerExceptionResolvers`. The order is Boot's `DefaultErrorAttributes`, then:
+1. Synapse's resolver for Synapse paths, first in Spring's composite. It answers only an exception raised on a path
+   that a Synapse route serves (any method, the `/v<N>` prefix included) whose handler is a Synapse handler or none
+   was found (`handler == null`: a missing or invalid API version, a 405 or 415 from annotated-mapping lookup). So on
+   a Synapse path the answer is always Synapse's problem, before any application advice (maintainer, 2026-11-20).
+   That includes a path a Synapse route shares with a controller: a 415 from the controller's own mapping lookup has
+   no handler yet, so it is Synapse's. The configurer resolves the routes lazily, inside
+   `extendHandlerExceptionResolvers`, because Spring MVC's configuration needs every `WebMvcConfigurer` while the
+   routes need its conversion service.
+2. `ExceptionHandlerExceptionResolver`: the application's `@ExceptionHandler` methods and `@ControllerAdvice` classes,
+   for its controllers (Synapse routes are `HandlerFunction`s, so advice never sees their failures).
+3. Synapse's main resolver, right after it (second when an application removed it). It answers every other exception.
+4. `ResponseStatusExceptionResolver` and `DefaultHandlerExceptionResolver`.
+
+Both Synapse instances return `null` in two cases: a committed response, and Spring Security's
+`AccessDeniedException` and `AuthenticationException` (subclasses included, matched by class name, so Synapse needs no
+Security dependency), which propagate to Security's `ExceptionTranslationFilter`.
+
+For an `ErrorResponse` (`ResponseStatusException` included), then for `@ResponseStatus` on the exception's class,
+looked up along the cause chain as Spring's `ResponseStatusExceptionResolver` does:
+- a status in the status table keeps its Synapse code (409 is `CONFLICT`);
+- any other status keeps its own status (422, 410, 502) with a REST-only code: `CLIENT_ERROR` (category
+  `INVALID_INPUT`, logged at DEBUG) for 4xx, `SERVER_ERROR` (category `INTERNAL`, logged at WARN without a stack
+  trace, because it was raised on purpose) for 5xx;
+- the status is decided in one place, `RestErrorStatuses.statusFor(SynapseException, operation)`: a configured status
+  for the code (per operation, then global) first, then the kept status, then a built-in code's fixed status and
+  the category's. So `synapse.api.rest.errors.status.[CLIENT_ERROR]=400` applies. The REST status-mapper SPI of the
+  API-surface follow-up takes the same `SynapseException` and operation, as gRPC's does, and its default keeps this
+  order;
+- the exception's headers are copied (`Allow`, `Retry-After`);
+- the reason (`getReason()`, `@ResponseStatus.reason`, an `ErrorResponse`'s own problem detail) is the `detail` only
+  when `synapse.errors.include-detail` is `true`.
+
+The servlet container's error dispatch maps a bare status by the same table, with the same two codes for a status
+outside it. While `spring.mvc.problemdetails.enabled` is `true`, startup logs one WARN: Boot's
+`ProblemDetailsExceptionHandler` then answers Spring MVC's exceptions from controllers in Spring's problem shape, not
+Synapse's (Synapse paths are not affected). Synapse doesn't turn it off.
 
 **API versioning:** off unless a binding uses `.version("2")`. A versioned route is served with `v` and its version as
 the first path segment: `.get("/books/{id}", getBook).version("2")` serves `/v2/books/{id}`. A version is
@@ -748,7 +938,9 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   `int32 skip` capped by `synapse.paging.max-offset`, and `string order_by` (AIP-132; sort keys are the lower-case
   constant names, `@JsonProperty` is not read); the response's one repeated message field holds the items,
   `string next_page_token` the next page's token (by REST's `Link: next` rule: a cursor, or a next offset for a page
-  without one; empty on the last page), `bool has_next` REST's `hasNext` (provisional, beyond AIP-158) and, when
+  without one, and past `synapse.paging.max-offset` the capped token that fails when used, 6.2; empty only on the
+  last page, as AIP-158 asks), `bool has_next` REST's `hasNext` (required; AIP-158 doesn't forbid other fields, and
+  its linter doesn't flag them; plan 2026-11-20 contract) and, when
   declared, an `optional int32` or `int64 total_size` the total. A missing field or a wrong type fails startup. Page
   tokens use core's cursor codec, so a token issued over REST pages over gRPC for the same operation, filters and
   sort, and the reverse; paging errors are REST's codes, with the gRPC field named (plan 5).
@@ -757,7 +949,11 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   descriptors and never instantiates generated message classes. Built in: `Timestamp`↔`Instant`, `Duration`, wrapper
   types ↔ nullable components, enums by name, repeated ↔ `List`, maps, nested messages, `google.protobuf.Empty` ↔
   `Void`, and strings converted with Spring's `ConversionService` (UUID, dates). A nullable component needs a field
-  with presence (a wrapper, a message or proto3 `optional`). `oneof` fields and renamed fields use an explicit
+  with presence (a wrapper, a message or proto3 `optional`). So does a non-null scalar component of a request (6.1,
+  *Required scalars*): startup fails when one is bound to a field without presence, naming the component and the
+  field, so an unsent field is `must not be null`, as over REST, never `""` or `0`. The token fields (`etag`,
+  `if_none_match`) and the page fields keep their own rules. A non-null `List` or `Map` binds a `repeated` or `map`
+  field, which has no presence, so absent is empty (6.1, *Collections*). `oneof` fields and renamed fields use an explicit
   override in the binding (`.map(...)`). Request fields without a component are ignored; a record component without a
   field fails startup.
 - **Versions** (AIP-154, with REST's tokens and rules): a `VersionCondition<V>` component of the input record binds
@@ -775,14 +971,25 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   before the operation runs. `STALE_VERSION` from a request that sent an `etag` becomes the code `PRECONDITION_FAILED`
   (REST's 412) with the status `ABORTED` (AIP-154; plan 2026-11-13, D2), unless a `[PRECONDITION_FAILED]` status is
   configured; without one it stays `STALE_VERSION` (`ABORTED`, REST's 409). Every other `PRECONDITION_FAILED` (weak,
-  unbound, or the operation's own) is `FAILED_PRECONDITION`. A read binds a weak tag's value and ignores an
-  unbound token, and gets no 304. `.etag(Record::component)` writes the strong tag to the response's `string etag`
-  field, on a `QueryOperation` or a `CommandOperation` whose input has no `VersionCondition` only (REST sends no `ETag`
-  on `PUT`/`DELETE`).
+  unbound, or the operation's own) is `FAILED_PRECONDITION`: Synapse emits only strong tags, so a weak one is never a
+  stale version of the resource but a request that can't succeed in any state (strong comparison, RFC 9110 §13.1.1),
+  and `ABORTED` would invite read-modify-write retries (maintainer, 2026-11-20, decision 9). A read binds a weak tag's
+  value and ignores an unbound token, and gets no 304. `.etag(Record::component)` writes the strong tag to the
+  response's `string etag` field, on a `QueryOperation` or a `CommandOperation` whose input has no `VersionCondition`
+  only (REST sends no `ETag` on `PUT`/`DELETE`). So neither protocol returns the new version's token on an update, and
+  clients re-read: a departure from AIP-154 ("must be provided by the server on output"), kept so that one contract
+  holds on both protocols (maintainer, 2026-11-20). A missing resource is `NOT_FOUND` with or without an `etag`, as
+  over REST (6.2).
 - Errors: status per the table; the Synapse code travels as `google.rpc.ErrorInfo` (`reason` = code, `domain` =
   `spring.application.name`, or `synapse` when it is unset, `metadata.correlationId`; AIP-193) in the status details, plus `google.rpc.BadRequest`
-  for violations (field paths in proto names). The status description is the detail, only when
-  `synapse.errors.include-detail` is true. A malformed request message is `INVALID_ARGUMENT` with `MALFORMED_REQUEST`.
+  for violations (field paths in proto names, in 6.1's format). The status description is the detail, only when
+  `synapse.errors.include-detail` is true. A hand-written service's own status (a thrown `StatusException` or
+  `StatusRuntimeException`, or one passed to `responseObserver.onError(...)`, typically a downstream call's failure
+  forwarded) keeps only its code unless `include-detail` is true: its description, its `grpc-status-details-bin` and
+  its other trailers are dropped, and Synapse's `ErrorInfo` is always added, with the code that the status maps back to
+  (`NOT_FOUND`, `ABORTED` → `CONFLICT`, otherwise the category's code, an unknown status `INTERNAL`). A status from the
+  application's own `@GrpcAdvice` or Spring Security's handler is the application's answer and is left alone
+  (maintainer, 2026-11-20, decision 24). A malformed request message is `INVALID_ARGUMENT` with `MALFORMED_REQUEST`.
   An unknown method is `UNIMPLEMENTED` with the code `METHOD_NOT_FOUND`. A message over the size limit is rejected by
   grpc-java with `RESOURCE_EXHAUSTED` and carries no `ErrorInfo`: grpc-java checks the size only once the call has
   requested its message, so the call reaches the interceptors (`interceptCall`, then `onCancel`), but no message is
@@ -922,8 +1129,29 @@ client name.
 - With one store it is the primary. With several, one may be `primary=true` for unqualified `@Transactional`; others
   are selected with `@Transactional("legacy")`. An unqualified `@Transactional` with several stores and no primary fails
   at startup. Cross-store transactions are not atomic (documented).
-- **Migrations per store:** Flyway (Liquibase support waits for a maintainer decision on its license, see DESIGN.md
-  *Open questions*), run by Synapse per store from
+- **A store connects where its `url`, `username` and `password` say, and as that login user.** Keys that would
+  change the target, the login user or a secret fail startup, naming the key and never its value (`hikari.jdbc-url`,
+  `hikari.username`, the driver's target and user properties, the Flyway and JPA connection keys, credentials in the
+  URL). SQL or server settings that run on each new connection (`hikari.connection-init-sql`,
+  `hikari.connection-test-query`, `migrations.flyway.init-sql`, a `FlywayConfigurationCustomizer` that sets `initSql`,
+  and a vendor's session-settings parameter such as PgJDBC's `options`, as a driver property or in the URL) are
+  allowed with one startup WARN per store and key that names the key, never the value: they can change the role or
+  schema the store's statements run with (decided 2026-11-20, maintainer).
+- **Connection details:** a store uses only a Boot `JdbcConnectionDetails` qualified with its name, with one store
+  as with several. A store without a `url` whose service has unqualified details beans (from `@ServiceConnection` or
+  Boot's Docker Compose support) fails startup naming them; with a `url`, the startup WARN below names them
+  (decided 2026-11-20, maintainer). `synapse-test-data` has a public factory for qualified details from a container
+  `@Bean`, and the docs show a qualified adapter for Docker Compose; neither uses `@Profile`.
+- **Beans a store doesn't use get a startup WARN, never a failure** (decided 2026-11-20, maintainer): a store-scoped
+  bean that no store uses (a qualifier that names no store, or a store of the other access kind, a qualifier type
+  other than `@Qualifier`, a kind of bean no store has); a Flyway customizer, `Callback` or `JavaMigration` of a store
+  whose migrations are off; `@EntityScan` while any store exists; an unqualified `JdbcConnectionDetails` that no store
+  uses. Spring Boot's own auto-configured beans (a `@Bean` method in an `org.springframework.boot.` class, which
+  covers the configurations Boot imports), and a bean a store-qualified adapter consumes, are left out. A bean Boot
+  registers without a factory method, such as a `@ServiceConnection`'s details, is not left out. Any other
+  auto-configured bean warns, naming its defining class.
+- **Migrations per store:** Flyway (Liquibase is not in 2.0, decided 2026-11-20; DESIGN.md §5), run by Synapse per
+  store from
   `db/migration/<store>` in `SmartLifecycle.start()`, followed by schema validation against the entities (Hibernate's
   schema validator), before any inbound plugin starts. When a migration tool is present, Synapse sets `ddl-auto=validate`, and startup fails if
   `ddl-auto` is `create`, `create-drop` or `update` unless the store allows it explicitly
@@ -946,11 +1174,19 @@ client name.
   `IdEntity` and `LongIdEntity`, which have no version, are new when the id is null) and compare by id, proxy-safe.
 - **Auditing:** fills created/modified timestamps and user (`AuditorAware` from the `RequestContext` principal, which
   only Spring Security sets, else `synapse.data.auditing.system-user`, default `system`). An application
-  `AuditorAware<String>` bean replaces that source. Until `synapse-security` (P4) sets a verified principal, every
-  write records the system user (documented in `data.adoc`).
+  `AuditorAware<String>` bean replaces that source. Until the 2.x security module sets a verified principal, the
+  principal is empty at the REST and gRPC edges (6.1), so every write made there records the system user unless the
+  application supplies its own `AuditorAware<String>` (documented in `data.adoc`).
 - **Error translation** (an `ExceptionTranslator`): optimistic-lock failures → `STALE_VERSION` (`CONFLICT`);
   unique-constraint failures → `ALREADY_EXISTS` (`CONFLICT`; gRPC ALREADY_EXISTS); query timeout →
   `DEADLINE_EXCEEDED` (`TIMEOUT`); connection failure → `UNAVAILABLE`; other data access failures → `INTERNAL`.
+  A commit whose outcome is unknown (a lost connection while committing, SQLState 08007 or 40003 anywhere in the
+  causes) → `COMMIT_OUTCOME_UNKNOWN` (`INTERNAL`), checked first. A transaction the database rolled back because it
+  lost a race (SQLState 40001, PostgreSQL's 40P01 and 55P03, and codes a vendor module recognises) →
+  `TRANSACTION_CONFLICT` (`CONFLICT`: REST 409, gRPC `ABORTED`, logged at WARN with the SQLState, no `Retry-After`),
+  classified by exact state, never by Spring's `PessimisticLockingFailureException` (decided 2026-11-20, maintainer).
+  SQLState class 53 is `UNAVAILABLE`; class 53 is PostgreSQL's and DB2's, not the SQL standard's, so it moves behind
+  the vendor interface before P5.
 - JPA is the default in archetype and samples; JDBC is equally supported (same interfaces, auditing, stores,
   translation). Soft delete: documented use of Hibernate's `@SoftDelete`.
 
@@ -1015,7 +1251,8 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
   from Kafka headers are validated like REST ones; topic write ACLs are the trust boundary (documented).
 - **Control endpoint:** Actuator endpoint `kafkasubscribers`: read (subscribers, state, group id, lag) by default;
   pause/resume only with `management.endpoint.kafkasubscribers.access=unrestricted` and Spring Security present
-  (startup fails otherwise); `synapse-security` adds a role check. It acts on one pod only (documented).
+  (startup fails otherwise). Synapse adds no role check in 2.0: the 2.x security module adds one; until then the
+  application secures the endpoint in its own Spring Security configuration. It acts on one pod only (documented).
 - **Logging:** retry attempts at WARN, DLT sends at ERROR; payloads opt-in
   (`synapse.kafka.subscribers.<name>.logging.payloads`, masked).
 
@@ -1034,7 +1271,26 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 
 ---
 
-## 11. Security (`synapse-security`, P4)
+## 11. Security (`synapse-security`, deferred to 2.x; the agreed design)
+The maintainer deferred all of `synapse-security` to 2.x on 2026-11-20 (DESIGN.md 4.1 *Security deferred to 2.x*
+and *Roadmap*). This section stays the agreed design for that module; nothing in it is built in 2.0, except that
+AWS functions take the principal from the authorizer context, a feature of the function plugin (6.5). Until it
+ships:
+- `RequestContext.principal()` is empty at the REST and gRPC edges: no code in core, REST, gRPC or data reads Spring
+  Security's `Authentication`, and both edges open the context without a principal (6.1).
+- Audits record the system user (`synapse.data.auditing.system-user`, default `system`) on every write made there,
+  unless the application defines its own `AuditorAware<String>` bean, which replaces that source (8.2).
+- Kafka pause and resume have no Synapse role check. They still need
+  `management.endpoint.kafkasubscribers.access=unrestricted` and Spring Security present, or startup fails (9.3);
+  the application secures the endpoint in its own Spring Security configuration.
+- Method security inside an operation answers `INTERNAL` (500): the pipeline turns an `AccessDeniedException` or
+  `AuthenticationException` thrown there into `INTERNAL` before any edge sees it, unless the application registers
+  its own `ExceptionTranslator` for those exceptions (the last bullet below).
+- The *access control per deployment model* question (DESIGN.md *Open questions*), the browser security headers,
+  the Actuator lock-down, `trusted-header` mode and the check of Spring Security's use of the
+  `corsConfigurationSource` bean (P1, plan 2c note) move to 2.x with the module.
+
+The agreed design:
 - Optional starter, never forced. OAuth2 resource server (JWT) defaults; secures REST, gRPC and GraphQL alike;
   locks Actuator down.
 - **Identity source:** `RequestContext` reads the principal only from Spring Security's `Authentication` (or the
@@ -1046,6 +1302,14 @@ application packages. Key prefixes and default TTLs per store (`synapse.data.sto
 - **Browser security headers** (OWASP REST Security Cheat Sheet): `X-Content-Type-Options: nosniff`,
   `Cache-Control: no-store`, `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`, and HSTS
   where TLS terminates at the app. Teams without the starter set them at the gateway (documented).
+- **Method security inside an operation** (to settle with the security module, which the maintainer deferred to 2.x
+  on 2026-11-20): in P1 the pipeline turns an `AccessDeniedException` or `AuthenticationException` thrown inside an
+  operation (method security on the operation bean) into `INTERNAL` before any edge sees it, while the REST edge
+  passes Security's exceptions from controllers through to `ExceptionTranslationFilter` (6.2, *Errors from Spring
+  MVC*). The security module decides whether the pipeline passes them through unwrapped, so Spring Security answers
+  with the right challenge (a REST 401 then keeps `WWW-Authenticate`, as RFC 9110 requires), or translates them in
+  core to `UNAUTHENTICATED`/`FORBIDDEN`. Passing them through is the Spring-first choice (research round 2,
+  decision 13).
 
 ---
 
@@ -1074,10 +1338,13 @@ go there.
 ## 13. Consumer parent (`synapse-parent`)
 - Extends `spring-boot-starter-parent`; imports `synapse-bom`; its `synapse.version` must equal its own version
   (enforced).
-- **Logging:** the parent manages `synapse-logging-log4j2` and its setup; each `service-*` module declares it (the
-  archetype adds it), so published library modules (contract, client, data, publisher, business) stay backend-free.
-  Teams that don't add it keep Boot's Logback; Synapse masking works with either.
-- **Tracing:** the archetype adds `spring-boot-starter-opentelemetry` to `service-*` modules.
+- **Logging:** services use Boot's Logback, which their starters bring; the parent adds no logging dependency. The
+  parent manages `synapse-logging-log4j2` (through the BOM) for teams that opt in to Log4j2; only a `service-*` module
+  declares it, with the `spring-boot-starter-logging` exclusions, so published library modules (contract, client,
+  data, publisher, business) stay backend-free. Synapse masking works with either backend.
+- **Tracing:** the parent manages `synapse-tracing-opentelemetry` (through the BOM); each `service-*` module declares
+  it (the archetypes add it), and library modules never do. No sample or archetype sets
+  `management.otlp.metrics.export.enabled`: without Micrometer's OTLP registry nothing pushes metrics.
 - **Environments:** the archetype maps `spring.profiles.active: ${ENV}` in each service's `application.yaml`, sets
   `spring-boot.run.profiles=local`, and generates `application-local.yaml` (local conveniences turned on, such as
   `synapse.errors.include-detail: true`), `src/test/resources/application-test.yaml` in every module with Spring Boot
@@ -1088,17 +1355,25 @@ go there.
   by an invoker test whose project imports an older `guava-bom`). BOM-only users import `synapse-bom` before
   `spring-boot-dependencies` (documented).
 - **Images:** configures `spring-boot:build-image` with a Java 25 runtime and AOT-cache training
-  (`BP_JVM_AOTCACHE_ENABLED=true`); Java 21 runtimes get CDS only. The image's garbage collector is not decided yet
-  (maintainer question, plan 5 Task 20 Q2, for the Task 22 review; DESIGN.md *Open questions*). Until then the
-  parent and the Dockerfiles pin G1 for the training run and every run of the image (plan 5, D47): left to the
+  (`BP_JVM_AOTCACHE_ENABLED=true`); Java 21 runtimes get CDS only. The parent and the Dockerfiles pin G1 for the
+  training run and every run of the image (plan 5, D47; kept 2026-11-20): left to the
   JVM, a 512 MB, one-CPU pod gets the Serial collector, whose default 8 MB initial heap can't hold the cache's archived
-  heap objects, so the JVM stops at start (measured; `parent.adoc`, *The garbage collector*). The alternative is no pin
-  and an initial heap that holds them (`-Xms10m` or more for the reference bookstore). The archetype adds
+  heap objects, so the JVM stops at start (measured; `parent.adoc`, *The garbage collector*). When the image's JDK
+  moves to a new feature release, the 512 MB, one-CPU smoke test runs with the pin and without it. The pin can go
+  once the image JDK is 27 or later, where G1 is the default in every environment (JEP 523), unless the Java 21
+  image still needs it. Image memory (`BPL_JVM_THREAD_COUNT`, head room) stays the deployment's choice: the parent
+  bakes in no memory defaults, and `parent.adoc` documents them. The archetype adds
   `spring.main.keep-alive=true` where needed, `spring.threads.virtual.enabled=true`, and the service archetype a
   Dockerfile with the same training run; `parent.adoc` documents heap sizing for small pods.
 - **AOT profile (plan 5, decided 2026-11-08):** the `process-aot` execution is in the parent's Maven profile `aot`, off
   by default, in that profile's `pluginManagement`, as Boot's `native` profile declares it. Without `-Paot` no
   `process-aot` runs. The image settings stay in the default `pluginManagement`. Invoker projects prove both.
+  Confirmed 2026-11-20 (maintainer): the parent doesn't pass `--spring.main.cloud-platform=none` to `process-aot`.
+  `parent.adoc` documents it as a per-build flag, and says that spring-cloud-kubernetes 5.0.x doesn't support Spring
+  AOT or native images, so a pod's `kubernetes` profile failing processing is the right outcome. Stale AOT code after
+  a later plain build stays docs only (`clean`). At the Boot 4.2 upgrade, recheck `parent.adoc`'s
+  `server.forward-headers-strategy` paragraph: 4.2 deprecates that key for `server.request.header.forwarded.strategy`,
+  and Jetty and Netty weren't checked.
 - **Build environment (plan 5):** the Maven property `synapse.build.environment` (default `build`) names the environment
   that `process-aot` and the image's training run use (`TRAINING_RUN_JAVA_TOOL_OPTIONS`). `process-aot` gets it as
   the default profile (`--spring.profiles.active=` and `--spring.profiles.default=…`), never as an active profile, so
@@ -1128,7 +1403,10 @@ All must pass for a phase to be done; enforced in CI on every pull request unles
 1. **Build and tests:** PRs run all unit and integration tests on JDK 25, and unit tests plus one smoke integration
    test per module on JDK 21 (`-Djvm=<jdk21>/bin/java`). The samples, which inherit `synapse-parent` and don't read the
    smoke filter, run no ITs on the JDK 21 pull request leg (`.config/jdk21-pr-excluded-its.txt`); their ITs run on JDK
-   25 on every pull request. The full JDK 21 run is nightly. Testcontainers ITs for
+   25 on every pull request. The full JDK 21 run is nightly. The OpenTelemetry Java agent ITs (the reference
+   bookstore's and the service archetype's generated project's) run only under `-Potel-agent`, which also copies and
+   checks the agent jar: nightly, in the full JDK 21 run and in a JDK 25 `otel-agent` job, never on pull requests.
+   Testcontainers ITs for
    open-source stores and Kafka run on PRs; Oracle and SQL Server ITs run nightly, in the release workflow, and on PRs
    that change those modules. Vendor modules stay thin (dependencies, defaults, context-runner tests) so they meet
    coverage without their database.
@@ -1350,8 +1628,8 @@ with Synapse's own schema generator on Jackson 3, off by default and turned on b
 `core.adoc` and `environments.adoc`, and shown in `samples/rest-books` (version 2 of the read, CORS for a local front
 end, the document). They cover acceptance items 7 (`/v3/api-docs` with every route, its schemas, statuses and problem
 responses) and 10 (REST and OpenAPI modules: the new beans' context-runner tests and AOT tests). Spring Security's use
-of the `corsConfigurationSource` bean is verified by `synapse-security` (P4); springdoc, the schema generator and the
-CORS filter in a native image by the native build (P4).
+of the `corsConfigurationSource` bean is verified by the security module (2.x, section 11); springdoc, the schema
+generator and the CORS filter in a native image by the native build (P4).
 
 **Done (plan 3, gRPC edge):** `synapse-api-grpc` and `synapse-test-grpc` are built and documented (`grpc.adoc`, the
 `@SynapseGrpcTest` section of `testing.adoc`, and `core.adoc` and `environments.adoc` updated), and
@@ -1380,8 +1658,8 @@ H2 and, for PostgreSQL, with Testcontainers. They cover acceptance items 8, 10 (
 AOT hint tests, and an AOT-processed context with JPA and JDBC stores), 15 (the store part: readiness reflects a
 store only when it opts in), 17 (stores: no connection while beans are created), 19 (`@SynapseDataTest` is provided;
 the reference app uses it in plan 5) and 20 (auditing timestamps and UUIDv7 ids follow the test `Clock`). Under AOT,
-a store's name and `primary` are fixed at build time, and a run-time change fails startup. Liquibase waits for the
-maintainer's licence decision (DESIGN.md *Open questions*); native verification of per-store Flyway scanning is in
+a store's name and `primary` are fixed at build time, and a run-time change fails startup. Liquibase waited for the
+maintainer's licence decision (decided 2026-11-20: not in 2.0, DESIGN.md §5); native verification of per-store Flyway scanning is in
 P4.
 
 **Done (plan 5, samples, archetypes, parent and the reference app):** on the integration base of plans 2c, 3 and 4, REST
@@ -1423,12 +1701,15 @@ against the packaged jar in AOT mode (`BookstoreAotIT`, nightly). Open: the nati
 plan's review table and the maintainer questions of its Task 20, for the Task 22 review; the OSV-Scanner PR gate's
 known gap (section 14, gate 8); the reference bookstore README's Paketo image; and two DESIGN.md *Open questions*
 that are past their due point, for the maintainer to decide or move to a named later phase: Liquibase (due "Before P1
-ends"; plan 4 builds Flyway only), and part (c) of "Required preconditions beyond REST" (due in plan 3; parts (a) and
+ends"; plan 4 builds Flyway only; decided 2026-11-20: not in 2.0, DESIGN.md §5), and part (c) of "Required preconditions beyond REST" (due in plan 3; parts (a) and
 (b) were answered in plan 5): the pipeline doesn't check a non-null `VersionCondition`, so a caller other than an API
 plugin can pass `null`. Task 21 re-ran every sample README
-against the app and fixed the one drift it found (the agent's JDBC span), but the README's Paketo log lines and its
-`image-smoke.sh` run of the Paketo image are unverified: the buildpack's download of the Liberica JRE from github.com
-returned HTTP 504 in Task 21 and again in the pre-review cleanup (2026-11-08). The Dockerfile image was verified.
+against the app and fixed the one drift it found (the agent's JDBC span). Locally, the README's Paketo image could
+not be built: the buildpack's download of the Liberica JRE from github.com returned HTTP 504 in Task 21 and again in
+the pre-review cleanup (2026-11-08). The Paketo image build was verified on Linux CI on 2026-11-20, in the Nightly
+job *Reference bookstore images (build-image, Dockerfile)*, run 44873771200 on the throwaway branch `ci/dry-run-1`.
+Still unverified: the README's Paketo log lines and its `image-smoke.sh` run of the Paketo image, as the README
+shows them. The Dockerfile image was verified.
 
 **Review fixes (plan 2026-11-13, `plans/2026-11-13-p1-review-fixes.md`):** the fixes from the P1 review, on the
 branch `feature/v2-p1-review-fixes` (base 4a4a6e4e). What landed:
@@ -1440,7 +1721,8 @@ branch `feature/v2-p1-review-fixes` (base 4a4a6e4e). What landed:
   its own serializer (M9); the readiness group's `include` defaults to `readinessState` only when the application
   configures the group (D19; 5.10); `SpringDataPages.pageable` maps sort keys to entity properties and adds
   tie-breakers (D14); the AOT-processing failure names a library-added profile apart from an included one (E2/N1).
-- REST: a repeated value for a single-valued query parameter, header or cookie is `must have a single value`, header
+- REST: a repeated value for a single-valued query parameter, header or cookie is `must have a single value` (for a
+  cookie, the contract follow-up returns to the first copy, 6.2), header
   lines are joined like one line, and only a list header ignores empty items (RFC 9110 §5.6.1.2), while query,
   path and cookie lists keep them as a gRPC `repeated` field does (Q12, I2; maintainer, 2026-11-19); request bodies
   are read through Jackson's public API (M11); the error controller can be proxied (M13); RFC 9110's condition for a
@@ -1527,7 +1809,7 @@ no run has so far:
 - Plan 4 (data) ([plans/2026-11-05-p1-data-postgres.md](plans/2026-11-05-p1-data-postgres.md)): `synapse-data-core`,
   `-jpa`, `-jdbc`, `-postgres` and `synapse-test-data` (8.1–8.2, the store part of 5.10, `@SynapseDataTest`).
   It covers acceptance 8, 10 (data modules), 15 (stores), 17 (stores), 19 (`@SynapseDataTest` is provided; the
-  reference app uses it in plan 5) and 20 (auditing and ids). Liquibase waits for a maintainer decision. Done (see
+  reference app uses it in plan 5) and 20 (auditing and ids). Liquibase waited for a maintainer decision (not in 2.0, decided 2026-11-20). Done (see
   the *Done (plan 4)* note above).
 - Plan 5 (archetypes, parent, samples, reference app)
   ([plans/2026-11-07-p1-reference-app.md](plans/2026-11-07-p1-reference-app.md)). It runs on a local integration
@@ -1568,6 +1850,14 @@ no run has so far:
     2026-11-08.
 
   Done (see the *Done (plan 5)* note above).
+- Contract follow-up ([plans/2026-11-20-p1-followups-contract.md](plans/2026-11-20-p1-followups-contract.md)),
+  the first of the four follow-up plans (then data, observability, API surface): a nested rejection is `INTERNAL` on
+  every thread (5.2); parity by major version, one violation path format with wire names, an unsent collection binds
+  empty, and required scalars need presence over gRPC (6.1); a repeated cookie takes the first copy, Spring MVC's
+  handlers answer before Synapse's resolver, and the capped page's token (6.2); a hand-written gRPC service's status
+  keeps only its code (6.3); and the docs-only items (the weak-tag reason, update responses, `If-Match` on a missing
+  resource, the `ALREADY_EXISTS` override, the cursor-key rotation guideline). `TRANSACTION_CONFLICT` and its status
+  mapping are in the data follow-up.
 - Later phase, own branch: a rate-limited failure-log policy (a one-line WARN on every occurrence, the stack once per
   window, the translator WARN included, and a "dropped N" summary for the burst limit).
 
@@ -1596,6 +1886,18 @@ rows of `synapse-test`; section 7. Sample `internal-grpc`: service A calls servi
 - A `spring.http.serviceclient.<name>.*` key set for a Synapse client name logs a startup warning; a client named
   `defaults` fails startup.
 
+**Downstream gRPC statuses (to design in the P2 plan; maintainer, 2026-11-20, decision 24).** In P1 a hand-written
+gRPC service's status keeps only its code (6.3), so a downstream `INVALID_ARGUMENT` or `NOT_FOUND` that the service
+forwards still blames Synapse's caller. Google's design guide asks a server to move the blame ("a server that
+receives an INVALID_ARGUMENT error from another service should propagate an INTERNAL to its own caller"). P2 adds a
+client-side origin marker: a Synapse global client interceptor on the channels Spring gRPC creates attaches a marker
+cause to every non-OK status it receives, so the stub's `StatusRuntimeException` carries it. The server side then
+remaps a marked status: the caller-blaming codes (`INVALID_ARGUMENT`, `NOT_FOUND`, `ALREADY_EXISTS`,
+`FAILED_PRECONDITION`, `OUT_OF_RANGE`, `UNAUTHENTICATED`, `PERMISSION_DENIED`) become `INTERNAL`, `UNAVAILABLE` and
+`DEADLINE_EXCEEDED` are kept, and an unmarked (deliberate) status keeps its code. It needs no heuristics; it doesn't
+cover stubs on channels the application builds by hand, which the docs say. P2's own clients throw `SynapseException`
+anyway.
+
 ### P3: Kafka (M3)
 **Scope:** `synapse-kafka-core`, `synapse-publisher-kafka`, `synapse-subscriber-kafka`, Kafka rows of `synapse-test`;
 section 9. Sample `event-driven-kafka`.
@@ -1619,11 +1921,12 @@ section 9. Sample `event-driven-kafka`.
 - A DLT send logs one ERROR without payload; spans link producer and consumer.
 - `@SynapseKafkaTest` and the publisher capture are used by the module's tests and the sample.
 
-### P4: GraphQL, functions, security, scheduling, REST codecs (M4)
+### P4: GraphQL, functions, scheduling, REST codecs (M4)
 **Scope:** `synapse-api-graphql` (6.4), `synapse-api-function-aws` (6.5; the plan decides the binding and operating
-model), `synapse-security` (section 11), `synapse-scheduling` (section 10), REST XML codec and `BinaryContent`
-(6.2), `@SynapseGraphQlTest`. Samples `public-rest-api` (JWT, problem+json, OpenAPI), `graphql-bff`,
-`serverless-functions` (AWS), `scheduled-and-batch`.
+model), `synapse-scheduling` (section 10), REST XML codec and `BinaryContent` (6.2), `@SynapseGraphQlTest`. Samples
+`public-rest-api` (JWT from Boot's resource-server starter, problem+json, OpenAPI), `graphql-bff`,
+`serverless-functions` (AWS), `scheduled-and-batch`. `synapse-security` is not in P4: the maintainer deferred it
+whole to 2.x on 2026-11-20 (section 11).
 - One native plan, with the functions sample (moved from P1 plan 5 by the maintainer on 2026-11-08, so the GraalVM CI
   and the nightly workflow are built once for both):
   - The reference app's native image (nightly and in the release workflow) and its checks: `grpc-netty`, protobuf,
@@ -1634,6 +1937,13 @@ model), `synapse-security` (section 11), `synapse-scheduling` (section 10), REST
   - Full Spring AOT (opt-in in P1, decided 2026-11-08): the plan decides how far `process-aot` goes beyond the
     parent's `aot` profile (for example on by default, or with the native profile, which today gets the build
     environment's arguments only together with `aot`), and where the build environment's files are then required.
+  - Direction (confirmed 2026-11-20, maintainer): P4's AOT effort goes into the native image, which needs full Spring
+    AOT and keeps option A's rules (the build environment as the default profile, no active profile during
+    processing, the baked-profile check, the build-time switches). JVM startup is served by the image's AOT cache
+    without Spring AOT, so `-Paot` on the JVM isn't extended or made the default until Spring's modular AOT
+    (spring-framework #35471) shows whether bean registration can be left out. Option A assumes Spring's AOT
+    generators don't retain *default* profiles, which no Spring doc promises: `BakedProfiles` and the nightly
+    `BookstoreAotIT` are its canary, rechecked on every Framework or Boot minor upgrade.
 
 **Acceptance:**
 - A shared operation contract test suite runs the P1 `BookErrors` operations through GraphQL and the function adapter.
@@ -1644,8 +1954,6 @@ model), `synapse-security` (section 11), `synapse-scheduling` (section 10), REST
 - Native: the reference app builds and passes its ITs as a native image (nightly and in the release workflow); with
   the `resource:` URL rule (module configuration is read from a native image, origin `native image`) and Flyway's
   native resource scanning.
-- Security: 401 without a token (with `WWW-Authenticate`), 403 on scope mismatch, Actuator locked down, browser
-  headers on success and error responses, `trusted-header` mode reads a sidecar header and rejects requests without it.
 - Scheduling: only one instance runs a locked job; a run-once job exits with the documented code; a Spring Batch job
   stores its repository on a named store and calls an operation per chunk.
 - Content negotiation for JSON and XML, including `application/problem+xml`; `BinaryContent` upload/download streams
@@ -1660,12 +1968,40 @@ are built with Boot's builders; a CRUD + auditing + optimistic-locking IT runs (
 SQL Server nightly); Redis store and cache serializers are JSON with restricted typing, never JDK serialization;
 `@SynapseDataTest("<store>")` starts only that store.
 
+**Before the first P5 vendor** (decided 2026-11-20, maintainer): the SQLState class 53 rule (insufficient resources →
+`UNAVAILABLE`) moves from `synapse-data-core` behind `DataStoreVendor`, since class 53 is PostgreSQL's and DB2's, not
+the SQL standard's; data-core keeps only the standard states. Each vendor module recognises its own driver's
+transaction-conflict codes through `DataStoreVendor.transactionConflict` (vendor codes collide: 1205 is a deadlock
+victim on SQL Server and a lock wait timeout on MySQL): SQL Server 1205 and 1222, Oracle ORA-00060, ORA-08177,
+ORA-00054 and ORA-30006, MySQL 1213, 1205 and 3572. Each vendor lists the driver properties that would change where
+or as which login user a store connects (rejected) and those that apply session settings (allowed with a WARN), as
+PostgreSQL's `options` is. Re-check on each vendor that `TRANSACTION_CONFLICT`'s promise holds (Oracle rolls back only
+the statement; Spring rolls back the transaction when the exception leaves it).
+
 ### P6: GA hardening (2.0.0)
 **Scope:** `synapse-utilities`; archetypes generated from the reference app; docs complete (every module, property
 tables, error tables, compatibility matrix); v1 → V2 migration guide covering every module; API-stability gates
 active (japicmp baseline, metadata diff); security review with a threat model per plugin; reference sample complete
 across all plugins; `SECURITY.md` and the v1 README announce the 0.4.x end-of-life date (GA + 6 months); release
-2.0.0.
+2.0.0. Also in P6, recorded 2026-11-20:
+- The API pass reviews every `@Incubating` (3.5) and adds an ArchUnit gate over every published package outside
+  `..internal..`: no public or protected member, parameter, return type, supertype or type argument resolves to
+  `..internal..` (plan-5 review M1; today two hand-listed tests cover the REST and gRPC bindings only).
+- The `archetype-drift` check compares normalised poms too (without the parent, the coordinates and the
+  `maven.*.skip` properties), and derives the service file list as every file minus the domain files (plan-5 review
+  M4), or the archetypes are generated from the reference app, which removes the drift.
+- The plan-5 review's other Minors: the smoke-gate leniencies (M6), the paging texts kept in three places (M7), the
+  `postgres-image-pin` regex (M9), and a sample that shows masking and payload logging (B-M6, after the masking
+  follow-up settles what masking promises).
+- Still to do before GA: environment files recognised by their property source's `Origin` rather than Boot's source
+  names (I4, with the Boot-internals canaries), and external configuration (ConfigMaps, `configtree:`, `optional:`
+  imports, an empty external file) counting as an environment's file (Q6; DESIGN.md *Open questions*).
+
+Also in P6, the items plan 4 parked as "later" (confirmed 2026-11-20, maintainer): the `AuditorAware` back-off, the
+store qualifier rules, an application `JdbcCustomConversions`, JPA naming strategies and customizers (the startup
+WARNs of 2026-11-20 cover the beans stores don't use), the store health check on a platform thread,
+`.notFound(code, field)`, the gRPC servlet transport, Swagger UI in the BOM, snakeyaml, the PostgreSQL 15 default
+`database-version`, and plan 2c's Task 9.
 
 **Acceptance:** all gates green including nightly; every module documented; every sample and archetype built in CI;
 the migration guide covers every row of the module map in DESIGN.md.

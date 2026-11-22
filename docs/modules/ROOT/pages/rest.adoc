@@ -1263,8 +1263,9 @@ With CORS off, nothing changes: a pre-flight is answered by Spring MVC as before
    A health group's `additional-path` in the `server:` namespace (`server:/healthz`) is the exception: it is still one
    of Actuator's paths, left to Boot.
 * *Spring Security.* The settings are a `UrlBasedCorsConfigurationSource` bean named `corsConfigurationSource`. Spring
-  Security's CORS support picks up a `UrlBasedCorsConfigurationSource` bean (reference 7.1.2); `synapse-security`
-  verifies the combination. Define a bean with that name to replace Synapse's.
+  Security's CORS support picks up a `UrlBasedCorsConfigurationSource` bean (reference 7.1.2). Synapse doesn't test
+  the combination yet: that check comes with the security module, which is deferred to 2.x. Define a bean with that
+  name to replace Synapse's.
 * *Proxies.* The processor compares `Origin` with the scheme, host and port the service sees. Behind a proxy that
   changes them, a page served from the API's own public origin looks cross-origin and is rejected unless it is listed.
   Turn on Boot's forwarded-header handling (`server.forward-headers-strategy`) so that the service sees the public

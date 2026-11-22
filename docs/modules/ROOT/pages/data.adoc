@@ -540,7 +540,8 @@ An entity that implements `Auditable` (such as an `AuditedEntity`) is stamped on
 * The user comes from an application `AuditorAware<String>` bean when there is one, else from the `RequestContext`
   principal, else `synapse.data.auditing.system-user` (default `system`).
 
-WARNING: Nothing sets the `RequestContext` principal yet: `synapse-security` (P4) will, from a verified credential.
+WARNING: In 2.0 the REST and gRPC edges set no `RequestContext` principal: the security module that will set it
+from a verified credential is deferred to 2.x.
 Until then every write records `synapse.data.auditing.system-user`, writes inside REST requests included. To record
 the caller now, define an `AuditorAware<String>` bean that reads only a verified identity, never an unverified
 header.
