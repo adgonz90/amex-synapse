@@ -45,6 +45,16 @@
                 <include>.gitattributes</include>
                 <include>README.md</include>
                 <include>compose.yaml</include>
+                <include>buf.yaml</include>
+            </includes>
+        </fileSet>
+        <!-- The proto contract check, as Synapse's own (.github/workflows/buf.yml, buf.lock). Unfiltered: Velocity
+             would read the workflow's ${{ ... }} expressions as its own. -->
+        <fileSet filtered="false" encoding="UTF-8">
+            <directory></directory>
+            <includes>
+                <include>.github/workflows/buf.yml</include>
+                <include>buf.lock</include>
             </includes>
         </fileSet>
         <!-- The Maven Wrapper: the repository's mvnw, mvnw.cmd and maven-wrapper.properties, byte for byte (the

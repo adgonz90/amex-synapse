@@ -961,6 +961,27 @@ A native image is not verified yet: `grpc-netty`, protobuf's runtime reflection 
 mapped records and enums, and the lambdas' `writeReplace` method. The native build of the reference application, in
 P4, checks them.
 
+[#buf]
+== Contract checks with buf
+
+The `.proto` is the contract that clients in other languages generate from, so a change to it can break them without
+breaking any Java test: a field's number or type changed, a field removed, a file moved. The service archetype's
+projects, and Synapse's own repository, check the committed `.proto` files on every pull request with
+https://buf.build/docs/[buf] (`.github/workflows/buf.yml`, the `Proto contracts (buf)` check):
+
+* *Lint*: buf's `STANDARD` rules, except the three that ask each RPC for its own request and response messages
+  (`RPC_REQUEST_STANDARD_NAME`, `RPC_RESPONSE_STANDARD_NAME`, `RPC_REQUEST_RESPONSE_UNIQUE`): an AIP standard method
+  returns the resource itself, as `GetItem` returns `Item`.
+* *Breaking changes*: buf's `FILE` rules, against the pull request's base branch. They also catch changes that keep
+  Java compiling but change the wire or the generated code of other languages. A deliberate break, such as a new
+  major version, gets the `buf skip breaking` label.
+
+`buf.yaml` lists the modules (`contract-<name>/src/main/proto`) and depends on `buf.build/googleapis/googleapis` for
+`google/rpc/error_details.proto`, pinned by the committed `buf.lock`. The contract imports that file only so that
+server reflection serves the error details (<<errors>>), so `buf.yaml` exempts it from `IMPORT_USED`. The workflow
+pins the buf CLI by version and checksum and needs only `contents: read`: it pushes nothing to the Buf Schema Registry
+and comments nothing. Run the same checks locally with `buf lint` and `buf breaking --against '.git#branch=main'`.
+
 == Configuration
 
 The gRPC properties are `synapse.api.grpc.*`; all are in the

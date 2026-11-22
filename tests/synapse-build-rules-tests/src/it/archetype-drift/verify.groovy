@@ -119,6 +119,17 @@ def bookstorePackage = 'io/americanexpress/synapse/samples/bookstore/'
     }
 }
 
+// The service archetype ships the repository's proto contract check, copied byte for byte (unfiltered): the workflow
+// and buf.lock. Its buf.yaml differs (it names the generated contract module), so it is not compared.
+['.github/workflows/buf.yml', 'buf.lock'].each { path ->
+    def copy = new File(root, "${service}/${path}")
+    if (!copy.isFile()) {
+        differs << "${service}/${path} is missing: copy the repository's ${path} there".toString()
+    } else if (!Arrays.equals(copy.bytes, new File(root, path).bytes)) {
+        differs << "${service}/${path} differs from the repository's ${path}, byte for byte".toString()
+    }
+}
+
 assert differs.isEmpty() : 'an archetype has drifted from its sample; make the same change on both sides:\n' +
         differs.join('\n')
 true

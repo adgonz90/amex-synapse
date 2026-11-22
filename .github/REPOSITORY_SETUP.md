@@ -105,6 +105,7 @@ Both rulesets are proposals until the maintainers agree on them. *Rules → Rule
     - `Dependency review`
     - `Analyze (java-kotlin)`
     - `Build site`
+    - `Proto contracts (buf)`
     - `actionlint`, `zizmor` and `Publish script tests` (see the note below)
     - `New vulnerabilities in this PR`
     - the CLA check (reported by the CLA assistant, not by a workflow in this repository: pick the name it shows on a

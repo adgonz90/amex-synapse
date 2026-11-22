@@ -1,0 +1,57 @@
+name: Proto contracts
+
+# Checks the committed .proto files of the modules in buf.yaml on every pull request: buf lint (STANDARD rules, minus
+# the AIP-incompatible RPC naming ones) and buf breaking (FILE rules) against the pull request's base branch. Not
+# path-filtered, so it can be a required check (a filtered workflow that doesn't run never reports). A deliberate
+# breaking change gets the "buf skip breaking" label. Nothing is pushed to the Buf Schema Registry and nothing is
+# commented on the pull request.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read # check out the code
+
+concurrency:
+  group: buf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  buf:
+    name: Proto contracts (buf)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Breaking changes are judged with the base branch's own buf.yaml. Until the base branch has one (the pull request
+      # that adds buf), there is no configuration to compare against, so only lint runs.
+      - name: Check the base branch for a buf configuration
+        id: base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          if git cat-file -e FETCH_HEAD:buf.yaml 2> /dev/null; then
+            echo "has_buf=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::The base branch has no buf.yaml: lint only, no breaking-change check."
+            echo "has_buf=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: bufbuild/buf-action@37ac33d8960807670a6e9719080e885197b09cc6 # v1.7.0
+        with:
+          # The Buf CLI, pinned by version and by the SHA-256 of buf-Linux-x86_64 in the v1.75.0 release's sha256.txt.
+          version: 1.75.0
+          checksum: fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
+          lint: true
+          format: false
+          # Against the pull request's base branch (the action's default), unless the "buf skip breaking" label is set.
+          breaking: >-
+            ${{ steps.base.outputs.has_buf == 'true' &&
+            !contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
+          pr_comment: false
+          push: false
+          archive: false
