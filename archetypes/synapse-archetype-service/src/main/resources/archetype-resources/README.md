@@ -48,7 +48,7 @@ ${rootArtifactId}/
   compose.yaml                              ${serviceName}-db (5432), postgres:18.6-alpine by digest
   contract-${serviceName}/
     pom.xml                                 protobuf-java, grpc-protobuf, grpc-stub, jakarta.validation-api, synapse-core
-    src/main/proto/${serviceName}/v1/${serviceName}.proto
+    src/main/proto/${packageInPathFormat}/v1/${serviceName}.proto
                                             ItemService and its messages
     src/main/java/.../contract/             Item, CreateItemRequest, GetItemRequest, ItemErrors (ITEM_NOT_FOUND)
   data-${serviceName}/

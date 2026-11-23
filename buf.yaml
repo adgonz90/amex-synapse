@@ -25,13 +25,8 @@ lint:
     # Unused by any message on purpose: grpcurl needs it, so that reflection serves the ErrorInfo and BadRequest it
     # decodes (docs/modules/ROOT/pages/grpc.adoc, Errors).
     IMPORT_USED:
-      - samples/reference-bookstore/contract-bookstore/src/main/proto/bookstore/v1/bookstore.proto
-      - samples/grpc-inventory/contract-inventory/src/main/proto/inventory/v1/inventory.proto
-    # TEMPORARY: the packages are synapse.samples.<name>.v1 but the files are in <name>/v1. Remove these entries when
-    # the files move to synapse/samples/<name>/v1, after the contract task that rewrites these files' fields.
-    PACKAGE_DIRECTORY_MATCH:
-      - samples/reference-bookstore/contract-bookstore/src/main/proto/bookstore/v1/bookstore.proto
-      - samples/grpc-inventory/contract-inventory/src/main/proto/inventory/v1/inventory.proto
+      - samples/reference-bookstore/contract-bookstore/src/main/proto/synapse/samples/bookstore/v1/bookstore.proto
+      - samples/grpc-inventory/contract-inventory/src/main/proto/synapse/samples/inventory/v1/inventory.proto
     # The fixture enum is named like its Java constants, with a real value at zero, on purpose: the gRPC plugin's
     # tests map that shape too.
     ENUM_VALUE_PREFIX:

@@ -48,7 +48,7 @@ samples/reference-bookstore/
   scripts/image-smoke.sh                    runs an image in dev against PostgreSQL: /health, POST /books
   contract-bookstore/
     pom.xml                                 protobuf-java, grpc-protobuf, grpc-stub, jakarta.validation-api, synapse-core
-    src/main/proto/bookstore/v1/
+    src/main/proto/synapse/samples/bookstore/v1/
       bookstore.proto                       BookService and its messages
     src/main/java/.../bookstore/contract/
       Book                                  the record the operations return

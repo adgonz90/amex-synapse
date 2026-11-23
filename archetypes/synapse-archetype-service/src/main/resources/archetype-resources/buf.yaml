@@ -20,11 +20,7 @@ lint:
     # Unused by any message on purpose: grpcurl needs it, so that reflection serves the ErrorInfo and BadRequest it
     # decodes.
     IMPORT_USED:
-      - contract-${serviceName}/src/main/proto/${serviceName}/v1/${serviceName}.proto
-    # The package is ${package}.v1 but the file is in ${serviceName}/v1. Move it to the package's directory and remove
-    # this entry when you are ready to change the file's path.
-    PACKAGE_DIRECTORY_MATCH:
-      - contract-${serviceName}/src/main/proto/${serviceName}/v1/${serviceName}.proto
+      - contract-${serviceName}/src/main/proto/${packageInPathFormat}/v1/${serviceName}.proto
 breaking:
   use:
     - FILE
