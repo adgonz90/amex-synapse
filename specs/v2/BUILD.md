@@ -1503,6 +1503,12 @@ All must pass for a phase to be done; enforced in CI on every pull request unles
    release workflow.
 10. **Samples and archetypes** build and pass their ITs; archetypes generate a building project (from P1 plan 5).
 11. **API stability** (from GA): japicmp, `@Incubating`, metadata diff, internal-import rule (section 3.5).
+12. **Proto contracts:** `buf lint` (`STANDARD`, minus `RPC_REQUEST_STANDARD_NAME`, `RPC_RESPONSE_STANDARD_NAME` and
+    `RPC_REQUEST_RESPONSE_UNIQUE`) and `buf breaking` (`FILE` rules) against the pull request's base commit, on every
+    pull request to `main` (`.github/workflows/buf.yml`, the required `Proto contracts (buf)` check; `buf.yaml` lists
+    the modules). Not path-filtered. A deliberate break gets the `buf skip breaking` label; adding or removing it
+    re-runs the check. The service archetype ships the same check, its `buf.yml` and `buf.lock` byte for byte the
+    repository's (archetype-drift and the archetype's IT).
 
 **Release and snapshots.**
 - Conventional Commits; PR titles linted; squash merges.

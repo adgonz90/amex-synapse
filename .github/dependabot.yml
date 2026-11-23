@@ -15,13 +15,20 @@ updates:
 
   - package-ecosystem: "github-actions"
     # "/" covers .github/workflows and a root action.yml only; the composite actions under .github/actions pin
-    # actions too (directories accepts globs; directory does not).
-    directories: ["/", "/.github/actions/*"]
+    # actions too (directories accepts globs; directory does not). Any other directory is scanned for its own *.yml
+    # files, so the service archetype's copy of buf.yml is named by its workflows directory.
+    directories:
+      - "/"
+      - "/.github/actions/*"
+      - "/archetypes/synapse-archetype-service/src/main/resources/archetype-resources/.github/workflows"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
     groups:
+      # One weekly pull request: a group's version update covers every directory above, so it bumps the two copies of
+      # buf.yml together (the archetype-drift build rule and the archetype's IT require them equal, byte for byte).
+      # Security updates ignore groups and may change one copy only: then copy it over the other by hand.
       github-actions:
         patterns: ["*"]
 

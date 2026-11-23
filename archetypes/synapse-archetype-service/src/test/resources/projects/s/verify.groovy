@@ -117,12 +117,14 @@ assert new File(project, '.gitattributes').readLines()*.trim() == ['* text=auto 
 
 // Velocity left nothing behind: no template token survives, and every ${...} is one meant for the shell, Docker or
 // Maven, never an unresolved archetype property such as ${package} or ${serviceName}. The wrapper's files are copied
-// as is, never through Velocity (their shell variables are checked below, against the repository's).
-def wrapperFiles = ['mvnw', 'mvnw.cmd', '.mvn/wrapper/maven-wrapper.properties']
+// as is, never through Velocity (their shell variables are checked below, against the repository's), and so are the
+// proto check's workflow (GitHub's ${{ ... }} expressions) and buf.lock, which the archetype-drift build rule compares
+// with the repository's.
+def asIsFiles = ['mvnw', 'mvnw.cmd', '.mvn/wrapper/maven-wrapper.properties', '.github/workflows/buf.yml', 'buf.lock']
 def allowed = ~/ENV|JAR_FILE|project\.[\w.]+|otel-agent\.jar|opentelemetry-javaagent\.\w+/
 project.eachFileRecurse(groovy.io.FileType.FILES) { file ->
     def path = project.toPath().relativize(file.toPath()).toString().replace('\\', '/')
-    if (path =~ /^([^\/]+\/)?target\// || path == 'build.log' || wrapperFiles.contains(path)) {
+    if (path =~ /^([^\/]+\/)?target\// || path == 'build.log' || asIsFiles.contains(path)) {
         return
     }
     def text = file.text
@@ -148,11 +150,12 @@ def log = new File(project, 'build.log').text
 }
 assert !log.contains('in com.example.s.ServiceAotIT'): 'ServiceAotIT ran without -Paot'
 
-// The Maven Wrapper is the repository's, copied as is (an unfiltered fileSet), byte for byte: mvnw on LF and mvnw.cmd
-// on CRLF. basedir is archetypes/<archetype>/target/it/projects/<name>, so the repository root is six levels up. The
-// post-generation script sets mvnw executable; only a POSIX file system (Linux CI) can show it.
+// The Maven Wrapper and the proto check's workflow and buf.lock are the repository's, copied as is (unfiltered
+// fileSets), byte for byte: mvnw on LF and mvnw.cmd on CRLF. basedir is archetypes/<archetype>/target/it/projects/<name>,
+// so the repository root is six levels up. The post-generation script sets mvnw executable; only a POSIX file system
+// (Linux CI) can show it.
 def root = new File(basedir as File, '../../../../../..').canonicalFile
-wrapperFiles.each {
+asIsFiles.each {
     assert new File(project, it).isFile(): "no ${it}"
     assert new File(project, it).bytes == new File(root, it).bytes: "${it} differs from the repository's (${root})"
 }

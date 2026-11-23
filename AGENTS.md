@@ -73,6 +73,7 @@ modules); `./mvnw -N process-sources` does it alone.
   - `-DskipTests` also skips the coverage gate (there is no execution data), so a build with it is not a passing build.
   - Per-module JaCoCo floor: 80% line / 70% branch.
   - Pull requests must cover at least 90% of the lines they change.
+- **Proto contracts:** `buf lint` (STANDARD minus the three AIP RPC-naming rules) and `buf breaking` (FILE) on every pull request to `main` (`.github/workflows/buf.yml`, configured by `buf.yaml`). Renumbering or removing a field, or moving or renaming a `.proto`, is a breaking change; a deliberate break needs the `buf skip breaking` label. The service archetype's copies of `buf.yml` and `buf.lock` must equal the repository's byte for byte.
 - **Security:**
   - CodeQL, secret scanning and Dependabot.
   - Dependency review, which fails on new high-severity dependencies.

@@ -30,7 +30,7 @@
                       name="synapse-archetype-service">
     <requiredProperties>
         <!-- The service's name: the module suffix, spring.application.name, the data store (synapse.data.stores.<name>,
-             db/migration/<name>), a package segment (data.<name>) and the .proto's directory. Lower-case letters and
+             db/migration/<name>), a package segment (data.<name>) and the .proto's file name. Lower-case letters and
              digits only, and not a Java keyword or literal, so it is all of these at once. Hyphens are not allowed,
              since a package segment can't hold one. -->
         <requiredProperty key="serviceName">
@@ -45,6 +45,16 @@
                 <include>.gitattributes</include>
                 <include>README.md</include>
                 <include>compose.yaml</include>
+                <include>buf.yaml</include>
+            </includes>
+        </fileSet>
+        <!-- The proto contract check, as Synapse's own (.github/workflows/buf.yml, buf.lock). Unfiltered: Velocity
+             would read the workflow's ${{ ... }} expressions as its own. -->
+        <fileSet filtered="false" encoding="UTF-8">
+            <directory></directory>
+            <includes>
+                <include>.github/workflows/buf.yml</include>
+                <include>buf.lock</include>
             </includes>
         </fileSet>
         <!-- The Maven Wrapper: the repository's mvnw, mvnw.cmd and maven-wrapper.properties, byte for byte (the
@@ -69,7 +79,10 @@
                         <include>**/*.java</include>
                     </includes>
                 </fileSet>
-                <fileSet filtered="true" encoding="UTF-8">
+                <!-- Packaged, like the Java sources: v1/__serviceName__.proto is generated in
+                     ${packageInPathFormat}/v1, the directory of its package ${package}.v1 (buf's
+                     PACKAGE_DIRECTORY_MATCH). -->
+                <fileSet filtered="true" packaged="true" encoding="UTF-8">
                     <directory>src/main/proto</directory>
                     <includes>
                         <include>**/*.proto</include>

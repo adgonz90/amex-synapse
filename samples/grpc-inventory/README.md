@@ -795,7 +795,7 @@ samples/grpc-inventory/
   pom.xml                                aggregator, parent synapse-parent; modules below
   contract-inventory/
     pom.xml                              protobuf-java, grpc-protobuf, grpc-stub, jakarta.validation-api, synapse-core
-    src/main/proto/inventory/v1/
+    src/main/proto/synapse/samples/inventory/v1/
       inventory.proto                    InventoryService and its messages
     src/main/java/.../inventory/contract/
       Item, Location, Money, Discount    the records the operations return

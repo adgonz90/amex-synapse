@@ -1094,6 +1094,35 @@ A native image is not verified yet: `grpc-netty`, protobuf's runtime reflection 
 mapped records and enums, and the lambdas' `writeReplace` method. The native build of the reference application, in
 P4, checks them.
 
+[#buf]
+== Contract checks with buf
+
+The `.proto` is the contract that clients in other languages generate from, so a change to it can break them without
+breaking any Java test: a field's number or type changed, a field removed, a file moved. The service archetype's
+projects, and Synapse's own repository, check the committed `.proto` files on every pull request to `main` with
+https://buf.build/docs/[buf] (`.github/workflows/buf.yml`, the `Proto contracts (buf)` check):
+
+* *Lint*: buf's `STANDARD` rules, except the three that ask each RPC for its own request and response messages
+  (`RPC_REQUEST_STANDARD_NAME`, `RPC_RESPONSE_STANDARD_NAME`, `RPC_REQUEST_RESPONSE_UNIQUE`): an AIP standard method
+  returns the resource itself, as `GetItem` returns `Item`.
+* *Breaking changes*: buf's `FILE` rules, against the pull request's base commit. They also catch changes that keep
+  Java compiling but change the wire or the generated code of other languages, and moving or renaming a `.proto`
+  file. A deliberate break, such as a new major version, gets the `buf skip breaking` label (create it in the
+  repository first); adding or removing the label runs the check again. Until the base commit has a `buf.yaml` (the
+  pull request that adds buf), only lint runs.
+
+`buf.yaml` lists the modules (`contract-<name>/src/main/proto`) and depends on `buf.build/googleapis/googleapis` for
+`google/rpc/error_details.proto`, pinned by the committed `buf.lock`. The contract imports that file only so that
+server reflection serves the error details (<<errors>>), so `buf.yaml` exempts it from `IMPORT_USED`. The workflow
+pins the buf CLI by version and checksum and needs only `contents: read`: it pushes nothing to the Buf Schema Registry
+and comments nothing. Run the same checks locally with `buf lint` and `buf breaking --against '.git#branch=main'`.
+
+Dependabot can bump the two actions the workflow uses, but not the buf CLI or `buf.lock`. To bump buf, set the
+workflow's `version` and its `checksum` to the `buf-Linux-x86_64` line of the release's `sha256.txt`. To update the
+googleapis dependency, run `buf dep update`, which rewrites `buf.lock`. In Synapse's repository, copy `buf.yml` and
+`buf.lock` into the service archetype afterwards: its copies must stay byte for byte the same (the archetype-drift
+build rule checks them).
+
 [#native-access]
 == Native access (Java 24 and later)
 

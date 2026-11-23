@@ -76,8 +76,8 @@ mvn archetype:generate -DarchetypeGroupId=io.americanexpress.synapse \
 
 `serviceName` (default `example`) is the service's name. It is the module suffix (`contract-orders`, `data-orders`,
 `service-orders`), `spring.application.name`, the data store (`synapse.data.stores.orders`, `db/migration/orders`),
-a package segment (`data.orders`), the `.proto`'s directory, and part of the store's environment variables
-(`SYNAPSE_DATA_STORES_ORDERS_URL`).
+a package segment (`data.orders`), the `.proto`'s file name (`orders.proto`), and part of the store's environment
+variables (`SYNAPSE_DATA_STORES_ORDERS_URL`).
 
 So `serviceName` must be a lowercase letter followed by lowercase letters and digits: no hyphen, no upper case, and
 not a Java keyword or literal (`class`, `true`). `maven-archetype-plugin` checks the descriptor's `validationRegex`
@@ -97,7 +97,8 @@ What it generates, under `orders/`:
   with the `orders-db` PostgreSQL container for `local` (its image pinned by digest, as
   `SynapseContainers.POSTGRES_IMAGE`).
 * `contract-orders`: the records the operations take and return (`Item`, `CreateItemRequest`, `GetItemRequest`), the
-  error codes (`ItemErrors.ITEM_NOT_FOUND`) and `orders/v1/orders.proto`, from which the gRPC classes are generated.
+  error codes (`ItemErrors.ITEM_NOT_FOUND`) and `com/example/orders/v1/orders.proto` (the directory of its package,
+  `com.example.orders.v1`), from which the gRPC classes are generated.
 * `data-orders`: the store, `@SynapseDataStore("orders")` on JPA and PostgreSQL, the entity on `AuditedEntity`, its
   repository, the Flyway migration `db/migration/orders/V1__orders.sql`, and the store's settings in
   `META-INF/synapse/config.yaml` and `config-<env>.yaml` for `local`, `dev` and `build`, shipped in its jar.
@@ -113,6 +114,12 @@ What it generates, under `orders/`:
 * The OpenTelemetry Java agent recipe: the agent copied to `target/otel` with its SHA-256 checked, the `otel-agent`
   profile for `spring-boot:run`, and the configuration classes that hand Boot's bridge the agent's SDK and fail an
   AOT-mode start under the agent (see xref:opentelemetry-agent.adoc[OpenTelemetry Java agent]).
+* The proto contract check: `buf.yaml`, `buf.lock` and `.github/workflows/buf.yml`, which lint
+  `com/example/orders/v1/orders.proto` and check it for breaking changes on every pull request to `main` (see
+  xref:grpc.adoc#buf[Contract checks with buf]). The workflow assumes github.com, an x86_64 Linux runner (the buf
+  checksum is `buf-Linux-x86_64`'s) and a branch named `main`. On GitHub Enterprise Server, buf-action downloads buf
+  from github.com and needs a github.com token (read access to public repositories) in its `public_github_token`
+  input.
 * The tests: the operations with `@SynapseOperationTest`, the bindings with `@SynapseRestTest` and `@SynapseGrpcTest`,
   the repository with `@SynapseDataTest`, `ArchitectureTest`, and integration tests: one scenario suite run over both
   protocols against the whole service (`ServiceJvmIT`), health, the OpenAPI default and the audit user

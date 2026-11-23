@@ -1,0 +1,41 @@
+# buf checks the committed .proto files on every pull request to main (.github/workflows/buf.yml): lint with buf's
+# STANDARD rules, and breaking changes against the pull request's base commit with the FILE rules. Locally: buf lint;
+# buf breaking --against '.git#branch=main'. The service archetype ships the same check for generated services.
+version: v2
+modules:
+  # The samples' contracts: the files clients would generate from, so breaking changes are checked.
+  - path: samples/reference-bookstore/contract-bookstore/src/main/proto
+  - path: samples/grpc-inventory/contract-inventory/src/main/proto
+  # Test fixtures: linted, but free to change (see breaking.ignore).
+  - path: api/synapse-api-grpc/src/test/proto
+  - path: api/synapse-test-grpc/src/test/proto
+deps:
+  # google/rpc/error_details.proto, which the samples import so that server reflection serves the error details.
+  - buf.build/googleapis/googleapis
+lint:
+  use:
+    - STANDARD
+  except:
+    # AIP standard methods return the resource itself (GetBook returns Book) and share it between methods, which these
+    # three rules forbid.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+  ignore_only:
+    # Unused by any message on purpose: grpcurl needs it, so that reflection serves the ErrorInfo and BadRequest it
+    # decodes (docs/modules/ROOT/pages/grpc.adoc, Errors).
+    IMPORT_USED:
+      - samples/reference-bookstore/contract-bookstore/src/main/proto/synapse/samples/bookstore/v1/bookstore.proto
+      - samples/grpc-inventory/contract-inventory/src/main/proto/synapse/samples/inventory/v1/inventory.proto
+    # The fixture enum is named like its Java constants, with a real value at zero, on purpose: the gRPC plugin's
+    # tests map that shape too.
+    ENUM_VALUE_PREFIX:
+      - api/synapse-api-grpc/src/test/proto/synapse/fixture/v1/catalog.proto
+    ENUM_ZERO_VALUE_SUFFIX:
+      - api/synapse-api-grpc/src/test/proto/synapse/fixture/v1/catalog.proto
+breaking:
+  use:
+    - FILE
+  ignore:
+    - api/synapse-api-grpc/src/test/proto
+    - api/synapse-test-grpc/src/test/proto

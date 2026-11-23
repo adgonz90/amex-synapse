@@ -1,6 +1,9 @@
 .gitattributes
+.github/workflows/buf.yml
 .mvn/wrapper/maven-wrapper.properties
 README.md
+buf.lock
+buf.yaml
 compose.yaml
 contract-s/pom.xml
 contract-s/src/main/java/com/example/s/contract/CreateItemRequest.java
@@ -8,7 +11,7 @@ contract-s/src/main/java/com/example/s/contract/GetItemRequest.java
 contract-s/src/main/java/com/example/s/contract/Item.java
 contract-s/src/main/java/com/example/s/contract/ItemErrors.java
 contract-s/src/main/java/com/example/s/contract/package-info.java
-contract-s/src/main/proto/s/v1/s.proto
+contract-s/src/main/proto/com/example/s/v1/s.proto
 data-s/pom.xml
 data-s/src/main/java/com/example/s/data/s/ItemRepository.java
 data-s/src/main/java/com/example/s/data/s/ServiceStore.java
