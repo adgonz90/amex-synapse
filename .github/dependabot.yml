@@ -26,14 +26,9 @@ updates:
     cooldown:
       default-days: 7
     groups:
-      # The archetype's buf.yml must equal .github/workflows/buf.yml byte for byte (the archetype-drift build rule and
-      # the archetype's IT), so the actions it uses are bumped in one pull request per action across every directory
-      # (group-by). Without it, a group opens one pull request per directory, and each fails the byte-for-byte rule
-      # alone. A dependency goes to the first group it matches. group-by applies to version updates only: on a security
-      # update of one of these actions, make the two copies equal by hand.
-      archetype-workflow:
-        group-by: dependency-name
-        patterns: ["actions/checkout", "bufbuild/buf-action"]
+      # One weekly pull request: a group's version update covers every directory above, so it bumps the two copies of
+      # buf.yml together (the archetype-drift build rule and the archetype's IT require them equal, byte for byte).
+      # Security updates ignore groups and may change one copy only: then copy it over the other by hand.
       github-actions:
         patterns: ["*"]
 

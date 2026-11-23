@@ -447,7 +447,7 @@ Designs already agreed for deferred features. They are not built in 2.0; each ne
 | Schema-registry add-ons | `synapse-kafka-avro`, `synapse-kafka-protobuf`; Confluent vs Apicurio (license, Boot 4 fit). |
 | Kafka share groups | Spring Kafka 4.0 supports share consumers (KIP-932, "queues"); an option for work that doesn't need per-partition order. |
 | Protobuf REST codec | Content negotiation for `application/x-protobuf` on REST routes. |
-| Contract testing | buf is decided (maintainer, buf plan, 2026-11-22): `buf lint` and `buf breaking` are a required check on pull requests to `main`, in Synapse's repository and in the service archetype's projects (BUILD.md §14, gate 12). The rest waits for teams to show which tool they use: docs and possibly an add-on (OpenAPI diff, Pact, Spring Cloud Contract). |
+| Contract testing | buf (decided 2026-11-22, maintainer; recorded as BUILD.md §14, gate 12): `buf lint` and `buf breaking` are a required check on pull requests to `main`, in Synapse's repository and in the service archetype's projects. The rest waits for teams to show which tool they use: docs and possibly an add-on (OpenAPI diff, Pact, Spring Cloud Contract). |
 | OpenRewrite recipes | v1 → V2 and between 2.x minors. |
 | Field-level encryption | Replacing v1 `CryptoUtil` properly (KMS / Spring Security crypto). |
 
