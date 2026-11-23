@@ -9,7 +9,7 @@ name: Proto contracts
 # github.com token in its public_github_token input. The checksum is for an x86_64 Linux runner.
 on:
   pull_request:
-    branches: [main]
+    branches: [ci/buf-base]
     # labeled and unlabeled: the "buf skip breaking" label takes effect, or stops, without a new commit.
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
