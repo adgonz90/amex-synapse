@@ -1,13 +1,17 @@
 name: Proto contracts
 
-# Checks the committed .proto files of the modules in buf.yaml on every pull request: buf lint (STANDARD rules, minus
-# the AIP-incompatible RPC naming ones) and buf breaking (FILE rules) against the pull request's base branch. Not
-# path-filtered, so it can be a required check (a filtered workflow that doesn't run never reports). A deliberate
-# breaking change gets the "buf skip breaking" label. Nothing is pushed to the Buf Schema Registry and nothing is
-# commented on the pull request.
+# Checks the committed .proto files of the modules in buf.yaml on every pull request to main: buf lint (STANDARD rules,
+# minus the AIP-incompatible RPC naming ones) and buf breaking (FILE rules) against the pull request's base commit. Not
+# path-filtered and no job-level condition, so it can be a required check (a workflow that doesn't run never reports,
+# and a skipped job reports success). A deliberate breaking change gets the "buf skip breaking" label; adding or
+# removing a label runs the check again. Nothing is pushed to the Buf Schema Registry and nothing is commented on the
+# pull request. Assumes github.com: on GitHub Enterprise Server, buf-action downloads buf from github.com and needs a
+# github.com token in its public_github_token input. The checksum is for an x86_64 Linux runner.
 on:
   pull_request:
     branches: [main]
+    # labeled and unlabeled: the "buf skip breaking" label takes effect, or stops, without a new commit.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read # check out the code
@@ -24,20 +28,29 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The whole history, so that the next step finds the base commit locally. checkout authenticates its own
+          # fetch, so this works on a private repository too; buf fetches the base itself, with the job's token.
+          fetch-depth: 0
           persist-credentials: false
 
-      # Breaking changes are judged with the base branch's own buf.yaml. Until the base branch has one (the pull request
-      # that adds buf), there is no configuration to compare against, so only lint runs.
-      - name: Check the base branch for a buf configuration
+      # Breaking changes are judged with the base commit's own buf.yaml. Until the base has one (the pull request that
+      # adds buf), there is no configuration to compare against, so only lint runs. The base commit is the one buf
+      # compares against (buf-action's default), not the base branch's current tip.
+      - name: Check the base commit for a buf configuration
         id: base
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # A missing base commit (rewritten history on the base branch) fails the check rather than skip breaking: update
+        # the pull request's branch, which moves its base commit.
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
-          if git cat-file -e FETCH_HEAD:buf.yaml 2> /dev/null; then
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2> /dev/null; then
+            echo "::error::The base commit ${BASE_SHA} is not in the clone: the breaking-change check can't run."
+            exit 1
+          fi
+          if git cat-file -e "${BASE_SHA}:buf.yaml" 2> /dev/null; then
             echo "has_buf=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::The base branch has no buf.yaml: lint only, no breaking-change check."
+            echo "::notice::The base commit has no buf.yaml: lint only, no breaking-change check."
             echo "has_buf=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -46,9 +59,13 @@ jobs:
           # The Buf CLI, pinned by version and by the SHA-256 of buf-Linux-x86_64 in the v1.75.0 release's sha256.txt.
           version: 1.75.0
           checksum: fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
+          # The modules downloaded from the BSR, keyed on buf.lock. A cache saved by a pull request's run is restored
+          # only by that pull request's later runs (GitHub scopes it to the merge ref), and a cache failure is a
+          # warning, never a failed check.
+          cache: true
           lint: true
           format: false
-          # Against the pull request's base branch (the action's default), unless the "buf skip breaking" label is set.
+          # Against the pull request's base commit (the action's default), unless the "buf skip breaking" label is set.
           breaking: >-
             ${{ steps.base.outputs.has_buf == 'true' &&
             !contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}

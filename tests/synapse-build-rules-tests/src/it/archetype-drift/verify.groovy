@@ -120,13 +120,15 @@ def bookstorePackage = 'io/americanexpress/synapse/samples/bookstore/'
 }
 
 // The service archetype ships the repository's proto contract check, copied byte for byte (unfiltered): the workflow
-// and buf.lock. Its buf.yaml differs (it names the generated contract module), so it is not compared.
+// and buf.lock. Its buf.yaml differs (it names the generated contract module), so it is not compared. Dependabot's
+// version updates bump both copies of buf.yml in one pull request; its security updates and buf dep update don't.
 ['.github/workflows/buf.yml', 'buf.lock'].each { path ->
     def copy = new File(root, "${service}/${path}")
     if (!copy.isFile()) {
         differs << "${service}/${path} is missing: copy the repository's ${path} there".toString()
     } else if (!Arrays.equals(copy.bytes, new File(root, path).bytes)) {
-        differs << "${service}/${path} differs from the repository's ${path}, byte for byte".toString()
+        differs << ("${service}/${path} differs from the repository's ${path}, byte for byte: copy the updated one " +
+                "over the other").toString()
     }
 }
 

@@ -1,6 +1,6 @@
-# buf checks the committed .proto files on every pull request (.github/workflows/buf.yml): lint with buf's STANDARD
-# rules, and breaking changes against the base branch with the FILE rules. Locally: buf lint; buf breaking --against
-# '.git#branch=main'. The service archetype ships the same check for generated services.
+# buf checks the committed .proto files on every pull request to main (.github/workflows/buf.yml): lint with buf's
+# STANDARD rules, and breaking changes against the pull request's base commit with the FILE rules. Locally: buf lint;
+# buf breaking --against '.git#branch=main'. The service archetype ships the same check for generated services.
 version: v2
 modules:
   # The samples' contracts: the files clients would generate from, so breaking changes are checked.
