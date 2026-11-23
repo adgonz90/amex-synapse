@@ -59,7 +59,7 @@ message Book {
   // id: a UUID.
   string id = 1;
   // isbn.
-  string isbn = 2;
+  string isbn = 20;
   // title.
   string title = 3;
   // author.
