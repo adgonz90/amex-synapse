@@ -264,6 +264,24 @@ class OperationInterceptorTest {
     }
 
     @Test
+    void anEarlierCallsRejectionRethrownOnTheSameThreadIsInternal() {
+        OperationPipeline pipeline = pipeline().build();
+        SaveBookOperation<CreateBookRequest> create = pipeline
+                .wrapOperation(new SaveBookOperation<>(CreateBookRequest::title));
+        SynapseException earlier = catchThrowableOfType(SynapseException.class,
+                () -> create.execute(new CreateBookRequest("")));
+        GetBookOperation later = pipeline.wrapOperation(failing(earlier));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> later.execute("x"));
+
+        // Not nested, and on the same thread: the rejection is judged by the call that raised it, not by depth.
+        assertThat(earlier.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.violations()).isEmpty();
+        assertThat(failure.getCause()).isSameAs(earlier);
+    }
+
+    @Test
     void translatorTurnsForeignExceptionIntoSynapse() {
         List<String> called = new ArrayList<>();
         ExceptionTranslator none = ex -> {
@@ -394,6 +412,53 @@ class OperationInterceptorTest {
 
         assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
         assertThat(failure.violations()).containsExactly(new Violation("quantity", "must be less than or equal to 5"));
+    }
+
+    @Test
+    void handValidationOfTheInputRecordsItsCallWithTemplatesOnly() {
+        SaveBookOperation<OrderRequest> op = translating()
+                .wrapOperation(throwing(in -> new ConstraintViolationException(VALIDATOR.validate(in, Strict.class))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> op.execute(new OrderRequest("o-1", 9)));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        // Its cause records the call and names the template, never the interpolated message (Q11).
+        assertThat(failure.getCause()).isInstanceOfSatisfying(SanitizedViolations.class, cause -> {
+            assertThat(cause.call()).isNotNull();
+            assertThat(cause.getMessage()).isEqualTo("quantity: {jakarta.validation.constraints.Max.message}");
+        });
+        assertThat(OperationPipeline.raisedByAnotherCall(failure, new Object())).isTrue();
+    }
+
+    @Test
+    void aTranslationOfTheInputsRejectionThatHasACauseKeepsIt() {
+        IllegalStateException kept = new IllegalStateException("kept");
+        SaveBookOperation<OrderRequest> op = pipeline()
+                .translators(List.of(ex -> new SynapseException(BookErrors.BOOK_NOT_FOUND, kept, "o-1")))
+                .build()
+                .wrapOperation(throwing(in -> new ConstraintViolationException(VALIDATOR.validate(in, Strict.class))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> op.execute(new OrderRequest("o-1", 9)));
+
+        assertThat(failure.code()).isEqualTo("BOOK_NOT_FOUND");
+        assertThat(failure.getCause()).isSameAs(kept);
+    }
+
+    @Test
+    @SuppressWarnings("NullAway") // The case under test: a translator that sets the cause to null explicitly.
+    void aTranslationOfTheInputsRejectionWithANullCauseIsKept() {
+        SaveBookOperation<OrderRequest> op = pipeline()
+                .translators(List.of(ex -> new SynapseException(BookErrors.BOOK_NOT_FOUND, (Throwable) null, "o-1")))
+                .build()
+                .wrapOperation(throwing(in -> new ConstraintViolationException(VALIDATOR.validate(in, Strict.class))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> op.execute(new OrderRequest("o-1", 9)));
+
+        assertThat(failure.code()).isEqualTo("BOOK_NOT_FOUND");
+        assertThat(failure.getCause()).isNull();
     }
 
     @Test

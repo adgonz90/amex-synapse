@@ -17,11 +17,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -33,11 +37,19 @@ import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationView;
 import io.micrometer.observation.tck.TestObservationRegistry;
 import io.micrometer.observation.tck.TestObservationRegistryAssert;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import io.americanexpress.synapse.core.conditional.VersionCondition;
 import io.americanexpress.synapse.core.context.RequestContext;
@@ -486,5 +498,213 @@ class NestedInvocationTest {
                 .contains(" ERROR ", "Operation get-shelf failed with INTERNAL",
                         "violations=\"number: ${validatedValue} is too long\"")
                 .doesNotContain(SECRET);
+    }
+
+    /** Joins the future and rethrows the {@code SynapseException} it failed with, as a caller that unwraps it does. */
+    private static <T> T joinUnwrapped(CompletableFuture<T> future) {
+        try {
+            return future.join();
+        } catch (CompletionException wrapped) {
+            if (wrapped.getCause() instanceof SynapseException synapse) {
+                throw synapse;
+            }
+            throw wrapped;
+        }
+    }
+
+    /** Asserts a rethrown rejection of another call: {@code INTERNAL}, caused by the rejection with its violation. */
+    private static void assertRethrownRejection(SynapseException failure, SynapseErrors rejection, String field) {
+        assertInternalCausedBy(failure, rejection);
+        assertThat(failure.getCause())
+                .isInstanceOfSatisfying(SynapseException.class,
+                        cause -> assertThat(cause.violations()).extracting(Violation::field).containsExactly(field));
+    }
+
+    @Test
+    void commonPoolRejectionRethrownIsInternal() {
+        CountShelfOperation inner = pipeline.wrapOperation(new CountShelfOperation(ShelfRequest::id));
+        GetShelfOperation outer = pipeline
+                .wrapOperation(new GetShelfOperation(in -> joinUnwrapped(
+                        CompletableFuture.supplyAsync(() -> inner.execute(new ShelfRequest(""))))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute("x"));
+
+        assertRethrownRejection(failure, SynapseErrors.VALIDATION_FAILED, "id");
+        assertThat(logs.text())
+                .contains(" ERROR ", "Operation get-shelf failed with INTERNAL (INTERNAL)",
+                        "violations=\"id: {jakarta.validation.constraints.NotBlank.message}\"");
+    }
+
+    /** Runs a body in an {@code @Async} method. */
+    static class AsyncRunner {
+
+        @Async
+        public CompletableFuture<String> run(Supplier<String> body) {
+            return CompletableFuture.completedFuture(body.get());
+        }
+    }
+
+    /** {@code @Async} on an executor that propagates the context, as Synapse's task decorator does. */
+    @Configuration(proxyBeanMethods = false)
+    @EnableAsync
+    static class AsyncConfig {
+
+        @Bean
+        ThreadPoolTaskExecutor taskExecutor() {
+            ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+            executor.setThreadNamePrefix("async-op-");
+            executor.setTaskDecorator(new ContextPropagatingTaskDecorator());
+            return executor;
+        }
+
+        @Bean
+        AsyncRunner asyncRunner() {
+            return new AsyncRunner();
+        }
+    }
+
+    @Test
+    void asyncRejectionRethrownIsInternal() {
+        CountShelfOperation inner = pipeline.wrapOperation(new CountShelfOperation(ShelfRequest::id));
+        try (AnnotationConfigApplicationContext spring = new AnnotationConfigApplicationContext(AsyncConfig.class)) {
+            AsyncRunner async = spring.getBean(AsyncRunner.class);
+            GetShelfOperation outer = pipeline
+                    .wrapOperation(new GetShelfOperation(
+                            in -> joinUnwrapped(async.run(() -> inner.execute(new ShelfRequest(""))))));
+
+            SynapseException failure;
+            try (ContextScope scope = binder.open(new InboundContext("c-7", Map.of(), null, null, null))) {
+                failure = catchThrowableOfType(SynapseException.class, () -> outer.execute("x"));
+            }
+
+            assertRethrownRejection(failure, SynapseErrors.VALIDATION_FAILED, "id");
+        }
+        // The worker's own line: it ran on the executor with the caller's context (only a propagated context has c-7
+        // there), and it was outermost there, so its own call was VALIDATION_FAILED.
+        List<String> worker = logs
+                .text()
+                .lines()
+                .filter(line -> line.contains("Operation count-shelf failed"))
+                .toList();
+        assertThat(worker)
+                .singleElement(InstanceOfAssertFactories.STRING)
+                .contains("[async-op-1]", "correlationId=\"c-7\"",
+                        "Operation count-shelf failed with VALIDATION_FAILED");
+        assertThat(logs.text()).contains("Operation get-shelf failed with INTERNAL (INTERNAL)");
+    }
+
+    @Test
+    void rawThreadRejectionRethrownIsInternal() {
+        CountShelfOperation inner = pipeline.wrapOperation(new CountShelfOperation(ShelfRequest::id));
+        GetShelfOperation outer = pipeline.wrapOperation(new GetShelfOperation(in -> {
+            AtomicReference<@Nullable SynapseException> rejected = new AtomicReference<>();
+            Thread worker = new Thread(() -> {
+                try {
+                    inner.execute(new ShelfRequest(""));
+                } catch (SynapseException e) {
+                    rejected.set(e);
+                }
+            }, "raw-worker");
+            worker.start();
+            try {
+                worker.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return "interrupted";
+            }
+            throw Objects.requireNonNull(rejected.get());
+        }));
+
+        assertRethrownRejection(catchThrowableOfType(SynapseException.class, () -> outer.execute("x")),
+                SynapseErrors.VALIDATION_FAILED, "id");
+    }
+
+    @Test
+    void userBuiltValidationFailedPasses() {
+        SynapseException taken = SynapseException
+                .ofViolations(SynapseErrors.VALIDATION_FAILED, List.of(new Violation("isbn", "is taken")));
+        GetShelfOperation outer = pipeline.wrapOperation(new GetShelfOperation(in -> {
+            throw taken;
+        }));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute("x"));
+
+        assertThat(failure).isSameAs(taken);
+        assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        assertThat(failure.violations()).containsExactly(new Violation("isbn", "is taken"));
+    }
+
+    @Test
+    void ownRejectionStaysValidationFailed() {
+        CountShelfOperation outer = pipeline.wrapOperation(new CountShelfOperation(ShelfRequest::id));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class,
+                () -> outer.execute(new ShelfRequest("")));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        assertThat(failure.violations()).extracting(Violation::field).containsExactly("id");
+    }
+
+    @Test
+    @SuppressWarnings("NullAway") // The case under test: a service passes null for a required condition.
+    void preconditionRequiredFromAnotherThreadIsInternal() {
+        SaveBookOperation<MoveBook> inner = pipeline.wrapOperation(new SaveBookOperation<>(MoveBook::id));
+        GetShelfOperation outer = pipeline
+                .wrapOperation(new GetShelfOperation(
+                        in -> joinUnwrapped(
+                                CompletableFuture.supplyAsync(() -> inner.execute(new MoveBook(in, null))))));
+
+        assertRethrownRejection(catchThrowableOfType(SynapseException.class, () -> outer.execute("b1")),
+                SynapseErrors.PRECONDITION_REQUIRED, "version");
+        assertThat(inner.calls).isZero();
+    }
+
+    @Test
+    void aMiddleCallAlsoSeesARethrownRejectionAsInternal() {
+        CountShelfOperation inner = pipeline.wrapOperation(new CountShelfOperation(ShelfRequest::id));
+        GetBookOperation middle = pipeline
+                .wrapOperation(new GetBookOperation(in -> joinUnwrapped(
+                        CompletableFuture.supplyAsync(() -> inner.execute(new ShelfRequest(""))))));
+        GetShelfOperation outer = pipeline.wrapOperation(new GetShelfOperation(in -> {
+            try {
+                return middle.execute(in);
+            } catch (SynapseException e) {
+                return e.code();
+            }
+        }));
+
+        assertThat(outer.execute("x")).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    void handValidatedRejectionOnAnotherThreadIsInternalWhenRethrown() {
+        OperationPipeline translating = OperationPipeline
+                .builder()
+                .clock(CLOCK)
+                .validator(VALIDATOR)
+                .observationRegistry(observations)
+                .contextBinder(binder)
+                .translators(List.of(new ConstraintViolationTranslator()))
+                .build();
+        SaveBookOperation<CheckedShelf> inner = translating.wrapOperation(new SaveBookOperation<>(in -> {
+            throw new ConstraintViolationException(VALIDATOR.validate(in, Strict.class));
+        }));
+        GetShelfOperation outer = translating
+                .wrapOperation(new GetShelfOperation(in -> joinUnwrapped(
+                        CompletableFuture.supplyAsync(() -> inner.execute(new CheckedShelf(in))))));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> outer.execute("long"));
+
+        assertRethrownRejection(failure, SynapseErrors.VALIDATION_FAILED, "id");
+        // Q11: the logged cause names the template, never the interpolated message.
+        assertThat(logs.text())
+                .contains(" ERROR ", "Operation get-shelf failed with INTERNAL (INTERNAL)",
+                        "violations=\"id: {jakarta.validation.constraints.Size.message}\"")
+                .doesNotContain("size must be between");
+        // Called first, on its own, the operation's hand validation is still the caller's own rejection.
+        SynapseException direct = catchThrowableOfType(SynapseException.class,
+                () -> inner.execute(new CheckedShelf("long")));
+        assertThat(direct.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+        assertThat(direct.violations()).containsExactly(new Violation("id", "size must be between 0 and 3"));
     }
 }

@@ -23,7 +23,8 @@ import org.jspecify.annotations.Nullable;
 public interface ExceptionTranslator {
 
     /**
-     * Translates the exception.
+     * Translates the exception. Return a new exception instance for each call, never a shared or cached one: Synapse
+     * may set the cause of a returned exception that has none.
      *
      * @param exception the exception that was thrown
      * @return the translation, or {@code null} when this translator does not handle the exception

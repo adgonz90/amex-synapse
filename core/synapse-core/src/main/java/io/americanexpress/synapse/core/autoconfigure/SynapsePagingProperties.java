@@ -26,7 +26,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param defaultSize Page size used when the caller does not ask for one. Must be at least 1 and at most max-size.
  * @param maxSize Largest page size a caller may ask for.
  * @param maxOffset Largest offset a caller may request; a larger one is rejected before the operation runs. Must not
- *     be negative.
+ *     be negative, and at most the largest long minus max-size, so the next page's offset fits a long.
  * @param cursor Settings of the opaque cursors the API plugins issue.
  */
 @ConfigurationProperties("synapse.paging")
@@ -37,7 +37,7 @@ public record SynapsePagingProperties(@DefaultValue("20") int defaultSize, @Defa
      * Validates the properties.
      *
      * @throws IllegalArgumentException unless {@code 1 <= defaultSize <= maxSize}, or when the offset limit is
-     *     negative
+     *     negative or above {@code Long.MAX_VALUE - maxSize}
      */
     public SynapsePagingProperties {
         if (defaultSize < 1 || defaultSize > maxSize) {
@@ -46,6 +46,12 @@ public record SynapsePagingProperties(@DefaultValue("20") int defaultSize, @Defa
         }
         if (maxOffset < 0) {
             throw new IllegalArgumentException("synapse.paging.max-offset must not be negative but was " + maxOffset);
+        }
+        // maxSize is at least 1 here, so the bound itself can't overflow; an offset at the cap plus a page size can't.
+        long largest = Long.MAX_VALUE - maxSize;
+        if (maxOffset > largest) {
+            throw new IllegalArgumentException("synapse.paging.max-offset must be at most " + largest
+                    + " (the largest long minus synapse.paging.max-size, " + maxSize + ") but was " + maxOffset);
         }
     }
 

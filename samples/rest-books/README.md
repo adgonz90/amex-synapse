@@ -231,8 +231,9 @@ curl -s "http://localhost:8080/books?sort=title&size=2&cursor=$NEXT"
 {"items":[{"id":"00000000-0000-0000-0000-000000000002","isbn":"978-0441478125","title":"The Left Hand of Darkness","author":"Ursula K. Le Guin","year":1969,"addedVia":null,"version":1}],"hasNext":false,"total":3}
 ```
 
-A page can also start at an offset, up to `synapse.paging.max-offset` (1000); beyond that, callers page by
-cursor. An offset page that has a next page gets a `nextCursor` and a `Link` too, which carry on from that page. This
+A page can also start at an offset, up to `synapse.paging.max-offset` (1000). Past it, the next page's token fails with
+`has reached the offset limit (1000); narrow the query or use keyset paging`, so page that far by keyset instead. An
+offset page that has a next page gets a `nextCursor` and a `Link` too, which carry on from that page. This
 one is the last:
 
 ```bash

@@ -17,10 +17,13 @@ import java.net.URI;
 import java.time.DayOfWeek;
 import java.time.Month;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.jspecify.annotations.Nullable;
@@ -581,6 +584,61 @@ final class BookRoutes {
     static class GetOpaqueAgainOperation implements QueryOperation<Void, Wrapper> {
         @Override
         public Wrapper execute(Void input) {
+            throw new UnsupportedOperationException("not called");
+        }
+    }
+
+    /**
+     * Collection components, which the binder binds empty when they aren't sent, so only those that must have items are
+     * required:
+     * <ul>
+     * <li>{@code GET /labels}: lists from the query (one {@code @NotEmpty}), a header ({@code @Size(min = 1)}) and a
+     * cookie, and a required
+     * string;</li>
+     * <li>{@code POST /labels}: a body of a list and a map only;</li>
+     * <li>{@code PUT /labels}: a body of a {@code @NotEmpty} list and a map.</li>
+     * </ul>
+     */
+    static List<RouteDefinition> collections() {
+        RestBindings bindings = RestBindings
+                .builder()
+                .get("/labels", new FindLabelsOperation())
+                .header("X-Tags", LabelQuery::headerTags)
+                .cookie("tags", LabelQuery::cookieTags)
+                .post("/labels", new SaveLabelsOperation())
+                .put("/labels", new ReplaceLabelsOperation())
+                .build();
+        return resolve(bindings, PagingSettings.defaults());
+    }
+
+    record LabelQuery(String owner, @NotEmpty List<String> tag, List<String> any,
+            @Size(min = 1) List<String> headerTags,
+            List<String> cookieTags) {
+    }
+
+    record Labels(List<String> tags, Map<String, Integer> counts) {
+    }
+
+    static class FindLabelsOperation implements QueryOperation<LabelQuery, String> {
+        @Override
+        public String execute(LabelQuery input) {
+            throw new UnsupportedOperationException("not called");
+        }
+    }
+
+    static class SaveLabelsOperation implements CommandOperation<Labels, String> {
+        @Override
+        public String execute(Labels input) {
+            throw new UnsupportedOperationException("not called");
+        }
+    }
+
+    record TaggedLabels(@NotEmpty List<String> tags, Map<String, Integer> counts) {
+    }
+
+    static class ReplaceLabelsOperation implements CommandOperation<TaggedLabels, String> {
+        @Override
+        public String execute(TaggedLabels input) {
             throw new UnsupportedOperationException("not called");
         }
     }

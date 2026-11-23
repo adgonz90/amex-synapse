@@ -38,6 +38,8 @@ class PagingViolationsTest {
         assertThat(PagingViolations.atLeast(1)).isEqualTo("must be greater than or equal to 1");
         assertThat(PagingViolations.atMost(100)).isEqualTo("must be less than or equal to 100");
         assertThat(PagingViolations.notCombinedWith("skip")).isEqualTo("must not be combined with skip");
+        assertThat(PagingViolations.offsetLimitReached(1000))
+                .isEqualTo("has reached the offset limit (1000); narrow the query or use keyset paging");
     }
 
     @Test

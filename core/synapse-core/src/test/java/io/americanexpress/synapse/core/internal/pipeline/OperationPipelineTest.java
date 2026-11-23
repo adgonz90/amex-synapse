@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.core.internal.pipeline;
 
 import java.util.List;
+import java.util.Objects;
 import jakarta.validation.constraints.NotBlank;
 
 import org.jspecify.annotations.Nullable;
@@ -25,10 +26,12 @@ import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.SaveBookOperation;
 import io.americanexpress.synapse.core.operation.BusinessOperation;
+import io.americanexpress.synapse.core.operation.QueryOperation;
 
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.CLOCK;
 import static io.americanexpress.synapse.core.internal.pipeline.PipelineFixtures.VALIDATOR;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 class OperationPipelineTest {
@@ -156,6 +159,80 @@ class OperationPipelineTest {
         assertThat(op.execute(new Holder())).isEqualTo("ran");
         assertThat(target.calls).isOne();
         assertThat(pipeline.requiredVersionComponents(Holder.class)).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("NullAway") // The case under test: a caller passes null for a required condition.
+    void rejectionRecordsItsCall() {
+        Object call = new Object();
+
+        SynapseException invalid = catchThrowableOfType(SynapseException.class,
+                () -> pipeline.validate(new Update("", VersionCondition.any()), call));
+        SynapseException missing = catchThrowableOfType(SynapseException.class,
+                () -> pipeline.requirePreconditions(new Update("b1", null), call));
+
+        for (SynapseException rejection : List.of(invalid, missing)) {
+            assertThat(OperationPipeline.raisedByAnotherCall(rejection, call)).isFalse();
+            assertThat(OperationPipeline.raisedByAnotherCall(rejection, new Object())).isTrue();
+            assertThat(rejection.getCause())
+                    .isInstanceOfSatisfying(SanitizedViolations.class,
+                            cause -> assertThat(cause.call()).isSameAs(call));
+        }
+    }
+
+    @Test
+    void aRejectionRecordsOneCall() {
+        SynapseException rejection = catchThrowableOfType(SynapseException.class,
+                () -> pipeline.validate(new Update("", VersionCondition.any()), new Object()));
+        SanitizedViolations cause = (SanitizedViolations) Objects.requireNonNull(rejection.getCause());
+
+        assertThatThrownBy(() -> cause.markCall(new Object())).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void onlyAPipelineRejectionIsRaisedByAnotherCall() {
+        SynapseException built = SynapseException
+                .ofViolations(SynapseErrors.VALIDATION_FAILED, List.of(new Violation("isbn", "is taken")));
+        SynapseException wrapped = new SynapseException(SynapseErrors.INTERNAL,
+                catchThrowableOfType(SynapseException.class,
+                        () -> pipeline.validate(new Update("", VersionCondition.any()), new Object())));
+
+        assertThat(OperationPipeline.raisedByAnotherCall(built, new Object())).isFalse();
+        // Only the rejection itself carries its call; a wrapper of it is the wrapping code's own failure.
+        assertThat(OperationPipeline.raisedByAnotherCall(wrapped, new Object())).isFalse();
+    }
+
+    /** A query named {@code list-prices} that calls a business operation and unwraps its {@code INTERNAL}. */
+    static class ListPrices implements QueryOperation<String, String> {
+
+        private final PriceUpdate business;
+
+        ListPrices(PriceUpdate business) {
+            this.business = business;
+        }
+
+        @Override
+        public String execute(String input) {
+            try {
+                return business.execute(new Update("", VersionCondition.any()));
+            } catch (SynapseException internal) {
+                throw (SynapseException) Objects.requireNonNull(internal.getCause());
+            }
+        }
+    }
+
+    @Test
+    void unwrappedBusinessRejectionIsInternal() {
+        PriceUpdate business = pipeline.wrapBusiness(new PriceUpdate());
+        ListPrices op = pipeline.wrapOperation(new ListPrices(business));
+
+        SynapseException failure = catchThrowableOfType(SynapseException.class, () -> op.execute("x"));
+
+        assertThat(failure.details()).isEqualTo(SynapseErrors.INTERNAL);
+        assertThat(failure.violations()).isEmpty();
+        assertThat(failure.getCause())
+                .isInstanceOfSatisfying(SynapseException.class,
+                        rejection -> assertThat(rejection.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED));
     }
 
     @Test

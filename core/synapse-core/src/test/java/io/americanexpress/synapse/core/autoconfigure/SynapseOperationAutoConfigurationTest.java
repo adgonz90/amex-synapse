@@ -521,10 +521,10 @@ class SynapseOperationAutoConfigurationTest {
         String compiledBindings(BindingDeclarations declarations) {
             declarations
                     .add(new BindingDeclaration("REST", "get-book", "GET /books/{id}", "BOOK_NOT_FOUND", null,
-                            null));
+                            null, null));
             declarations
                     .add(new BindingDeclaration("gRPC", "get-book", "bookstore.v1.Bookstore/GetBook", "NOT_FOUND",
-                            null, null));
+                            null, null, 1));
             return "compiled";
         }
     }

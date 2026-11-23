@@ -42,19 +42,19 @@ service DocConditionsService {
 }
 
 message PutDocRequest {
-  string id = 1;
-  string text = 2;
+  optional string id = 1;
+  optional string text = 2;
   string if_none_match = 3;
 }
 
 message ReadDocRequest {
-  string id = 1;
+  optional string id = 1;
   string if_none_match = 2;
 }
 
 message RenameDocRequest {
-  string id = 1;
-  string text = 2;
+  optional string id = 1;
+  optional string text = 2;
   string etag = 3;
 }
 
@@ -86,7 +86,7 @@ service NoResponseEtagService {
 }
 
 message OneofEtagRequest {
-  string id = 1;
+  optional string id = 1;
   oneof pick {
     string etag = 2;
     string other = 3;
@@ -132,16 +132,16 @@ message NumberDoc {
 }
 
 message GetDocRequest {
-  string id = 1;
+  optional string id = 1;
 }
 
 message CreateDocRequest {
-  string text = 1;
+  optional string text = 1;
 }
 
 message UpdateDocRequest {
-  string id = 1;
-  string text = 2;
+  optional string id = 1;
+  optional string text = 2;
   // Optional: empty for an unconditional update.
   string etag = 3;
   // Bound only by tests that give the input an If-None-Match condition; otherwise a value is refused on a write.
@@ -149,22 +149,22 @@ message UpdateDocRequest {
 }
 
 message DeleteDocRequest {
-  string id = 1;
+  optional string id = 1;
   // Required.
   string etag = 2;
 }
 
 message OptionalEtagRequest {
-  string id = 1;
+  optional string id = 1;
   optional string etag = 2;
 }
 
 message NumberEtagRequest {
-  string id = 1;
+  optional string id = 1;
   int64 etag = 2;
 }
 
 message ListEtagRequest {
-  string id = 1;
+  optional string id = 1;
   repeated string etag = 2;
 }

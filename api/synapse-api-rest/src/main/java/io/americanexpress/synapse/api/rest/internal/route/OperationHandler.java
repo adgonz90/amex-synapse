@@ -28,9 +28,11 @@ import org.springframework.web.servlet.function.ServerResponse;
 import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.binding.WireNames;
 import io.americanexpress.synapse.api.rest.internal.conditional.Preconditions;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestSizeLimits;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
+import io.americanexpress.synapse.api.rest.internal.error.RestProtocolException;
 import io.americanexpress.synapse.api.rest.internal.paging.CursorExtras;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.error.SynapseException;
@@ -50,12 +52,17 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * {@code If-Match}, is 412; a missing {@code If-Match} or {@code If-None-Match} that the input requires (a
  * {@code VersionCondition} component that isn't {@code @Nullable}) is 428. Binding already answers that one, since
  * the input can't be built without it, so its cursor is never read;</li>
+ * <li>sets {@link RestRequestAttributes#WIRE_NAMES}, so the problem names the operation's violations as the client
+ * sent them;</li>
  * <li>calls the operation bean, a proxy that runs the operation pipeline, and answers its {@code STALE_VERSION} as 412
  * when the request sent a bound {@code If-Match};</li>
  * <li>writes the response, wrapping a page's next cursor in a token bound to the same input.</li>
  * </ol>
  */
 public final class OperationHandler implements HandlerFunction<ServerResponse> {
+
+    /** What a route produces, as a 406 lists it in {@code Accept}, like Spring's. */
+    private static final Map<String, String> PRODUCED = Map.of(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
 
     private final RouteDefinition route;
 
@@ -74,6 +81,9 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
     /** The route's entries in the cursor scope: its version, on a versioned route. */
     private final Map<String, String> cursorExtras;
 
+    /** The route's wire names, which the problem renames the operation's violations to. */
+    private final WireNames wireNames;
+
     /**
      * Creates the handler.
      *
@@ -82,9 +92,10 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
      * @param writer writes the response
      * @param cursors unwraps the client's cursor token
      * @param paging the paging settings, for the cursor parameter's name and the offset cap
+     * @param wireNames the route's wire names
      */
     public OperationHandler(RouteDefinition route, RequestBinder binder, ResponseWriter writer, PageCursors cursors,
-            PagingSettings paging) {
+            PagingSettings paging, WireNames wireNames) {
         this.route = route;
         this.binder = binder;
         this.writer = writer;
@@ -92,6 +103,7 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
         this.cursorParameter = paging.cursor();
         this.maxOffset = paging.maxOffset();
         this.cursorExtras = CursorExtras.of(route);
+        this.wireNames = wireNames;
     }
 
     /**
@@ -117,6 +129,8 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
         Object input = cursors.unwrap(route.operationName(), bound, cursorExtras, cursorParameter, maxOffset);
         // After the 400s, just before the action (RFC 9110 §13.2.1).
         Preconditions.check(route, request);
+        // Every violation so far is the binder's, already in wire names; from here on they are the operation's.
+        request.servletRequest().setAttribute(RestRequestAttributes.WIRE_NAMES, wireNames);
         Object result;
         try {
             result = execute(route.operation(), input);
@@ -145,8 +159,9 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
         List<MediaType> accepted;
         try {
             accepted = MediaType.parseMediaTypes(values);
-        } catch (InvalidMediaTypeException e) {
-            throw new SynapseException(RestErrors.NOT_ACCEPTABLE, e);
+        } catch (InvalidMediaTypeException ignored) {
+            // An Accept that doesn't parse admits no type; the parse failure says nothing the caller needs.
+            throw new RestProtocolException(RestErrors.NOT_ACCEPTABLE, PRODUCED);
         }
         if (accepted.isEmpty()) {
             // An empty Accept header names no type, like no header.
@@ -157,6 +172,6 @@ public final class OperationHandler implements HandlerFunction<ServerResponse> {
                 return;
             }
         }
-        throw new SynapseException(RestErrors.NOT_ACCEPTABLE);
+        throw new RestProtocolException(RestErrors.NOT_ACCEPTABLE, PRODUCED);
     }
 }

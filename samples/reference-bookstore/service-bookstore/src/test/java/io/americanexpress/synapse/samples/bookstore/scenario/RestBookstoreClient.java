@@ -59,6 +59,8 @@ public final class RestBookstoreClient implements BookstoreClient {
 
     private final HttpClient http;
 
+    private Map<String, String> lastViolations = Map.of();
+
     /**
      * Creates the client.
      *
@@ -70,7 +72,7 @@ public final class RestBookstoreClient implements BookstoreClient {
     }
 
     @Override
-    public Outcome create(String isbn, String title, String author, @Nullable Integer year) {
+    public Outcome create(String isbn, @Nullable String title, String author, @Nullable Integer year) {
         HttpResponse<String> response = send(
                 request("/books").header("Content-Type", "application/json").POST(json(isbn, title, author, year)));
         if (response.statusCode() >= 400) {
@@ -88,7 +90,7 @@ public final class RestBookstoreClient implements BookstoreClient {
     }
 
     /** The answer to a GET of one book. */
-    private static Outcome read(HttpResponse<String> response) {
+    private Outcome read(HttpResponse<String> response) {
         if (response.statusCode() >= 400) {
             return failure(response);
         }
@@ -179,6 +181,11 @@ public final class RestBookstoreClient implements BookstoreClient {
     }
 
     @Override
+    public Map<String, String> lastViolations() {
+        return lastViolations;
+    }
+
+    @Override
     public void close() {
         http.close();
     }
@@ -198,10 +205,13 @@ public final class RestBookstoreClient implements BookstoreClient {
         }
     }
 
-    private static HttpRequest.BodyPublisher json(String isbn, String title, String author, @Nullable Integer year) {
+    private static HttpRequest.BodyPublisher json(String isbn, @Nullable String title, String author,
+            @Nullable Integer year) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("isbn", isbn);
-        body.put("title", title);
+        if (title != null) {
+            body.put("title", title);
+        }
         body.put("author", author);
         if (year != null) {
             body.put("publishedYear", year);
@@ -209,14 +219,21 @@ public final class RestBookstoreClient implements BookstoreClient {
         return HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body));
     }
 
-    /** A problem response: its code, its violations' fields, and the status its code must have. */
-    private static Outcome failure(HttpResponse<String> response) {
+    /**
+     * A problem response: its code, its violations' fields (their messages kept in {@link #lastViolations()}), and the
+     * status its code must have.
+     */
+    private Outcome failure(HttpResponse<String> response) {
         JsonNode problem = MAPPER.readTree(response.body());
         String code = problem.path("code").asString();
         List<String> violations = new ArrayList<>();
+        Map<String, String> messages = new LinkedHashMap<>();
         for (JsonNode violation : problem.path("violations")) {
-            violations.add(violation.path("field").asString());
+            String field = violation.path("field").asString();
+            violations.add(field);
+            messages.put(field, violation.path("message").asString());
         }
+        lastViolations = messages;
         Outcome failure = Outcome.failed(code, violations);
         assertThat(response.statusCode()).as("status of %s", code).isEqualTo(status(Outcome.details(code)));
         return failure;

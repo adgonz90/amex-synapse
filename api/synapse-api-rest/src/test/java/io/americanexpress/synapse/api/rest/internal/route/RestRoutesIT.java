@@ -16,7 +16,10 @@ package io.americanexpress.synapse.api.rest.internal.route;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Size;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Nested;
@@ -32,6 +35,8 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
@@ -144,6 +149,54 @@ class RestRoutesIT {
         assertThat(result.json().get("violations")).hasSize(1);
         assertThat(result.json().get("violations").get(0).get("field").asString()).startsWith("tag[0]");
         assertThat(call(client.get().uri("/tagged?tag=x")).json().get("tag").get(0).asString()).isEqualTo("x");
+    }
+
+    @Test
+    void notEmptyGivesTheSameViolationOnBothProtocols() {
+        // An unsent collection binds empty, as a gRPC repeated field is never missing, so the same operation's
+        // @NotEmpty answers over both protocols (GrpcBindingsIT sends no tags), not the binder's "must not be null".
+        Result result = call(client.post().uri("/labels").contentType(MediaType.APPLICATION_JSON).body("{}"));
+
+        assertThat(result.status()).isEqualTo(400);
+        assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        assertThat(result.json().get("violations")).hasSize(1);
+        assertThat(result.json().get("violations").get(0).get("field").asString()).isEqualTo("tags");
+        assertThat(result.json().get("violations").get(0).get("message").asString()).isEqualTo("must not be empty");
+    }
+
+    @Test
+    void unsentNestedFieldIsMustNotBeNullOnBothProtocols() {
+        // A non-null component is required at every depth of the body, as gRPC's presence rule answers the same input
+        // (GrpcBindingsIT leaves the author's country_code unset): the binder's "must not be null", not the operation's
+        // @NotBlank.
+        Result result = call(client
+                .post()
+                .uri("/items")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"item\":{\"name\":\"Emma\",\"author\":{\"name\":\"Jane Austen\"}}}"));
+
+        assertThat(result.status()).isEqualTo(400);
+        assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        assertThat(result.json().get("violations")).hasSize(1);
+        assertThat(result.json().get("violations").get(0).get("field").asString()).isEqualTo("item.author.countryCode");
+        assertThat(result.json().get("violations").get(0).get("message").asString()).isEqualTo("must not be null");
+    }
+
+    @Test
+    void sizeMaxOneListRejectsDuplicates() {
+        // A component that must not take a duplicate cookie opts in with Bean Validation; a single-valued one takes the
+        // first copy.
+        Result result = call(client.get().uri("/session").header(HttpHeaders.COOKIE, "session=a; session=b"));
+
+        assertThat(result.status()).isEqualTo(400);
+        assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        assertThat(result.json().get("violations")).hasSize(1);
+        assertThat(result.json().get("violations").get(0).get("field").asString()).isEqualTo("session");
+        assertThat(result.body()).doesNotContain("session=", "\"a\"", "\"b\"");
+
+        Result single = call(client.get().uri("/session").header(HttpHeaders.COOKIE, "session=a"));
+        assertThat(single.status()).isEqualTo(200);
+        assertThat(single.json().get("session").get(0).asString()).isEqualTo("a");
     }
 
     @Test
@@ -272,6 +325,30 @@ class RestRoutesIT {
         }
     }
 
+    /** The application's mapper names properties in snake case, so JSON names differ from component names. */
+    @Nested
+    @TestPropertySource(properties = "spring.jackson.property-naming-strategy=SNAKE_CASE")
+    @Import(EditionsConfiguration.class)
+    class SnakeCase {
+
+        @Autowired
+        private RestTestClient nestedClient;
+
+        @Test
+        void pipelineViolationUsesTheJsonName() {
+            Result result = call(nestedClient
+                    .post()
+                    .uri("/editions")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body("{\"published_year\":\"20266\"}"));
+
+            assertThat(result.status()).isEqualTo(400);
+            assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+            assertThat(result.json().get("violations")).hasSize(1);
+            assertThat(result.json().get("violations").get(0).get("field").asString()).isEqualTo("published_year");
+        }
+    }
+
     @SpringBootConfiguration
     @EnableAutoConfiguration
     static class TestApplication {
@@ -307,8 +384,24 @@ class RestRoutesIT {
         }
 
         @Bean
+        LabelItemOperation labelItemOperation() {
+            return new LabelItemOperation();
+        }
+
+        @Bean
+        SessionItemOperation sessionItemOperation() {
+            return new SessionItemOperation();
+        }
+
+        @Bean
+        CreateItemOperation createItemOperation() {
+            return new CreateItemOperation();
+        }
+
+        @Bean
         RestBindings books(GetBookOperation getBook, CreateBookOperation createBook, UpdateBookOperation updateBook,
-                DeleteBookOperation deleteBook, LatestBookOperation latestBook, TaggedOperation tagged) {
+                DeleteBookOperation deleteBook, LatestBookOperation latestBook, TaggedOperation tagged,
+                LabelItemOperation labelItem, SessionItemOperation sessionItem, CreateItemOperation createItem) {
             return RestBindings
                     .builder()
                     .get("/books/{id}", getBook)
@@ -319,6 +412,10 @@ class RestRoutesIT {
                     .delete("/books/{id}", deleteBook)
                     .get("/books/latest", latestBook)
                     .get("/tagged", tagged)
+                    .post("/labels", labelItem)
+                    .get("/session", sessionItem)
+                    .cookie("session", SessionItemRequest::session)
+                    .post("/items", createItem)
                     .build();
         }
     }
@@ -336,6 +433,63 @@ class RestRoutesIT {
     }
 
     record Tagged(List<@NotBlank String> tag) {
+    }
+
+    record EditionRequest(@Size(max = 3) String publishedYear) {
+    }
+
+    /** The input of the operation GrpcBindingsIT binds the same way: at least one tag. */
+    record LabelItemRequest(@NotEmpty List<String> tags) {
+    }
+
+    /** Every copy of the {@code session} cookie, at most one. */
+    record SessionItemRequest(@Size(max = 1) List<String> session) {
+    }
+
+    static class SessionItemOperation implements QueryOperation<SessionItemRequest, SessionItemRequest> {
+        @Override
+        public SessionItemRequest execute(SessionItemRequest input) {
+            return input;
+        }
+    }
+
+    /** The author of a new item, as GrpcBindingsIT binds it. */
+    record NewAuthor(String name, @NotBlank String countryCode) {
+    }
+
+    /** A new item, as GrpcBindingsIT binds it. */
+    record NewItem(@NotBlank String name, @Valid NewAuthor author, List<@NotBlank String> tags) {
+    }
+
+    record CreateItemInput(@Valid NewItem item) {
+    }
+
+    static class CreateItemOperation implements CommandOperation<CreateItemInput, CreateItemInput> {
+        @Override
+        public CreateItemInput execute(CreateItemInput input) {
+            return input;
+        }
+    }
+
+    static class LabelItemOperation implements CommandOperation<LabelItemRequest, LabelItemRequest> {
+        @Override
+        public LabelItemRequest execute(LabelItemRequest input) {
+            return input;
+        }
+    }
+
+    /** The edition route, served only in the SnakeCase context. */
+    static class EditionsConfiguration {
+
+        @Bean
+        CreateEditionOperation createEditionOperation() {
+            return new CreateEditionOperation();
+        }
+
+        @Bean
+        RestBindings editions(CreateEditionOperation createEdition) {
+            return RestBindings.builder().post("/editions", createEdition).build();
+        }
     }
 
     static class GetBookOperation implements QueryOperation<BookId, Optional<Book>> {
@@ -371,6 +525,13 @@ class RestRoutesIT {
     static class TaggedOperation implements QueryOperation<Tagged, Tagged> {
         @Override
         public Tagged execute(Tagged input) {
+            return input;
+        }
+    }
+
+    static class CreateEditionOperation implements CommandOperation<EditionRequest, EditionRequest> {
+        @Override
+        public EditionRequest execute(EditionRequest input) {
             return input;
         }
     }

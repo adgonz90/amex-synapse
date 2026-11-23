@@ -396,8 +396,10 @@ outermost first:
    nested call either failure is `INTERNAL`, with it as the logged cause (plan 2026-11-13, Q11). Each rejection
    records the call that raised it, so the rule holds on every thread: a call that receives a pipeline rejection
    raised by another call (an operation run on another thread, its failure unwrapped from a `Future` and rethrown)
-   turns it into `INTERNAL`, with the rejection as the logged cause. A `SynapseException` that code builds itself is
-   not a pipeline rejection and passes as it is (maintainer, 2026-11-19; plan 2026-11-20 contract, decision 3).
+   turns it into `INTERNAL`, with the rejection as the logged cause. A hand-validated rejection (step 6's translation
+   of a `ConstraintViolationException` on the call's own input) records its call too, so one that another call
+   receives is `INTERNAL` the same way. A `SynapseException` that code builds itself is not a pipeline rejection and
+   passes as it is (maintainer, 2026-11-19; plan 2026-11-20 contract, decision 3).
    A violation's field is the path of the rejected value: property names joined with dots, and `[index]` for a list
    or array element, a scalar element included (`tags[0]`, `items[2].sku`). Jakarta's container element node names
    (`<list element>` and the like) are left out, a `Set` element has no index, and a map key is never written: a
@@ -405,13 +407,16 @@ outermost first:
    property (`authorsByRank.countryCode`). Each API plugin renames the path to its wire names (6.1).
 5. **Execute.** A Spring `@Transactional` boundary, if present, sits inside the Synapse advisor (Synapse never opens
    transactions itself).
-6. **Translation:** `SynapseException` passes through; other exceptions go through the `ExceptionTranslator`s;
-   anything left becomes `INTERNAL` (cause logged, never exposed). A `ConstraintViolationException` reaches the
-   translators only when it is the thrown exception and every violation's root bean is the outermost call's input
-   (by identity); any other one, thrown or in the cause chain (a collaborator's method validation, an entity at
-   flush or commit), is `INTERNAL` without violations, and its logged cause names each violation by path and message
-   template, not by its interpolated message (Q11), for an exception the pipeline finds: the failure or one of its
-   first 9 causes, not a suppressed one (the cases this misses are in `core.adoc`, *Masking*).
+6. **Translation:** `SynapseException` passes through, except a pipeline rejection raised by another call, which is
+   `INTERNAL` (step 4); other exceptions go through the `ExceptionTranslator`s; anything left becomes `INTERNAL`
+   (cause logged, never exposed). A `ConstraintViolationException` reaches the translators only when it is the thrown
+   exception and every violation's root bean is the outermost call's input (by identity); any other one, thrown or in
+   the cause chain (a collaborator's method validation, an entity at flush or commit), is `INTERNAL` without
+   violations, and its logged cause names each violation by path and message template, not by its interpolated
+   message (Q11), for an exception the pipeline finds: the failure or one of its first 9 causes, not a suppressed one
+   (the cases this misses are in `core.adoc`, *Masking*). Its translation is a rejection of that call's input: unless
+   the translator gave it a cause of its own, it records the call, so a hand-validated rejection raised by another
+   call is `INTERNAL` (step 4). A translator returns a new exception for each call, since Synapse may set its cause.
 7. **Logging:** failures only, by the outermost invocation only (see *Logging*). Successful calls log nothing.
 
 `BusinessOperation` beans get a reduced pipeline: validation on `I` and a child observation `synapse.business`
@@ -627,16 +632,36 @@ An operation may call other operations (same pipeline, same `RequestContext`).
   value (path `/books/1`, body `"id": 2`), the request fails with `INVALID_INPUT`. Unknown fields are ignored.
 - **Collections:** a non-null collection (`List`, `Set`, `Collection`) or `Map` component is never `null`. Absent, or
   JSON `null` over REST, it binds empty on every protocol, as proto3 binds an absent `repeated` or `map` field
-  (proto3 can't tell absent from empty). "At least one item" is declared with `@NotEmpty` (or `@Size(min = 1)`),
+  (proto3 can't tell absent from empty). The exception is a REST collection bound to the whole body
+  (`.body(R::tags)`): a missing or empty body counts as `{}`, which is not a list, so it is `is not a valid value`;
+  a body of `null` binds empty. "At least one item" is declared with `@NotEmpty` (or `@Size(min = 1)`),
   AIP-203's meaning of a required repeated field, and gives the same violation on every protocol. A `@Nullable`
   collection component of the input record stays legal for REST-only operations (absent binds `null`; one inside a
   nested body record binds empty); gRPC can't bind it (6.3). Responses are
   unchanged (plan 2026-11-20 contract).
+- **Null items:** a `null` list, set or array item or map value is `must not be null` over REST, at every depth of
+  the body and whatever the item type (`stops[0]`, `tags[1]`; a set item or map value by its component, never the
+  key), each counted towards the 50-violation limit, as gRPC never reads a missing element and answers one that
+  reads as `null` the same way. An item that is a collection or map binds empty instead (see *Collections*). The
+  rule holds for every item type that isn't `@Nullable`, `JsonNode` and `Optional` included (Jackson would read
+  their `null` as `NullNode` or `Optional.empty()`). An item type that is JSpecify `@Nullable` (`List<@Nullable T>`,
+  `Map<K, @Nullable V>`, `@Nullable T[]`), or in unmarked code, passes its `null` through, and the OpenAPI document
+  lets those items be `null`; so a free-form body that must carry JSON nulls declares its item type `@Nullable`
+  (`Map<String, @Nullable JsonNode>`, whose `null` reaches the operation as `NullNode`). That is REST-only: gRPC
+  startup fails for a `@Nullable` item type of a record component (a repeated element or map value has no
+  presence). The check sees record components only; an operation's own `List<@Nullable T>` or
+  `PageResult<@Nullable T>` output fails at runtime (`INTERNAL`) instead, ledgered in the API-surface follow-up plan.
+  A wire limit stays: over gRPC an unset message map value can't be told from an empty one (protobuf fills in the
+  default), so it reads as an empty value: its required components are reported, and a value type with no required
+  component binds as an empty record, where REST rejects the `null` (maintainer, 2026-11-22, final review rounds 3
+  and 4 of the contract follow-up).
 - **Required scalars:** a non-null scalar component (a string, number, boolean, enum or bytes, a primitive included)
-  is missing when the caller doesn't send it, on every protocol: REST answers `must not be null`, and so does gRPC,
+  is missing when the caller doesn't send it, at every depth of the input (a nested record's component, in a list
+  item or a map value included), on every protocol: REST answers `must not be null` for a body property left out or
+  sent as `null` at any depth (a value Jackson reads with its own deserializer decides for itself), and so does gRPC,
   because a gRPC binding of one must use a field with presence (proto3 `optional`, a wrapper, or an enum whose zero
-  value is unspecified); startup fails otherwise, listing every such component and field in one failure (6.3;
-  plan 2026-11-20 contract).
+  value is unspecified); startup fails otherwise, listing every such component and field of a service in one
+  failure (6.3; plan 2026-11-20 contract).
 - **Violation names:** a violation's field is the core path (5.2) in the protocol's wire names: REST the JSON
   property as Jackson reads it, the query parameter, header, cookie or path variable as declared (6.2); gRPC the proto
   field path (6.3). One format on both: dots plus `[index]`, as `google.rpc.BadRequest.FieldViolation.field`
@@ -820,21 +845,33 @@ before Spring's, for escape-hatch controllers only). Synapse's resolver is no lo
 bean. A `WebMvcConfigurer` bean (`synapseRestExceptionResolverConfigurer`, backing off by name) adds two instances of
 it through `extendHandlerExceptionResolvers`. The order is Boot's `DefaultErrorAttributes`, then:
 1. Synapse's resolver for Synapse paths, first in Spring's composite. It answers only an exception raised on a path
-   that a Synapse route serves (any method, the `/v<N>` prefix included) whose handler is a Synapse handler or none
-   was found (`handler == null`: a missing or invalid API version, a 405 or 415 from annotated-mapping lookup). So on
-   a Synapse path the answer is always Synapse's problem, before any application advice (maintainer, 2026-11-20).
-   That includes a path a Synapse route shares with a controller: a 415 from the controller's own mapping lookup has
-   no handler yet, so it is Synapse's. The configurer resolves the routes lazily, inside
-   `extendHandlerExceptionResolvers`, because Spring MVC's configuration needs every `WebMvcConfigurer` while the
-   routes need its conversion service.
+   that a Synapse route's template matches (any method, the `/v<N>` prefix included; `/books/{id}` also matches a
+   controller's `/books/search`) whose handler is a Synapse handler or none was found (`handler == null`: a missing or
+   invalid API version, a 405 or 415 from annotated-mapping lookup). So on a Synapse path the answer is always
+   Synapse's problem, before any application advice (maintainer, 2026-11-20). That includes a path a Synapse route
+   shares with a controller: a 415 from the controller's own mapping lookup has no handler yet, so it is Synapse's.
+   It also answers the 404 of a path no handler serves (`NoResourceFoundException` from Boot's `/**` resource
+   handler, or `NoHandlerFoundException`) under a Synapse route's literal prefix: its declared path's segments up to
+   the first variable or pattern segment (one with `*`, `**` or `?`; `/api/books/{id}` claims `/api/books/**`, not
+   `/api/**`), under every version for a versioned
+   route (`/v1/books/{id}` and `/v3/books/{id}` claim `/v<any>/books/**`; `/v2/legacy/**` and `/v9/unknown` keep
+   Spring's 404). A route whose declared path starts with a variable (`/{slug}`, also right after the version)
+   claims only its own template, under every version when versioned. So an unknown path of the Synapse API is
+   `ROUTE_NOT_FOUND` whatever advice the application has, and whatever `spring.mvc.problemdetails.enabled` says;
+   any other 404 keeps Spring's order (maintainer, 2026-11-22, after the final review of the contract follow-up).
+   The configurer resolves the routes lazily, inside `extendHandlerExceptionResolvers`, because Spring MVC's
+   configuration needs every `WebMvcConfigurer` while the routes need its conversion service.
 2. `ExceptionHandlerExceptionResolver`: the application's `@ExceptionHandler` methods and `@ControllerAdvice` classes,
-   for its controllers (Synapse routes are `HandlerFunction`s, so advice never sees their failures).
+   for its controllers. Global advice would apply to a `HandlerFunction` too (Spring MVC 7), but a Synapse route's
+   failure never gets here: the Synapse-paths instance answered it in step 1.
 3. Synapse's main resolver, right after it (second when an application removed it). It answers every other exception.
 4. `ResponseStatusExceptionResolver` and `DefaultHandlerExceptionResolver`.
 
 Both Synapse instances return `null` in two cases: a committed response, and Spring Security's
 `AccessDeniedException` and `AuthenticationException` (subclasses included, matched by class name, so Synapse needs no
-Security dependency), which propagate to Security's `ExceptionTranslationFilter`.
+Security dependency; also when wrapped, found along the cause chain as Security's `ThrowableAnalyzer` finds them,
+bounded and cycle-safe, up to a `SynapseException`, which is Synapse's own answer, so method security inside an
+operation stays `INTERNAL` as on gRPC), which propagate to Security's `ExceptionTranslationFilter`.
 
 For an `ErrorResponse` (`ResponseStatusException` included), then for `@ResponseStatus` on the exception's class,
 looked up along the cause chain as Spring's `ResponseStatusExceptionResolver` does:
@@ -849,23 +886,29 @@ looked up along the cause chain as Spring's `ResponseStatusExceptionResolver` do
   order;
 - the exception's headers are copied (`Allow`, `Retry-After`);
 - the reason (`getReason()`, `@ResponseStatus.reason`, an `ErrorResponse`'s own problem detail) is the `detail` only
-  when `synapse.errors.include-detail` is `true`.
+  when `synapse.errors.include-detail` is `true`;
+- a 500, or a status outside 400-599, is plain `INTERNAL` (logged at ERROR with its stack trace): no headers are
+  copied and no reason is shown, even with `include-detail`.
 
 The servlet container's error dispatch maps a bare status by the same table, with the same two codes for a status
 outside it. While `spring.mvc.problemdetails.enabled` is `true`, startup logs one WARN: Boot's
-`ProblemDetailsExceptionHandler` then answers Spring MVC's exceptions from controllers in Spring's problem shape, not
-Synapse's (Synapse paths are not affected). Synapse doesn't turn it off.
+`ProblemDetailsExceptionHandler` then answers Spring MVC's exceptions from controllers, and the 404 of an unknown path
+that no Synapse route claims (under its literal prefix, or its own template for a route without one), in Spring's
+problem shape, not Synapse's (Synapse paths, and the unknown paths they claim, are not affected). Synapse doesn't turn
+it off.
 
 **API versioning:** off unless a binding uses `.version("2")`. A versioned route is served with `v` and its version as
 the first path segment: `.get("/books/{id}", getBook).version("2")` serves `/v2/books/{id}`. A version is
 `major[.minor[.patch]]`. Synapse then enables Spring Framework 7's API versioning with a path-segment resolver and a
 predicate so that only the paths of versioned routes are parsed, and makes the version optional (Spring requires one by
 default), so unversioned routes keep working; a versioned route carries its version in its path. A version that no route
-declares is 404 `ROUTE_NOT_FOUND`. The rest is tunable with Boot's `spring.mvc.apiversion.*` properties (`supported`,
-`detect-supported`, `default`, `use.header` and the other resolvers for escape-hatch controllers, and `required`, which
-then applies to every route). `spring.mvc.apiversion.use.path-segment` fails startup while a route is versioned:
-Boot's resolver would parse every path. Deprecated versions emit Spring's `Deprecation`, `Sunset` and `Link` headers
-through a bean of Spring's `ApiVersionDeprecationHandler`, which Boot applies.
+declares is 404 `ROUTE_NOT_FOUND` (under a versioned route's literal prefix, before any advice; 6.2 step 1). The rest
+is tunable with Boot's `spring.mvc.apiversion.*` properties (`supported`, `detect-supported`, `default`, `use.header`
+and the other resolvers for escape-hatch controllers, and `required`, which then applies to every route; with no
+versioned route and no `use.*` resolver, Spring's `ApiVersionConfigurer` has no resolver and fails startup).
+`spring.mvc.apiversion.use.path-segment` fails startup while a route is versioned: Boot's resolver would parse every
+path. Deprecated versions emit Spring's `Deprecation`, `Sunset` and `Link` headers through a bean of Spring's
+`ApiVersionDeprecationHandler`, which Boot applies.
 
 **CORS:** off by default. `synapse.api.rest.cors.allowed-origins` (exact origins such as `https://app.example.com`, or
 `*`), `.allowed-methods` (default `GET, HEAD, POST, PUT, DELETE`), `.allowed-headers` (default `*`), `.exposed-headers`
@@ -985,10 +1028,27 @@ with an RFC 6266-encoded filename. Content is streamed, never fully buffered.
   for violations (field paths in proto names, in 6.1's format). The status description is the detail, only when
   `synapse.errors.include-detail` is true. A hand-written service's own status (a thrown `StatusException` or
   `StatusRuntimeException`, or one passed to `responseObserver.onError(...)`, typically a downstream call's failure
-  forwarded) keeps only its code unless `include-detail` is true: its description, its `grpc-status-details-bin` and
-  its other trailers are dropped, and Synapse's `ErrorInfo` is always added, with the code that the status maps back to
-  (`NOT_FOUND`, `ABORTED` → `CONFLICT`, otherwise the category's code, an unknown status `INTERNAL`). A status from the
-  application's own `@GrpcAdvice` or Spring Security's handler is the application's answer and is left alone
+  forwarded) keeps only its code unless `include-detail` is true: its description and its other trailers are dropped,
+  and its `grpc-status-details-bin` is always replaced by Synapse's `ErrorInfo`, also under `include-detail`, which
+  keeps the description and the other trailers (the downstream `ErrorInfo` names the downstream domain, and its
+  `BadRequest` the downstream fields). The `ErrorInfo` carries the correlation id and the code
+  that the status maps back to (`INVALID_ARGUMENT`, `OUT_OF_RANGE` → `VALIDATION_FAILED` with no violations;
+  `PERMISSION_DENIED` → `FORBIDDEN`; `ABORTED` → `CONFLICT`; `FAILED_PRECONDITION` → `PRECONDITION_FAILED`;
+  `RESOURCE_EXHAUSTED` → `RATE_LIMITED`; `UNAUTHENTICATED`, `NOT_FOUND`, `ALREADY_EXISTS`, `UNAVAILABLE`,
+  `DEADLINE_EXCEEDED` → the code of the same name; any other `INTERNAL`), and each rewrite is one DEBUG line with the
+  code and the original description. The exception handler rewrites a thrown status; the context interceptor's call
+  wrapper rewrites a status the service closes its call with, except `UNKNOWN` with a cause that isn't a status, which
+  it leaves to Spring gRPC's exception handling call. Spring hands the handlers any cause of an `UNKNOWN`, a status
+  exception included; keeping an `UNKNOWN` whose cause is a status for itself, with the code `UNKNOWN`, is Synapse's
+  choice: passing it on would let Synapse's handler unwrap the inner code and move the blame to the caller. It costs a
+  user `@GrpcAdvice` for status exceptions the explicit `onError(Status.UNKNOWN.withCause(statusException))`, an
+  accepted cost. No Synapse-built status reaches that wrapper (Synapse's own statuses close the outer call; recorded
+  in the contract follow-up plan, C11), so it needs no mark; it never reads the
+  `ErrorInfo` domain, which any service without `spring.application.name` shares. The wrapper sees every close from
+  inside the context interceptor, so a server interceptor of the application's ordered after it (after 100, which
+  includes any interceptor without `@Order`) also keeps only its code; one ordered before it closes the outer call and
+  keeps its description (maintainer, 2026-11-22). A status from the application's own
+  `@GrpcAdvice` or Spring Security's handler is the application's answer and is left alone
   (maintainer, 2026-11-20, decision 24). A malformed request message is `INVALID_ARGUMENT` with `MALFORMED_REQUEST`.
   An unknown method is `UNIMPLEMENTED` with the code `METHOD_NOT_FOUND`. A message over the size limit is rejected by
   grpc-java with `RESOURCE_EXHAUSTED` and carries no `ErrorInfo`: grpc-java checks the size only once the call has
@@ -1285,7 +1345,7 @@ ships:
   the application secures the endpoint in its own Spring Security configuration.
 - Method security inside an operation answers `INTERNAL` (500): the pipeline turns an `AccessDeniedException` or
   `AuthenticationException` thrown there into `INTERNAL` before any edge sees it, unless the application registers
-  its own `ExceptionTranslator` for those exceptions (the last bullet below).
+  its own `ExceptionTranslator` for those exceptions (5.2, step 6; the last bullet below has the open choice).
 - The *access control per deployment model* question (DESIGN.md *Open questions*), the browser security headers,
   the Actuator lock-down, `trusted-header` mode and the check of Spring Security's use of the
   `corsConfigurationSource` bean (P1, plan 2c note) move to 2.x with the module.
@@ -1766,6 +1826,48 @@ no run has so far:
   `process-aot` goal page and the plugin's descriptor, not run on a build agent inside a cloud platform;
 - the nightly-only jobs (the full JDK 21 leg and `aot-reference`), which run only once the branch is pushed.
 
+**Done (contract follow-up, `plans/2026-11-20-p1-followups-contract.md`):** the maintainer's 2026-11-19/20 decisions
+on the REST/gRPC contract and error handling, on the branch `feature/v2-fu-contract`. What landed:
+- Core: a pipeline rejection records the call that raised it, so one raised by another call is `INTERNAL` on any
+  thread, a hand-validated one included (decision 3; 5.2); parity is compared per major version, with one WARN for
+  the bindings that have no counterpart of their version (decision 5; 6.1); violation paths have one format, with
+  item indexes and never a map key (decision 16; 5.2); the capped page gets a next-page token that fails with
+  `has reached the offset limit`, and `synapse.paging.max-offset` must leave room for one page below the largest
+  `long` (6.2).
+- REST: violations use wire names, JSON names in the body and the declared names elsewhere (decision 16; 6.1); a
+  non-null component left out at any depth of the body is `must not be null`, as over gRPC (6.1, *Required
+  scalars*); an unsent collection or map binds empty, as over gRPC, and OpenAPI documents it (6.1); a repeated cookie
+  takes the first copy, with a DEBUG line and the counter `synapse.rest.cookie.duplicates` (decision 6; 6.2); Spring
+  MVC's handlers answer before Synapse's resolver for controllers, Synapse answers first on Synapse paths and for an
+  unknown path under their literal prefixes (under any version), and Security's exceptions pass through, also wrapped
+  (decision 13; 6.2); a Spring status outside Synapse's table is kept, with `CLIENT_ERROR` and `SERVER_ERROR`
+  (decision 13; 6.2); a cursor combined with an offset names the configured offset parameter (decision 34, M8).
+- gRPC: a required scalar needs a field with presence, so an unsent one is `must not be null` as over REST, and every
+  sample and archetype proto declares such fields `optional` (6.1, 6.3); a hand-written service's own status keeps
+  only its code unless `include-detail` is `true` (decision 24; 6.3).
+- Docs only: the weak-tag reason (decision 9), update responses, `If-Match` on a missing resource, the
+  `ALREADY_EXISTS` override and the cursor-key rotation guideline (decision 32), in `grpc.adoc`, `rest.adoc` and
+  `core.adoc`; DESIGN.md §4.1 says what was built where it differs from a row.
+
+The provisional choices are the plan's decisions C1-C13: C1 every call applies the "raised by another call" rule; C2
+the per-call token, a fresh one for business operations; C3 how a version is read, with no floor rule; C4 a map value's
+sub-path; C5 REST names under a whole-body component and for unnameable parts; C6 the collections the empty rule
+covers; C7 what counts as a required scalar; C8 the cookie counter; C9 the precedence of a kept status; C10 the
+Synapse-paths resolver; C11 no mark on Synapse's own gRPC statuses (none reaches the service's `close()`); C12 the
+inverse table of a hand-written service's code; C13 the capped token. Where a ruling made while building it changed
+what the plan says, this file and DESIGN.md §4.1 state the result. Each task's modules passed
+`./mvnw -pl <modules> -am verify` locally (Windows, Docker on); the full builds are the plan's Task 13. Not verified,
+because only Linux CI or a later run can check it:
+- the 90% changed-line coverage gate, which only a pull request computes;
+- the nightly-only jobs (the full JDK 21 leg, `aot-reference` and mutation testing), which run only once the branch is
+  pushed;
+- a real Spring Security filter chain on the error dispatch: the tests use a hand-built filter on request dispatches
+  only, and the check comes with the security module (2.x);
+- that `spring.mvc.apiversion.required=true` with no versioned route fails startup: read in Spring's
+  `ApiVersionConfigurer` bytecode, not run;
+- the cursor-key figures of NIST SP 800-57 and SP 800-38D, quoted through the OWASP Key Management Cheat Sheet, not
+  read from NIST.
+
 **Carried to later P1 plans (plan 1 settled the core side):**
 - Plan 2a (REST edge), all done (see the *Done (plan 2a)* note above):
   - The edge opens the Synapse scope inside the server observation's span, with an IT asserting MDC and baggage on an
@@ -1857,7 +1959,7 @@ no run has so far:
   handlers answer before Synapse's resolver, and the capped page's token (6.2); a hand-written gRPC service's status
   keeps only its code (6.3); and the docs-only items (the weak-tag reason, update responses, `If-Match` on a missing
   resource, the `ALREADY_EXISTS` override, the cursor-key rotation guideline). `TRANSACTION_CONFLICT` and its status
-  mapping are in the data follow-up.
+  mapping are in the data follow-up. Done (see the *Done (contract follow-up)* note above).
 - Later phase, own branch: a rate-limited failure-log policy (a one-line WARN on every occurrence, the stack once per
   window, the translator WARN included, and a "dropped N" summary for the burst limit).
 
@@ -1896,7 +1998,13 @@ remaps a marked status: the caller-blaming codes (`INVALID_ARGUMENT`, `NOT_FOUND
 `FAILED_PRECONDITION`, `OUT_OF_RANGE`, `UNAUTHENTICATED`, `PERMISSION_DENIED`) become `INTERNAL`, `UNAVAILABLE` and
 `DEADLINE_EXCEEDED` are kept, and an unmarked (deliberate) status keeps its code. It needs no heuristics; it doesn't
 cover stubs on channels the application builds by hand, which the docs say. P2's own clients throw `SynapseException`
-anyway.
+anyway. Two points for the P2 design, found while building the contract follow-up:
+- The marker is a cause. P1's call wrapper leaves an `UNKNOWN` with a non-status cause to the exception handlers, so a
+  forwarded `UNKNOWN` carrying the marker would reach them as an unexpected failure (`INTERNAL`, logged at ERROR)
+  rather than be remapped; the wrapper must recognise the marker first.
+- Under `include-detail`, a downstream `x-correlation-id` trailer that a service forwards survives next to Synapse's
+  when headers were already sent (deferred; the fix is for `CorrelationEchoCall.close` to discard the key from the
+  trailers when headers were sent).
 
 ### P3: Kafka (M3)
 **Scope:** `synapse-kafka-core`, `synapse-publisher-kafka`, `synapse-subscriber-kafka`, Kafka rows of `synapse-test`;

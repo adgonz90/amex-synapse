@@ -68,7 +68,16 @@ import io.americanexpress.synapse.core.paging.PageResult;
  * name ({@link EnumNames}); {@code repeated} ↔ {@code List}; {@code map} ↔ {@code Map}; other messages ↔
  * records.</li>
  * <li>A {@code @Nullable} component needs a field with presence (a message, a wrapper, proto3 {@code optional}, a
- * {@code oneof} member), or an enum field whose zero value is unspecified.</li>
+ * {@code oneof} member), or an enum field whose zero value is unspecified. A {@code @Nullable} item type
+ * ({@code List<@Nullable T>}, {@code Map<K, @Nullable V>}) maps to no field: a repeated element or map value is always
+ * there.</li>
+ * <li>So does a non-null request component bound to a scalar field (not repeated, not a message: a string, bytes, a
+ * number, a bool or an enum), primitives included and at every depth of the request, because an unsent field without
+ * presence reads as its default and would bind silently, where REST reports the value missing. The token fields of a
+ * {@code VersionCondition}, the page fields of a {@code PageQuery} and {@code .context} components bind otherwise, and
+ * a response writes every value, so neither is checked. These problems are collected over the whole request and thrown
+ * as one {@link MappingException} ({@link MappingException#presenceOnly()}) once the request has mapped without any
+ * other problem.</li>
  * <li>A {@code VersionCondition<V>} component of the input record maps to the request's {@code string etag} field,
  * whatever its name: REST's entity tag token, parsed with {@code EntityTags}, its opaque value read as a {@code V} by
  * core's {@code VersionTokens}, the codec REST uses.
@@ -160,6 +169,9 @@ public final class MessageMapping {
     /** The records mapped so far, by type and message, so that a record that contains itself maps once. */
     private final Map<String, RecordConverter> records = new HashMap<>();
 
+    /** The request's required scalars bound to fields without presence, one line each, in mapping order. */
+    private final List<String> presence = new ArrayList<>();
+
     private MessageMapping(@Nullable Class<?> input, boolean write, PagingRules paging, List<FieldOverride> overrides,
             List<ContextSource> contexts) {
         this.reading = input != null;
@@ -186,7 +198,8 @@ public final class MessageMapping {
      * @param overrides the method's {@code .map} declarations (those of output records are ignored)
      * @param contexts the method's {@code .context} declarations
      * @return the reader
-     * @throws MappingException when the request can't be mapped to the input
+     * @throws MappingException when the request can't be mapped to the input; one listing every required scalar
+     *         without presence, when that is the only problem
      */
     public static RecordReader reader(Descriptor message, Class<?> recordType, List<FieldOverride> overrides,
             List<ContextSource> contexts) {
@@ -203,7 +216,8 @@ public final class MessageMapping {
      * @param write whether the method is bound to a {@code CommandOperation}: as REST checks a write's preconditions
      *        only, a weak or unbound entity tag fails a write and is ignored or bound on a read
      * @return the reader
-     * @throws MappingException when the request can't be mapped to the input
+     * @throws MappingException when the request can't be mapped to the input; one listing every required scalar
+     *         without presence, when that is the only problem
      */
     public static RecordReader reader(Descriptor message, Class<?> recordType, List<FieldOverride> overrides,
             List<ContextSource> contexts, boolean write) {
@@ -222,7 +236,8 @@ public final class MessageMapping {
      * @param paging the page sizes, the offset cap and the method's sort keys
      * @return the reader
      * @throws MappingException when the request can't be mapped to the input, including a {@code PageQuery} whose page
-     *         fields are missing or have another shape
+     *         fields are missing or have another shape; one listing every required scalar without presence, when that
+     *         is the only problem
      */
     public static RecordReader reader(Descriptor message, Class<?> recordType, List<FieldOverride> overrides,
             List<ContextSource> contexts, boolean write, PagingRules paging) {
@@ -246,8 +261,12 @@ public final class MessageMapping {
                     "the input " + recordType.getSimpleName() + " can't be mapped to " + message.getFullName(),
                     "Declare the operation's input as a record, or as Void if it takes none.");
         }
-        RecordConverter root = new MessageMapping(recordType, write, paging, overrides, contexts)
-                .record(ResolvableType.forClass(recordType), message);
+        MessageMapping mapping = new MessageMapping(recordType, write, paging, overrides, contexts);
+        RecordConverter root = mapping.record(ResolvableType.forClass(recordType), message);
+        if (!mapping.presence.isEmpty()) {
+            // Only once the whole request mapped: any other problem fails at once, as it is found.
+            throw MappingException.presence(mapping.presence);
+        }
         FieldDescriptor ifMatch = null;
         Set<String> bound = new HashSet<>();
         for (ComponentMapping component : root.components()) {
@@ -591,6 +610,22 @@ public final class MessageMapping {
             throw new MappingException(name + " is @Nullable but " + site.field() + " has no presence",
                     "Use a wrapper type or proto3 optional for the field, or make the component non-null.");
         }
+        if (leaf.isRepeated() && component.nullableItems()) {
+            // REST passes a null item of a @Nullable item type through; a repeated element or map value is always
+            // there, so the two protocols would differ.
+            throw new MappingException(
+                    (leaf.isMapField() ? "the values of " : "the elements of ") + name + " are @Nullable but "
+                            + site.field() + " has no presence for them",
+                    "Make the item type non-null (a repeated or map field never holds a missing element), or bind the "
+                            + "operation over REST only.");
+        }
+        if (reading && !component.nullable() && isScalar(leaf) && !hasPresence(leaf)) {
+            // An unsent plain field reads as its default ("", 0, false, the zero enum value), so a missing value
+            // would bind silently, where REST reports it missing. Collected, so that one failure lists them all.
+            presence
+                    .add(name + " is required, but " + site.field() + " has no presence, so an unsent field would "
+                            + "bind its default");
+        }
         return ComponentMapping.field(component, path, protoPath, converter);
     }
 
@@ -773,6 +808,11 @@ public final class MessageMapping {
             return inner == null ? null : FieldConverters.wrapper(descriptor, value, inner);
         }
         return raw.isRecord() ? record(type, descriptor) : null;
+    }
+
+    /** Whether a field holds one plain value: not repeated (nor a map), and not a message. */
+    private static boolean isScalar(FieldDescriptor field) {
+        return !field.isRepeated() && field.getJavaType() != FieldDescriptor.JavaType.MESSAGE;
     }
 
     private static boolean hasPresence(FieldDescriptor field) {

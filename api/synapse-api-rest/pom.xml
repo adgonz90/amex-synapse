@@ -81,6 +81,12 @@
             <artifactId>spring-core-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Spring Security's ExceptionTranslationFilter: its exceptions pass Synapse's resolver and reach it. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-web</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Binding check fixtures: an operation that returns a @jakarta.persistence.Entity. -->
         <dependency>
             <groupId>jakarta.persistence</groupId>

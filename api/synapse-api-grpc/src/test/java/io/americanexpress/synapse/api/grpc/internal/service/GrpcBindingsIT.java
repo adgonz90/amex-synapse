@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
 
 import com.google.protobuf.Any;
@@ -72,6 +73,8 @@ import io.americanexpress.synapse.api.grpc.fixture.proto.DeleteItemRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.FailRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.GetItemRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Item;
+import io.americanexpress.synapse.api.grpc.fixture.proto.LabelItemRequest;
+import io.americanexpress.synapse.api.grpc.fixture.proto.LabelServiceGrpc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.ListTagsRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.WatchItemsRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.WatchServiceGrpc;
@@ -283,6 +286,28 @@ class GrpcBindingsIT {
     }
 
     @Test
+    void unsentNestedFieldIsMustNotBeNullOnBothProtocols() throws InterruptedException {
+        // A non-null component is required at every depth, and REST answers the same input the same way
+        // (RestRoutesIT leaves the author's countryCode out): the reader's "must not be null", not @NotBlank's.
+        Result<Item> result = call(stub -> stub
+                .createItem(CreateItemRequest
+                        .newBuilder()
+                        .setItem(
+                                Item.newBuilder().setName("Emma").setAuthor(Author.newBuilder().setName("Jane Austen")))
+                        .build()));
+
+        StatusRuntimeException e = result.error();
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+        assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("VALIDATION_FAILED");
+        assertThat(detail(e, BadRequest.class).getFieldViolationsList())
+                .singleElement()
+                .satisfies(violation -> {
+                    assertThat(violation.getField()).isEqualTo("item.author.country_code");
+                    assertThat(violation.getDescription()).isEqualTo("must not be null");
+                });
+    }
+
+    @Test
     void emptyRepeatedElementIsKeptAndValidated() throws InterruptedException {
         // REST keeps an empty query, path or cookie list item too (RestRoutesIT), so List<@NotBlank String> answers
         // VALIDATION_FAILED over both protocols.
@@ -302,7 +327,48 @@ class GrpcBindingsIT {
         assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("VALIDATION_FAILED");
         assertThat(detail(e, BadRequest.class).getFieldViolationsList())
                 .extracting(BadRequest.FieldViolation::getField)
-                .containsExactly("item.tags");
+                .containsExactly("item.tags[0]");
+    }
+
+    @Test
+    void scalarItemViolationNamesTheItem() throws InterruptedException {
+        Result<Item> result = call(stub -> stub
+                .createItem(CreateItemRequest
+                        .newBuilder()
+                        .setItem(Item
+                                .newBuilder()
+                                .setName("Emma")
+                                .setAuthor(Author.newBuilder().setName("Jane Austen").setCountryCode("GB"))
+                                .addTags("a")
+                                .addTags(""))
+                        .build()));
+
+        StatusRuntimeException e = result.error();
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+        // Core keeps a scalar item's index (ViolationPaths), and the proto path keeps it too.
+        assertThat(detail(e, BadRequest.class).getFieldViolationsList())
+                .extracting(BadRequest.FieldViolation::getField)
+                .containsExactly("item.tags[1]");
+    }
+
+    @Test
+    void notEmptyGivesTheSameViolationOnBothProtocols() throws InterruptedException {
+        // A repeated field is never missing, and REST binds an unsent collection empty too (RestRoutesIT), so the same
+        // operation's @NotEmpty answers over both protocols.
+        Result<Empty> result = call(port, channel -> LabelServiceGrpc
+                .newBlockingStub(channel)
+                .withDeadlineAfter(10, TimeUnit.SECONDS)
+                .labelItem(LabelItemRequest.getDefaultInstance()));
+
+        StatusRuntimeException e = result.error();
+        assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+        assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("VALIDATION_FAILED");
+        assertThat(detail(e, BadRequest.class).getFieldViolationsList())
+                .singleElement()
+                .satisfies(violation -> {
+                    assertThat(violation.getField()).isEqualTo("tags");
+                    assertThat(violation.getDescription()).isEqualTo("must not be empty");
+                });
     }
 
     @Test
@@ -593,6 +659,20 @@ class GrpcBindingsIT {
         }
     }
 
+    /** The input of {@code LabelItem}, the operation RestRoutesIT binds the same way: at least one tag. */
+    record LabelInput(@NotEmpty List<String> tags) {
+    }
+
+    /** Labels an item. */
+    static class LabelItemOperation implements CommandOperation<LabelInput, Void> {
+
+        @Override
+        @SuppressWarnings("NullAway") // A Void output is null.
+        public Void execute(LabelInput input) {
+            return null;
+        }
+    }
+
     /** A card number: masked, with a constraint message that would show the rejected value. */
     record Card(@Masked @Size(max = 3, message = "${validatedValue} is too long") String number) {
     }
@@ -689,6 +769,19 @@ class GrpcBindingsIT {
                     .map("barcode", ItemView::barcode)
                     .notFound(ItemErrors.ITEM_NOT_FOUND)
                     .bindAllByName()
+                    .build();
+        }
+
+        @Bean
+        LabelItemOperation labelItemOperation() {
+            return new LabelItemOperation();
+        }
+
+        @Bean
+        GrpcBindings labelBindings(LabelItemOperation labelItem) {
+            return GrpcBindings
+                    .service(LabelServiceGrpc.getServiceDescriptor())
+                    .unary(LabelServiceGrpc.getLabelItemMethod(), labelItem)
                     .build();
         }
 

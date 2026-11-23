@@ -334,16 +334,23 @@ class UnaryOperationHandlerTest {
     }
 
     @Test
-    void offsetPastTheCapHasNextWithoutAToken() throws Exception {
+    void offsetPastTheCapHasATokenThatFailsWhenUsed() throws Exception {
         SynapsePagingProperties capped = new SynapsePagingProperties(20, 100, 30, Compilers.PAGING.cursor());
-        UnaryOperationHandler handler = pagedHandler(new OffsetPages(true), Compilers.cursors(), capped);
+        PageCursors cursors = Compilers.cursors();
+        UnaryOperationHandler handler = pagedHandler(new OffsetPages(true), cursors, capped);
 
-        // skip 20 + size 20 is past max-offset 30: REST says hasNext and sends no Link.
+        // skip 20 + size 20 is past max-offset 30: the token REST sends in nextCursor and its Link, so an empty token
+        // still means the end.
         ListPagedBooksResponse page = invokePage(handler,
                 ListPagedBooksRequest.newBuilder().setShelf("s").setSkip(20).build().toByteArray());
 
         assertThat(page.getHasNext()).isTrue();
-        assertThat(page.getNextPageToken()).isEmpty();
+        assertThat(page.getNextPageToken()).isNotEmpty();
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> handler.invoke(shelfRequest("s", page.getNextPageToken(), ""), new Recorder()))
+                .satisfies(e -> assertThat(e.violations())
+                        .containsExactly(new Violation("page_token",
+                                "has reached the offset limit (30); narrow the query or use keyset paging")));
     }
 
     @Test
@@ -363,14 +370,15 @@ class UnaryOperationHandlerTest {
         SynapsePagingProperties lowered = new SynapsePagingProperties(20, 100, 10, Compilers.PAGING.cursor());
         OffsetPages operation = new OffsetPages(true);
 
-        // The token carries offset 20; the cap is now 10: REST's offset over the cap, on page_token.
+        // The token carries offset 20; the cap is now 10: the offset limit, on page_token.
         assertThatExceptionOfType(SynapseException.class)
                 .isThrownBy(() -> pagedHandler(operation, cursors, lowered)
                         .invoke(shelfRequest("s", token, ""), new Recorder()))
                 .satisfies(e -> {
                     assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
                     assertThat(e.violations())
-                            .containsExactly(new Violation("page_token", "must be less than or equal to 10"));
+                            .containsExactly(new Violation("page_token",
+                                    "has reached the offset limit (10); narrow the query or use keyset paging"));
                 });
         assertThat(operation.received).isEmpty();
     }

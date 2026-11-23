@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.api.rest.internal.error;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -21,6 +22,8 @@ import java.util.TreeSet;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Path;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -29,6 +32,8 @@ import org.slf4j.MDC;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.core.MethodParameter;
+import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
@@ -49,20 +54,25 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.RestErrors;
+import io.americanexpress.synapse.api.rest.internal.binding.WireNames;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.core.error.ErrorCategory;
-import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.pipeline.ViolationPaths;
 
 /**
  * Classifies a failure that reaches the REST edge into the error the caller sees, and logs it. It is the one
@@ -74,8 +84,13 @@ import io.americanexpress.synapse.core.error.Violation;
  * <li>a {@link SynapseException} is the error itself, and is not logged here;</li>
  * <li>a body over the size limit anywhere in the cause chain is {@code PAYLOAD_TOO_LARGE};</li>
  * <li>Spring MVC's protocol and client-error exceptions map to their error (validation failures with their
- * violations), logged at DEBUG, or at WARN when they map to {@code UNAVAILABLE} or {@code TIMEOUT}; Spring's API
- * version errors are {@code MISSING_API_VERSION} and {@code UNSUPPORTED_API_VERSION};</li>
+ * violations), logged at DEBUG, or at WARN without a stack trace when they map to {@code UNAVAILABLE},
+ * {@code TIMEOUT} or {@code SERVER_ERROR}; Spring's API version errors are {@code MISSING_API_VERSION} and
+ * {@code UNSUPPORTED_API_VERSION};</li>
+ * <li>any other {@code ErrorResponse}, then a {@code ResponseStatusException} or {@code @ResponseStatus} class on the
+ * exception or along its cause chain, maps its status through {@link StatusErrors}: a status outside the table is
+ * kept, as {@code CLIENT_ERROR} or {@code SERVER_ERROR}, and the exception's headers and reason go with it
+ * ({@link KeptStatusException}); a 500 is {@code INTERNAL};</li>
  * <li>anything else is {@code INTERNAL}, logged at ERROR with its stack trace.</li>
  * </ul>
  * Each line carries the edge's correlation id, also outside the request context (on ERROR and ASYNC dispatches).
@@ -85,6 +100,9 @@ final class RestExceptionClassifier {
 
     private static final Logger LOG = LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
 
+    /** How deep a cause chain is searched for a {@code @ResponseStatus}. */
+    private static final int MAX_CAUSES = 32;
+
     private RestExceptionClassifier() {
     }
 
@@ -93,10 +111,11 @@ final class RestExceptionClassifier {
      *
      * @param request the request, or the error dispatch request
      * @param failure the failure
+     * @param mapper the mapper Spring MVC reads a body with, which names a {@code @RequestBody}'s fields
      * @return the error to write
      */
-    static SynapseException classify(HttpServletRequest request, Throwable failure) {
-        SynapseException mapped = errorFor(failure);
+    static SynapseException classify(HttpServletRequest request, Throwable failure, JsonMapper mapper) {
+        SynapseException mapped = errorFor(failure, mapper);
         if (failure instanceof SynapseException) {
             return mapped;
         }
@@ -107,7 +126,8 @@ final class RestExceptionClassifier {
         }
         ErrorCategory category = mapped.category();
         try (MDC.MDCCloseable ignored = CorrelationMdc.put(request)) {
-            if (category == ErrorCategory.UNAVAILABLE || category == ErrorCategory.TIMEOUT) {
+            if (category == ErrorCategory.UNAVAILABLE || category == ErrorCategory.TIMEOUT
+                    || mapped.details() == RestErrors.SERVER_ERROR) {
                 LOG.warn("Request failed: {}", failure.toString());
             } else {
                 LOG.debug("Request rejected: {}", failure.toString());
@@ -120,13 +140,14 @@ final class RestExceptionClassifier {
      * Classifies the failure as {@link #classify} does, without logging it.
      *
      * @param failure the failure
+     * @param mapper the mapper Spring MVC reads a body with, which names a {@code @RequestBody}'s fields
      * @return the error to write
      */
-    static SynapseException errorFor(Throwable failure) {
+    static SynapseException errorFor(Throwable failure, JsonMapper mapper) {
         if (failure instanceof SynapseException synapse) {
             return synapse;
         }
-        SynapseException mapped = protocolError(failure);
+        SynapseException mapped = protocolError(failure, mapper);
         return mapped == null ? new SynapseException(SynapseErrors.INTERNAL, failure) : mapped;
     }
 
@@ -151,7 +172,7 @@ final class RestExceptionClassifier {
     }
 
     /** Maps a protocol or client-error failure, or returns null when the failure is not one. */
-    private static @Nullable SynapseException protocolError(Throwable failure) {
+    private static @Nullable SynapseException protocolError(Throwable failure, JsonMapper mapper) {
         // The size limit trips inside whatever reads the body (Spring's converters, Jackson, a filter), which may wrap
         // it.
         if (RequestTooLargeException.isCauseOf(failure)) {
@@ -163,11 +184,12 @@ final class RestExceptionClassifier {
         if (ex instanceof HttpMessageNotReadableException) {
             return new SynapseException(SynapseErrors.MALFORMED_REQUEST, ex);
         }
-        if (ex instanceof HttpMediaTypeNotSupportedException) {
-            return new SynapseException(RestErrors.UNSUPPORTED_MEDIA_TYPE, ex);
+        // Spring's headers name what the handler accepts: Accept, and Accept-Patch on a PATCH 415.
+        if (ex instanceof HttpMediaTypeNotSupportedException unsupported) {
+            return new RestProtocolException(RestErrors.UNSUPPORTED_MEDIA_TYPE, headers(unsupported.getHeaders()), ex);
         }
-        if (ex instanceof HttpMediaTypeNotAcceptableException) {
-            return new SynapseException(RestErrors.NOT_ACCEPTABLE, ex);
+        if (ex instanceof HttpMediaTypeNotAcceptableException notAcceptable) {
+            return new RestProtocolException(RestErrors.NOT_ACCEPTABLE, headers(notAcceptable.getHeaders()), ex);
         }
         if (ex instanceof NoResourceFoundException || ex instanceof NoHandlerFoundException) {
             return new SynapseException(RestErrors.ROUTE_NOT_FOUND, ex);
@@ -182,18 +204,13 @@ final class RestExceptionClassifier {
         if (ex instanceof InvalidApiVersionException) {
             return new SynapseException(RestErrors.UNSUPPORTED_API_VERSION, ex);
         }
-        return clientError(ex);
+        return clientError(ex, mapper);
     }
 
     /** Maps Spring MVC's own client-error exceptions, or returns null when the exception is not one of them. */
-    private static @Nullable SynapseException clientError(Exception ex) {
+    private static @Nullable SynapseException clientError(Exception ex, JsonMapper mapper) {
         if (ex instanceof MethodArgumentNotValidException invalid) {
-            List<Violation> violations = new ArrayList<>();
-            for (ObjectError error : invalid.getBindingResult().getAllErrors()) {
-                String name = error instanceof FieldError field ? field.getField() : error.getObjectName();
-                violations.add(new Violation(name, messageOf(error)));
-            }
-            return validationFailed(violations);
+            return validationFailed(violations(invalid, mapper));
         }
         if (ex instanceof HandlerMethodValidationException invalid) {
             return validationFailed(violations(invalid));
@@ -214,12 +231,45 @@ final class RestExceptionClassifier {
                     : validationFailed(List.of(new Violation(name, "must not be null")));
         }
         if (ex instanceof ErrorResponse response) {
-            ErrorDetails mapped = StatusErrors.forStatus(response.getStatusCode().value(), false);
-            if (mapped != SynapseErrors.INTERNAL) {
-                return new SynapseException(mapped, ex);
+            String reason = response instanceof ResponseStatusException status
+                    ? status.getReason()
+                    : response.getBody().getDetail();
+            return StatusErrors
+                    .keep(response.getStatusCode().value(), false, headers(response.getHeaders()), reason, ex);
+        }
+        return responseStatus(ex);
+    }
+
+    /**
+     * The status of a {@code ResponseStatusException} or of a class annotated with {@code @ResponseStatus}, on the
+     * exception or along its cause chain, as Spring's {@code ResponseStatusExceptionResolver} finds it: the first one
+     * wins. Returns null when there is none, or when it is {@code INTERNAL}.
+     */
+    private static @Nullable SynapseException responseStatus(Exception ex) {
+        Throwable current = ex;
+        // Bounded, in case a cause chain loops.
+        for (int depth = 0; current instanceof Exception && depth < MAX_CAUSES; depth++) {
+            if (current instanceof ResponseStatusException status) {
+                return StatusErrors
+                        .keep(status.getStatusCode().value(), false, headers(status.getHeaders()), status.getReason(),
+                                ex);
             }
+            ResponseStatus annotation = AnnotatedElementUtils
+                    .findMergedAnnotation(current.getClass(), ResponseStatus.class);
+            if (annotation != null) {
+                String reason = annotation.reason().isEmpty() ? null : annotation.reason();
+                return StatusErrors.keep(annotation.code().value(), false, Map.of(), reason, ex);
+            }
+            current = current.getCause();
         }
         return null;
+    }
+
+    /** The response headers of an exception, by name; a header with several values joins them with commas. */
+    private static Map<String, String> headers(HttpHeaders headers) {
+        Map<String, String> byName = new LinkedHashMap<>();
+        headers.forEach((name, values) -> byName.put(name, String.join(", ", values)));
+        return byName;
     }
 
     private static SynapseException mismatch(@Nullable String name) {
@@ -242,6 +292,40 @@ final class RestExceptionClassifier {
             return variable.getVariableName();
         }
         return null;
+    }
+
+    /**
+     * The violations of a failed {@code @Valid} argument. A {@code @RequestBody}'s fields are named as the mapper
+     * reads them, without map keys; a form or query object's are its parameter names already.
+     */
+    private static List<Violation> violations(MethodArgumentNotValidException ex, JsonMapper mapper) {
+        MethodParameter parameter = ex.getParameter();
+        Object target = ex.getBindingResult().getTarget();
+        Class<?> bodyType = !parameter.hasParameterAnnotation(RequestBody.class)
+                ? null
+                : target != null ? target.getClass() : parameter.nestedIfOptional().getNestedParameterType();
+        List<Violation> violations = new ArrayList<>();
+        for (ObjectError error : ex.getBindingResult().getAllErrors()) {
+            String name = error.getObjectName();
+            if (error instanceof FieldError field) {
+                name = bodyType == null ? field.getField() : bodyField(mapper, bodyType, field);
+            }
+            violations.add(new Violation(name, messageOf(error)));
+        }
+        return violations;
+    }
+
+    /**
+     * A {@code @RequestBody} field in JSON names. A Bean Validation error is named from its violation's path in core's
+     * format, which has no map keys; Spring's field writes a key as it is, and a key can read like an item index. Any
+     * other error (a Spring {@code Validator}'s) is read from Spring's field, cut at its first map.
+     */
+    private static String bodyField(JsonMapper mapper, Class<?> bodyType, FieldError field) {
+        if (field.contains(ConstraintViolation.class)) {
+            Path path = field.unwrap(ConstraintViolation.class).getPropertyPath();
+            return WireNames.body(mapper, bodyType, ViolationPaths.of(path), false);
+        }
+        return WireNames.body(mapper, bodyType, field.getField());
     }
 
     private static List<Violation> violations(HandlerMethodValidationException ex) {

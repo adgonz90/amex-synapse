@@ -39,6 +39,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -102,8 +103,38 @@ class SynapseErrorControllerTest {
         assertMaps(412, 412, "PRECONDITION_FAILED");
         assertMaps(429, 429, "RATE_LIMITED");
         assertMaps(504, 504, "DEADLINE_EXCEEDED");
-        assertMaps(418, 400, "MALFORMED_REQUEST");
-        assertMaps(502, 500, "INTERNAL");
+    }
+
+    @Test
+    void bareUnknownStatusKeepsItsStatus() {
+        assertMaps(418, 418, "CLIENT_ERROR");
+        assertMaps(422, 422, "CLIENT_ERROR");
+        assertMaps(499, 499, "CLIENT_ERROR");
+        assertMaps(502, 502, "SERVER_ERROR");
+        assertMaps(599, 599, "SERVER_ERROR");
+    }
+
+    @Test
+    void bare500IsInternal() {
+        // Pin (R-11): 500 was INTERNAL before; it is now in the table explicitly, not the fallback of a 5xx.
+        assertMaps(500, 500, "INTERNAL");
+    }
+
+    @Test
+    void bareStatusThatIsNoErrorIsInternal() {
+        // Pin (R-11): a status outside 400-599 on the error dispatch is a server fault, as before.
+        assertMaps(302, 500, "INTERNAL");
+        assertMaps(600, 500, "INTERNAL");
+    }
+
+    @Test
+    void bareServerErrorIsWrittenWithoutALogLine() {
+        // Pin (R-11): the container's bare statuses were never logged by Synapse; a kept 5xx isn't either.
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        List<ILoggingEvent> events = logged(() -> errorWithStatus(502, response));
+
+        assertThat(response.getStatus()).isEqualTo(502);
+        assertThat(events).isEmpty();
     }
 
     @Test
@@ -207,6 +238,8 @@ class SynapseErrorControllerTest {
                         new ResponseStatusException(HttpStatus.CONFLICT, "secret-text"),
                         new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "secret-text"),
                         new ResponseStatusException(HttpStatus.BAD_GATEWAY, "secret-text"),
+                        new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT, "secret-text"),
+                        new IllegalStateException("wrapper", new Gone()),
                         new IllegalStateException("boom"));
         for (Exception failure : failures) {
             MockHttpServletResponse resolved = new MockHttpServletResponse();
@@ -319,6 +352,13 @@ class SynapseErrorControllerTest {
             logger.detachAppender(appender);
         }
         return appender.list;
+    }
+
+    /** Gone for good: {@code @ResponseStatus(GONE)}. */
+    @ResponseStatus(HttpStatus.GONE)
+    static class Gone extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
     }
 
     @Test

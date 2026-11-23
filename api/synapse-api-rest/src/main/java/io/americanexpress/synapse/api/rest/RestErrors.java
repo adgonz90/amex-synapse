@@ -17,14 +17,16 @@ import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 
 import static io.americanexpress.synapse.core.error.ErrorCategory.FORBIDDEN;
+import static io.americanexpress.synapse.core.error.ErrorCategory.INTERNAL;
 import static io.americanexpress.synapse.core.error.ErrorCategory.INVALID_INPUT;
 import static io.americanexpress.synapse.core.error.ErrorCategory.NOT_FOUND;
 
 /**
  * Errors the REST edge reports for requests that never reach an operation. Each has a fixed HTTP status because the
- * status comes from the protocol, not from an operation's category. A request without a precondition the operation's
- * input requires is core's {@code SynapseErrors.PRECONDITION_REQUIRED}, which every protocol can raise; REST answers
- * it 428.
+ * status comes from the protocol, not from an operation's category, except {@link #CLIENT_ERROR} and
+ * {@link #SERVER_ERROR}, which keep the status Spring MVC or the container answered. A request without a precondition
+ * the operation's input requires is core's {@code SynapseErrors.PRECONDITION_REQUIRED}, which every protocol can raise;
+ * REST answers it 428.
  */
 public enum RestErrors implements ErrorDetails {
 
@@ -59,7 +61,22 @@ public enum RestErrors implements ErrorDetails {
     PAYLOAD_TOO_LARGE("The request body is too large", INVALID_INPUT, 413),
 
     /** The route does not consume the media type of the request body. */
-    UNSUPPORTED_MEDIA_TYPE("The request media type is not supported", INVALID_INPUT, 415);
+    UNSUPPORTED_MEDIA_TYPE("The request media type is not supported", INVALID_INPUT, 415),
+
+    /**
+     * Spring MVC or the servlet container answered a 4xx that Synapse's table doesn't map to a code, such as a
+     * {@code ResponseStatusException(UNPROCESSABLE_CONTENT)} or a {@code @ResponseStatus(GONE)} exception from a
+     * controller. The response keeps that status; {@link #status()} is only the default when none is kept. A REST-only
+     * code: gRPC never raises it.
+     */
+    CLIENT_ERROR("The request was rejected", INVALID_INPUT, 400),
+
+    /**
+     * Spring MVC or the servlet container answered a 5xx other than 500 that Synapse's table doesn't map to a code,
+     * such as a {@code ResponseStatusException(BAD_GATEWAY)}. The response keeps that status; {@link #status()} is only
+     * the default when none is kept. A REST-only code: gRPC never raises it.
+     */
+    SERVER_ERROR("The server could not complete the request", INTERNAL, 500);
 
     private final String messageTemplate;
 

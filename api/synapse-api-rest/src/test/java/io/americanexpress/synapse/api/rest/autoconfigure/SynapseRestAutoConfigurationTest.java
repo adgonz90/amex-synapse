@@ -36,6 +36,9 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -90,6 +93,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.CookieDuplicates;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetPlainBookOperation;
@@ -520,6 +524,71 @@ class SynapseRestAutoConfigurationTest {
     }
 
     @Test
+    void cookieCounterIsRegisteredAtStartup() {
+        routesRunner
+                .withUserConfiguration(Cookies.class)
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(CookieDuplicates.class).hasBean("synapseRestCookieDuplicates");
+                    // The series exists at 0 before any request, tagged by the declared name and the operation.
+                    Counter counter = context
+                            .getBean(MeterRegistry.class)
+                            .get(CookieDuplicates.METER)
+                            .tag("cookie", "session")
+                            .tag("operation", "session")
+                            .counter();
+                    assertThat(counter.count()).isZero();
+                    assertThat(counter.getId().getDescription())
+                            .isEqualTo(
+                                    "Requests that sent a cookie bound to a single-valued component more than once; the "
+                                            + "first copy was used");
+                    assertThat(counter.getId().getBaseUnit()).isEqualTo("requests");
+                });
+    }
+
+    @Test
+    void listCookieBindingIsNotRegistered() {
+        routesRunner
+                .withUserConfiguration(ListCookies.class)
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed().hasBean("synapseRestCookieDuplicates");
+                    assertThat(context.getBean(MeterRegistry.class).find(CookieDuplicates.METER).meters()).isEmpty();
+                });
+    }
+
+    @Test
+    void cookieRecorderWorksWithoutARegistry() {
+        routesRunner.withUserConfiguration(Cookies.class).run(context -> {
+            assertThat(context).hasNotFailed().doesNotHaveBean(MeterRegistry.class);
+            assertThat(context).hasSingleBean(CookieDuplicates.class).hasBean("synapseRestCookieDuplicates");
+        });
+    }
+
+    @Test
+    void cookieRecorderBacksOffByName() {
+        CookieDuplicates user = CookieDuplicates.none();
+        routesRunner
+                .withUserConfiguration(Cookies.class)
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withBean("synapseRestCookieDuplicates", CookieDuplicates.class, () -> user)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(CookieDuplicates.class);
+                    assertThat(context.getBean("synapseRestCookieDuplicates")).isSameAs(user);
+                    // The binder registers through the user's recorder, which counts nothing.
+                    assertThat(context.getBean(MeterRegistry.class).find(CookieDuplicates.METER).meters()).isEmpty();
+                });
+    }
+
+    @Test
+    void cookieRecorderIsAbsentWithoutBindings() {
+        routesRunner.withBean(MeterRegistry.class, SimpleMeterRegistry::new).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).doesNotHaveBean("synapseRestCookieDuplicates").doesNotHaveBean(CookieDuplicates.class);
+        });
+    }
+
+    @Test
     void routeBeansAreAbsentWithoutRestBindings() {
         routesRunner.run(context -> {
             assertThat(context).hasNotFailed();
@@ -629,7 +698,7 @@ class SynapseRestAutoConfigurationTest {
         BindingDeclarations declarations = new BindingDeclarations();
         declarations
                 .add(new BindingDeclaration("gRPC", "get-plain-book", "test.v1.Books/GetPlainBook", notFound, null,
-                        null));
+                        null, 1));
         return declarations;
     }
 
@@ -922,7 +991,8 @@ class SynapseRestAutoConfigurationTest {
         ETagValues etags = new ETagValues();
         ResponseWriter writer = new ResponseWriter(mapper, conversions, cursors, PagingSettings.defaults(), etags);
         BindingValidator validator = new BindingValidator(PagingSettings.defaults());
-        RequestBinder binder = new RequestBinder(mapper, conversions, PagingSettings.defaults());
+        RequestBinder binder = new RequestBinder(mapper, conversions, PagingSettings.defaults(),
+                CookieDuplicates.none());
         RouteCompiler compiler = new RouteCompiler(validator, binder, writer, cursors, PagingSettings.defaults(),
                 new BindingDeclarations());
         ExposureInventory inventory = new ExposureInventory(new StaticListableBeanFactory()
@@ -1376,6 +1446,60 @@ class SynapseRestAutoConfigurationTest {
         @Bean
         RestBindings books(GetPlainBookOperation getBook) {
             return RestBindings.builder().get("/books/{id}", getBook).build();
+        }
+    }
+
+    public record SessionRequest(String session) {
+    }
+
+    public record SessionsRequest(List<String> session) {
+    }
+
+    public static class SessionOperation implements QueryOperation<SessionRequest, String> {
+        @Override
+        public String execute(SessionRequest input) {
+            return input.session();
+        }
+    }
+
+    public static class SessionsOperation implements QueryOperation<SessionsRequest, String> {
+        @Override
+        public String execute(SessionsRequest input) {
+            return String.join(",", input.session());
+        }
+    }
+
+    /** A route that binds the single-valued {@code session} cookie. */
+    @Configuration(proxyBeanMethods = false)
+    static class Cookies {
+
+        @Bean
+        SessionOperation sessionOperation() {
+            return new SessionOperation();
+        }
+
+        @Bean
+        RestBindings sessions(SessionOperation session) {
+            return RestBindings.builder().get("/session", session).cookie("session", SessionRequest::session).build();
+        }
+    }
+
+    /** A route that binds every copy of the {@code session} cookie to a list. */
+    @Configuration(proxyBeanMethods = false)
+    static class ListCookies {
+
+        @Bean
+        SessionsOperation sessionsOperation() {
+            return new SessionsOperation();
+        }
+
+        @Bean
+        RestBindings sessions(SessionsOperation sessions) {
+            return RestBindings
+                    .builder()
+                    .get("/sessions", sessions)
+                    .cookie("session", SessionsRequest::session)
+                    .build();
         }
     }
 

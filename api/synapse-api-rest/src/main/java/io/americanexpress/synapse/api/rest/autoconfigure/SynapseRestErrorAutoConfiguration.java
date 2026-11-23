@@ -16,7 +16,10 @@ package io.americanexpress.synapse.api.rest.autoconfigure;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -27,6 +30,7 @@ import org.springframework.boot.webmvc.autoconfigure.error.ErrorMvcAutoConfigura
 import org.springframework.boot.webmvc.error.ErrorController;
 import org.springframework.context.MessageSource;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
 import org.springframework.web.servlet.function.RouterFunction;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -34,7 +38,7 @@ import io.americanexpress.synapse.api.rest.internal.error.ProblemTitles;
 import io.americanexpress.synapse.api.rest.internal.error.ProblemWriter;
 import io.americanexpress.synapse.api.rest.internal.error.RestErrorStatuses;
 import io.americanexpress.synapse.api.rest.internal.error.SynapseErrorController;
-import io.americanexpress.synapse.api.rest.internal.error.SynapseRestExceptionResolver;
+import io.americanexpress.synapse.api.rest.internal.error.SynapseRestExceptionResolverConfigurer;
 import io.americanexpress.synapse.core.autoconfigure.SynapseContextAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCoreAutoConfiguration;
 import io.americanexpress.synapse.core.autoconfigure.SynapseCorrelationProperties;
@@ -54,6 +58,11 @@ import io.americanexpress.synapse.core.error.ErrorMessages;
 @ConditionalOnClass(RouterFunction.class)
 @EnableConfigurationProperties(SynapseRestProperties.class)
 public final class SynapseRestErrorAutoConfiguration {
+
+    private static final Logger LOG = LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+
+    /** Boot's property that turns its {@code ProblemDetailsExceptionHandler} on. */
+    private static final String PROBLEM_DETAILS = "spring.mvc.problemdetails.enabled";
 
     /**
      * Resolves the problem titles of the error categories.
@@ -103,15 +112,35 @@ public final class SynapseRestErrorAutoConfiguration {
     }
 
     /**
-     * Turns exceptions that reach Spring MVC into problem responses.
+     * Adds Synapse's exception resolver to Spring MVC's composite resolver, twice: first, for exceptions raised on a
+     * Synapse route's path before a handler was found or by a Synapse handler, and for the 404 of an unknown path a
+     * Synapse route claims (under its literal path prefix, or its own template without one, under any version for a
+     * versioned route), and right after Spring's {@code ExceptionHandlerExceptionResolver}, for every other exception,
+     * so the application's {@code @ExceptionHandler} methods and {@code @ControllerAdvice} classes answer first for its
+     * controllers. While {@value #PROBLEM_DETAILS} is {@code true}, it logs one WARN: Boot's
+     * {@code ProblemDetailsExceptionHandler} then answers Spring MVC's exceptions from controllers, and the 404 of an
+     * unknown path that no Synapse route claims, in Spring's problem shape. Internal: the bean backs off by name only.
      *
      * @param writer the problem writer
-     * @return the resolver
+     * @param routes the {@code synapseRestRoutes} bean, read when Spring MVC builds its resolvers, not here
+     * @param environment the environment, for {@value #PROBLEM_DETAILS}
+     * @return the configurer
      */
     @Bean
-    @ConditionalOnMissingBean
-    SynapseRestExceptionResolver synapseRestExceptionResolver(ProblemWriter writer) {
-        return new SynapseRestExceptionResolver(writer);
+    @ConditionalOnMissingBean(name = "synapseRestExceptionResolverConfigurer")
+    SynapseRestExceptionResolverConfigurer synapseRestExceptionResolverConfigurer(ProblemWriter writer,
+            @Qualifier("synapseRestRoutes") ObjectProvider<RouterFunction<?>> routes, Environment environment) {
+        if (environment.getProperty(PROBLEM_DETAILS, Boolean.class, false)) {
+            LOG
+                    .warn(PROBLEM_DETAILS
+                            + " is true: Spring Boot's ProblemDetailsExceptionHandler answers Spring MVC's "
+                            + "exceptions from your controllers, and the 404 of an unknown path that no Synapse route "
+                            + "claims (one under a route's literal path prefix, or a route's own template when it has "
+                            + "no prefix), in Spring's problem shape instead of Synapse's (no code or correlationId). "
+                            + "Synapse routes, and the unknown paths they claim, under any version for a versioned "
+                            + "route, are not affected.");
+        }
+        return new SynapseRestExceptionResolverConfigurer(writer, routes);
     }
 
     /**

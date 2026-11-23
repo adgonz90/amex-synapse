@@ -216,9 +216,13 @@ public final class BindingValidator {
 
     /**
      * Tells whether a declared version is {@code major[.minor[.patch]]} with numbers Spring's
-     * {@link SemanticApiVersionParser} can read (each fits an {@code int}).
+     * {@link SemanticApiVersionParser} can read (each fits an {@code int}): what {@code .version(...)} accepts, and
+     * what follows the {@code v} of a versioned route's first path segment.
+     *
+     * @param version the text
+     * @return true for a version
      */
-    private static boolean isVersion(String version) {
+    public static boolean isVersion(String version) {
         if (!VERSION.matcher(version).matches()) {
             return false;
         }

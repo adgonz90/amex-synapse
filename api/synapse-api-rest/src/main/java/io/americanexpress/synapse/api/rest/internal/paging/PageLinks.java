@@ -37,14 +37,16 @@ public final class PageLinks {
      * Returns the next-page link.
      *
      * <p>
-     * With a token, the link carries it. Without one, an offset link is returned only when the request had no cursor
-     * and the next offset does not exceed the offset cap.
+     * With a token, the link carries it as the cursor parameter: the wrapped next cursor, or, when the next offset
+     * passes the offset cap ({@code PageCursors.pastCap}), the page's offset token, which fails with the offset limit
+     * when it is used. Without one, an offset link is returned only when the request had no cursor and the next offset
+     * does not exceed the offset cap.
      *
      * @param request the request
      * @param settings the paging settings: the parameter names and the offset cap
      * @param query the page query the operation was called with
      * @param result the operation's page
-     * @param token the wrapped next cursor, or {@code null}
+     * @param token the wrapped next cursor, the offset token of a page past the cap, or {@code null}
      * @return the header value {@code <target>; rel="next"}, or {@code null} when there is no next page to link to
      */
     public static @Nullable String next(HttpServletRequest request, PagingSettings settings, PageQuery query,

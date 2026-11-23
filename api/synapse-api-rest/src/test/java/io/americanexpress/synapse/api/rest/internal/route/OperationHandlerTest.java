@@ -33,9 +33,13 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestErrors;
+import io.americanexpress.synapse.api.rest.internal.binding.CookieDuplicates;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
+import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.binding.WireNames;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
 import io.americanexpress.synapse.api.rest.internal.edge.SizeLimitedRequest;
+import io.americanexpress.synapse.api.rest.internal.error.RestProtocolException;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.CreateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.route.RouteFixtures.GetBookOperation;
@@ -64,12 +68,13 @@ class OperationHandlerTest {
 
     private final GetBookOperation getBook = new GetBookOperation();
 
-    private final OperationHandler handler = new OperationHandler(
+    private final OperationHandler handler = handler(
             route(RestBindings.builder().get("/books/{id}", getBook).build()),
-            new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
+            new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults(),
+                    CookieDuplicates.none()),
             new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS, PagingSettings.defaults(),
                     RouteFixtures.etags()),
-            CURSORS, PagingSettings.defaults());
+            PagingSettings.defaults());
 
     @ParameterizedTest
     @ValueSource(strings = {"", "application/json", "*/*", "application/*", "application/json;charset=UTF-8",
@@ -85,6 +90,7 @@ class OperationHandlerTest {
         assertThat(MAPPER.readTree(servletResponse.getContentAsString()).get("id").asLong()).isEqualTo(3);
         assertThat(getBook.calls.get()).isEqualTo(1);
         assertThat(handler.route().operationName()).isEqualTo("get-book");
+        assertThat(RestRequestAttributes.wireNames(request)).isNotNull();
     }
 
     @ParameterizedTest
@@ -93,9 +99,13 @@ class OperationHandlerTest {
     void otherAcceptIsNotAcceptableBeforeTheOperationRuns(String accept) {
         MockHttpServletRequest request = request(accept);
 
-        assertThatExceptionOfType(SynapseException.class)
+        assertThatExceptionOfType(RestProtocolException.class)
                 .isThrownBy(() -> handler.handle(ServerRequest.create(request, List.of())))
-                .satisfies(e -> assertThat(e.details()).isEqualTo(RestErrors.NOT_ACCEPTABLE));
+                .satisfies(e -> {
+                    assertThat(e.details()).isEqualTo(RestErrors.NOT_ACCEPTABLE);
+                    // What the route produces, as Spring's 406 lists it.
+                    assertThat(e.headers()).containsExactly(Map.entry("Accept", "application/json"));
+                });
         assertThat(getBook.calls.get()).isZero();
         assertThat(RestRequestAttributes.operationName(request)).isEqualTo("get-book");
     }
@@ -108,6 +118,8 @@ class OperationHandlerTest {
         assertThatExceptionOfType(SynapseException.class)
                 .isThrownBy(() -> handler.handle(ServerRequest.create(request, List.of())));
         assertThat(RestRequestAttributes.operationName(request)).isEqualTo("get-book");
+        // Binding failed, so the operation's wire names are not set: the binder's violations are wire names already.
+        assertThat(RestRequestAttributes.wireNames(request)).isNull();
         assertThat(getBook.calls.get()).isZero();
     }
 
@@ -115,15 +127,15 @@ class OperationHandlerTest {
     void routeRequestSizeLimitAppliesBeforeTheBodyIsRead() throws Exception {
         CreateBookOperation createBook = new CreateBookOperation();
         RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(),
-                PagingSettings.defaults());
+                PagingSettings.defaults(), CookieDuplicates.none());
         ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS,
                 PagingSettings.defaults(),
                 RouteFixtures.etags());
-        OperationHandler limited = new OperationHandler(
+        OperationHandler limited = handler(
                 route(RestBindings.builder().post("/books", createBook).maxRequestSize(DataSize.ofBytes(16)).build()),
-                binder, writer, CURSORS, PagingSettings.defaults());
-        OperationHandler unlimited = new OperationHandler(
-                route(RestBindings.builder().post("/books", createBook).build()), binder, writer, CURSORS,
+                binder, writer, PagingSettings.defaults());
+        OperationHandler unlimited = handler(
+                route(RestBindings.builder().post("/books", createBook).build()), binder, writer,
                 PagingSettings.defaults());
 
         assertThatExceptionOfType(SynapseException.class)
@@ -174,13 +186,14 @@ class OperationHandlerTest {
 
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/books");
         request.setQueryString("author=herbert&size=10&cursor=" + token);
-        // The token carries offset 30; the cap is now 25: REST's offset over the cap, on the cursor parameter.
+        // The token carries offset 30; the cap is now 25: the offset limit, on the cursor parameter.
         assertThatExceptionOfType(SynapseException.class)
                 .isThrownBy(() -> capped.handle(ServerRequest.create(request, List.of())))
                 .satisfies(e -> {
                     assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
                     assertThat(e.violations())
-                            .containsExactly(new Violation("cursor", "must be less than or equal to 25"));
+                            .containsExactly(new Violation("cursor",
+                                    "has reached the offset limit (25); narrow the query or use keyset paging"));
                 });
         assertThat(paged.inputs).isEmpty();
     }
@@ -208,19 +221,19 @@ class OperationHandlerTest {
     @Test
     void preconditionsRunAfterBindingAndBeforeExecute() {
         RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(),
-                PagingSettings.defaults());
+                PagingSettings.defaults(), CookieDuplicates.none());
         ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS,
                 PagingSettings.defaults(),
                 RouteFixtures.etags());
-        OperationHandler create = new OperationHandler(
+        OperationHandler create = handler(
                 route(RestBindings.builder().post("/books", new CreateBookOperation()).build()), binder, writer,
-                CURSORS, PagingSettings.defaults());
+                PagingSettings.defaults());
         ReviseVersionedBookOperation revise = new ReviseVersionedBookOperation();
-        OperationHandler revising = new OperationHandler(route(RestBindings
+        OperationHandler revising = handler(route(RestBindings
                 .builder()
                 .put("/books/{id}", revise)
                 .header("If-Match", RevisionRequest::version)
-                .build()), binder, writer, CURSORS, PagingSettings.defaults());
+                .build()), binder, writer, PagingSettings.defaults());
 
         // A bad body is 400 even with an If-Match the route doesn't bind: binding comes first.
         MockHttpServletRequest badBody = new MockHttpServletRequest("POST", "/books");
@@ -246,15 +259,15 @@ class OperationHandlerTest {
     @Test
     void staleVersionFromTheOperationIs412OnlyWithIfMatch() {
         RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(),
-                PagingSettings.defaults());
+                PagingSettings.defaults(), CookieDuplicates.none());
         ResponseWriter writer = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS,
                 PagingSettings.defaults(),
                 RouteFixtures.etags());
-        OperationHandler stale = new OperationHandler(route(RestBindings
+        OperationHandler stale = handler(route(RestBindings
                 .builder()
                 .put("/books/{id}", new StaleBookOperation())
                 .header("If-Match", RevisionRequest::version)
-                .build()), binder, writer, CURSORS, PagingSettings.defaults());
+                .build()), binder, writer, PagingSettings.defaults());
 
         assertThatExceptionOfType(SynapseException.class)
                 .isThrownBy(() -> stale.handle(ServerRequest.create(putBook("\"1\""), List.of())))
@@ -288,16 +301,23 @@ class OperationHandlerTest {
         return request;
     }
 
+    private static OperationHandler handler(RouteDefinition route, RequestBinder binder, ResponseWriter writer,
+            PagingSettings paging) {
+        return new OperationHandler(route, binder, writer, CURSORS, paging,
+                WireNames.of(route, binder.mapper(), paging));
+    }
+
     private static OperationHandler pagedHandler(PagedBooksOperation paged) {
         return pagedHandler(paged, PagingSettings.defaults());
     }
 
     private static OperationHandler pagedHandler(PagedBooksOperation paged, PagingSettings paging) {
-        RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(), paging);
-        return new OperationHandler(route(RestBindings.builder().get("/books", paged).build()), binder,
+        RequestBinder binder = new RequestBinder(MAPPER, new DefaultFormattingConversionService(), paging,
+                CookieDuplicates.none());
+        return handler(route(RestBindings.builder().get("/books", paged).build()), binder,
                 new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), CURSORS, paging,
                         RouteFixtures.etags()),
-                CURSORS, paging);
+                paging);
     }
 
     /** The body of a GET {@code /books} with the query string. */

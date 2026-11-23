@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.samples.bookstore.scenario;
 
+import java.util.Map;
 import java.util.UUID;
 
 import org.jspecify.annotations.Nullable;
@@ -32,12 +33,12 @@ public interface BookstoreClient extends AutoCloseable {
      * Adds a book.
      *
      * @param isbn the ISBN
-     * @param title the title
+     * @param title the title, or {@code null} to send none (a missing required field)
      * @param author the author
      * @param year the year of publication, or {@code null} to send none
      * @return {@code CREATED} with the book and its etag, or the failure
      */
-    Outcome create(String isbn, String title, String author, @Nullable Integer year);
+    Outcome create(String isbn, @Nullable String title, String author, @Nullable Integer year);
 
     /**
      * Reads a book.
@@ -105,6 +106,15 @@ public interface BookstoreClient extends AutoCloseable {
      * @return the read's outcome and the answer's correlation id
      */
     Echo echoedCorrelationId(UUID id, String correlationId);
+
+    /**
+     * Returns the messages of the violations of this client's last failed call, by field in the contract's names, as
+     * the {@link Outcome} names them: the message is the one part of a violation that the outcome leaves out.
+     *
+     * @return the messages in the order the answer listed them, empty when the last failure had no violations or no
+     *         call failed
+     */
+    Map<String, String> lastViolations();
 
     /** Releases the client's connections. */
     @Override

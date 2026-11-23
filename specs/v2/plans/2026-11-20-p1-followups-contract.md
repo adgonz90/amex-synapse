@@ -93,7 +93,7 @@ The maintainer's decisions and the memos settle almost everything. Each row is a
 | # | Item | Question left open | Choice | Reason | Alternative (cost to reverse) |
 |---|---|---|---|---|---|
 | C1 | 3 | Which calls apply the "raised by another call" rule. | Every call's `translate`, not only the outermost. The outcome at the edge is the same; a middle call's observation also says `INTERNAL`. | One rule, no depth check; matches the same-thread wrap. | Outermost only (one condition). |
-| C2 | 3 | Where the call token lives. | `OperationInterceptor` creates `new Object()` per call and passes it to `OperationPipeline.validate(input, call)` and `requirePreconditions(input, call)`, which store it in a `transient` field of the `SanitizedViolations` cause. `BusinessInterceptor` passes `null` (its rejections are always `INTERNAL` already). | The memo's mechanism; the pipeline builds the rejection, so it stamps it. | The interceptor stamps after catching (one more mutator on the cause). |
+| C2 | 3 | Where the call token lives. | `OperationInterceptor` creates `new Object()` per call and passes it to `OperationPipeline.validate(input, call)` and `requirePreconditions(input, call)`, which store it in a `transient` field of the `SanitizedViolations` cause. `BusinessInterceptor` passes a fresh token of its own, so a business rejection that its caller unwraps and rethrows is `INTERNAL`, as BUILD §5.2 says (pre-flight ruling R-2, 2026-11-21; the plan first had `null`, which would let that unwrapped rejection pass as `VALIDATION_FAILED`). | The memo's mechanism; the pipeline builds the rejection, so it stamps it. | The interceptor stamps after catching (one more mutator on the cause). |
 | C3 | 5 | How a version is read, and a floor rule. | gRPC: the proto package's last segment matching `^v(\d+)(p\d+)?((alpha|beta)\d*)?$` (AIP-185/191); REST: the major of `.version(...)` by Spring's `SemanticApiVersionParser`. No floor rule: a binding that pairs with no binding of the other protocol (a gRPC `v1` method with only REST `v2` routes) isn't compared, and startup logs one WARN listing every such binding (maintainer, 2026-11-20, review M5). | The decision names no floor; the memo marks it optional. The WARN keeps the unpaired case visible. | Add the floor (one more check and message). |
 | C4 | 16 | A map value's sub-path. | Kept, without the key: `authorsByRank.countryCode` (gRPC's documented `authors_by_rank.country_code`). A constraint on a key or a whole value names the map. | Today's documented gRPC behaviour; the memo leaves it open. | Stop at the map field (simpler, less precise). |
 | C5 | 16 | REST names for `.body(component)` and for unnameable parts. | A path under a whole-body component starts at the body (`changes.title` → `title`); the component itself keeps its name. A segment Jackson can't name (its own deserializer, a delegating creator) cuts the path there, as gRPC fails closed. | The body is the JSON root; the memo's "deepest resolvable prefix". | Keep the component segment (names something the client never sent). |
@@ -140,7 +140,7 @@ Everything else modifies existing files, listed per task.
 ### Task 1: A rejection raised by another call is `INTERNAL` on any thread (decision 3)
 
 **Files:**
-- Modify: `core/synapse-core/src/main/java/io/americanexpress/synapse/core/internal/pipeline/OperationInterceptor.java` (the call token at ~L130; `translate` ~L276 gains the new first rule), `.../internal/pipeline/OperationPipeline.java` (`validate` ~L235, `requirePreconditions`, `rejected` ~L270), `.../internal/pipeline/SanitizedViolations.java` (only the `transient` token field and its accessors; nothing else, see *Coordination*), `.../internal/pipeline/BusinessInterceptor.java` (passes `null`).
+- Modify: `core/synapse-core/src/main/java/io/americanexpress/synapse/core/internal/pipeline/OperationInterceptor.java` (the call token at ~L130; `translate` ~L276 gains the new first rule), `.../internal/pipeline/OperationPipeline.java` (`validate` ~L235, `requirePreconditions`, `rejected` ~L270), `.../internal/pipeline/SanitizedViolations.java` (only the `transient` token field and its accessors; nothing else, see *Coordination*), `.../internal/pipeline/BusinessInterceptor.java` (passes a fresh token, R-2).
 - Docs: `docs/modules/ROOT/pages/core.adoc` ~L62-69 (replace "Outermost is per thread … becomes `INTERNAL`" with the identity rule, BUILD §5.2's wording).
 - Test: `core/synapse-core/src/test/java/io/americanexpress/synapse/core/internal/pipeline/{NestedInvocationTest,OperationInterceptorTest,OperationPipelineTest}.java`; `api/synapse-api-rest/src/test/java/io/americanexpress/synapse/api/rest/internal/route/EscapeHatchRoutesIT.java`.
 
@@ -149,12 +149,14 @@ Everything else modifies existing files, listed per task.
 
 ```java
 // OperationPipeline
-void validate(@Nullable Object input, @Nullable Object call);              // call: the raising call's token, null for business beans
-void requirePreconditions(@Nullable Object input, @Nullable Object call);
+void validate(@Nullable Object input, Object call);              // call: the raising call's token; BusinessInterceptor passes a fresh one (R-2)
+void requirePreconditions(@Nullable Object input, Object call);
 /** True when the failure is a pipeline rejection (its cause is a SanitizedViolations from rejected(...)) raised by a call other than {@code call}. */
 static boolean raisedByAnotherCall(SynapseException failure, Object call);
 // SanitizedViolations
-transient @Nullable Object call;   // set once by OperationPipeline.rejected; never serialized
+private transient @Nullable Object call;   // set once by OperationPipeline.rejected; never serialized
+@Nullable Object call();                   // R-4
+void markCall(Object call);                // R-4: a second call throws IllegalStateException
 ```
 
 - `translate(Throwable, @Nullable Object input, Object call)`: first rule, before the `SynapseException` pass-through: `raisedByAnotherCall(synapse, call)` → `new SynapseException(SynapseErrors.INTERNAL, synapse)` (C1). The same-thread wrap at ~L179-184 stays.
@@ -171,7 +173,7 @@ transient @Nullable Object call;   // set once by OperationPipeline.rejected; ne
 @Test void preconditionRequiredFromAnotherThreadIsInternal()
 // OperationPipelineTest
 @Test void rejectionRecordsItsCall()                    // validate(invalid, token) → raisedByAnotherCall(e, token) false, (e, new Object()) true
-@Test void businessRejectionHasNoCall()                 // validate(invalid, null) → raisedByAnotherCall(e, any) false
+@Test void unwrappedBusinessRejectionIsInternal()       // R-2: an operation unwraps a business rejection from its INTERNAL and rethrows it → INTERNAL
 // EscapeHatchRoutesIT
 @Test void controllerCallOnAnotherThreadIsValidationFailed()   // a controller does supplyAsync(() -> op.execute(boundInput)).join(), unwraps, rethrows → 400 with the violation
 ```
@@ -757,6 +759,7 @@ public static boolean pastCap(@Nullable Object input, PageResult<?> page, long m
 | `TRANSACTION_CONFLICT` (decision 18) and its REST/gRPC mapping | Data follow-up |
 | Map keys and other values in *logged* paths (decision 10) | Observability follow-up (can reuse `ViolationPaths`) |
 | The status-mapping SPI and name back-offs for the beans in *Coordination* | API-surface follow-up |
-| The client-side origin marker that remaps forwarded gRPC codes (decision 24) | P2 (BUILD.md P2) |
+| The client-side origin marker that remaps forwarded gRPC codes (decision 24). The marker is a cause, so a forwarded `UNKNOWN` carrying it matches `ContextClosingCall`'s "UNKNOWN with a non-status cause" rule and would go to the exception handlers (`INTERNAL`, logged at ERROR) instead of being remapped; the P2 design must handle it (Task 10 review) | P2 (BUILD.md P2) |
+| Under `include-detail`, a downstream `x-correlation-id` trailer forwarded by a hand-written service survives next to Synapse's when headers were already sent (fix: `CorrelationEchoCall.close` discards the key from the trailers when `headersSent`; Task 10 review) | Deferred (a convenience setting only; Synapse's id is in the headers and `ErrorInfo`) |
 | Method security inside an operation: pass Spring Security's exceptions through the pipeline unwrapped, or translate them in core (research memo, decision 13 point 6) | With the security module, deferred to 2.x (BUILD §11) |
 | `etag` on gRPC update responses and list items (research 33 Q3, option B) | Not planned: the maintainer kept one contract on both protocols |

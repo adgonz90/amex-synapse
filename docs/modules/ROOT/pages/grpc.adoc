@@ -108,6 +108,13 @@ the operation, `gRPC method <service>/<method> (<operation>): `, followed by the
 |`Change the component type, or map another field with .map(...).`
 |`<record>.<component> is @Nullable but <message>.<field> has no presence`
 |`Use a wrapper type or proto3 optional for the field, or make the component non-null.`
+|`the elements of <record>.<component> are @Nullable but <message>.<field> has no presence for them` (`the values of`
+for a map; see <<mapping>>)
+|`Make the item type non-null (a repeated or map field never holds a missing element), or bind the operation over REST
+only.`
+|`<record>.<component> is required, but <message>.<field> has no presence, so an unsent field would bind its default`
+(one line per component, each with its method, for every method of the service in one failure; see <<mapping>>)
+|`Declare these fields optional (proto3 optional), use a wrapper type, or make the components @Nullable.`
 |`<record>.<component> has no source`
 |`Add the field to <message>, map one with .map(...), or set it with .context(...).`
 |`<record>.<component> has no field in <message>` |`Add the field to the message, or map it with .map(...).`
@@ -199,9 +206,10 @@ Startup also fails, with the method named, when:
 Protocols must not differ in contract: when REST binds the same operation (see xref:rest.adoc[REST]), startup fails
 if a method and a REST route declare `.notFound`, `.etag` or `.sortable` differently, with
 `Operation '<name>' is bound differently over REST (<route>) and gRPC (<method>): <declaration> is <REST value> over
-REST and <gRPC value> over gRPC.` Each REST route is compared with the gRPC method, so while gRPC binds the operation
-every REST version must declare these alike. Versions may differ only for an operation that gRPC doesn't bind. A
-method `.bindAllByName()` binds has the defaults (`NOT_FOUND`, no entity tag, no sort
+REST and <gRPC value> over gRPC.` A method is compared with the REST routes of its proto package's major version
+(`bookstore.v1` with `.version("1")` or `"1.2"`, as AIP-185 ties them), and with every unversioned route; a package
+without a version segment is compared with every route. A method with no route of its version is listed in one
+startup WARN instead. A method `.bindAllByName()` binds has the defaults (`NOT_FOUND`, no entity tag, no sort
 keys), so its REST routes must have them too. See xref:core.adoc#parity[Parity].
 
 [#mapping]
@@ -240,8 +248,46 @@ appears twice on the wire and keeps the last value (a message field is merged), 
 
 *Presence.* A `@Nullable` component needs a field with presence: a message, a wrapper, a proto3 `optional` field, a
 `oneof` member, or an enum whose zero value is unspecified. Otherwise "absent" would silently become `0` or `""`, and
-startup fails. A field without presence always has a value (its default), so a non-null component bound to one is
-never missing.
+startup fails. A non-null request component bound to a scalar field (a string, bytes, a number, a bool or an enum),
+primitives included, needs one too, at every depth of the request, also in a message that a response uses. A field
+without presence always reads as its default, so an unsent value would bind silently as `""`, `0`, `false` or the
+first enum value, where REST reports a missing JSON property `must not be null` at every depth of the body (see
+xref:rest.adoc#input[REST]). With presence, an unsent field is `must not be null` over gRPC too, at every depth. So
+startup fails, and one failure lists every such component of the service's methods, so they are fixed in one pass:
+`gRPC method <service>/<method> (<operation>): <record>.<component> is required, but <message>.<field> has no
+presence, so an unsent field would bind its default`, one line per component. Declare the field `optional` (proto3),
+as the samples do, use a wrapper type, or make the component `@Nullable`. The rule leaves out the token fields a
+`VersionCondition` binds (`etag`, `if_none_match`, see <<versions>>), the page fields of a `PageQuery` (see
+<<paging>>) and `.context` components, which have their own rules for an empty value, and the response, which writes
+every value. Once the field has presence, both protocols answer the same input alike: an unsent
+`item.author.country_code` over gRPC is `item.author.countryCode` over REST, with the same message.
+
+For a field clients already use, declare it `optional`: that keeps its wire format, so deployed clients and servers
+still read each other's values. A wrapper type changes the field's wire type (a message instead of a number or a
+string), and a reader of the old type drops the value, so a wrapper needs a new field number. This matters for a
+message a response also uses, whose readers are the clients. Clients then regenerate their stubs from the `optional`
+contract and set every required field, `0`, `""` and `false` included: a stub generated before the field had presence
+never sends a default value, so the server reads it as unsent and answers `must not be null`.
+
+A `repeated` or `map` field is never missing: unsent, it binds an empty `List` or `Map`, as REST binds an absent or
+`null` collection (see xref:rest.adoc#input[REST]). To require at least one item, annotate the component `@NotEmpty`,
+which gives the same `must not be empty` violation over both protocols.
+
+Nor is an element of one: a `repeated` element or a map value is always on the wire, so an item type that is
+`@Nullable` (JSpecify's `List<@Nullable T>` or `Map<K, @Nullable V>`) has nothing to bind its `null` from. For a
+record component, in a request record or a response record at any depth, startup fails with `the elements of
+<record>.<component> are @Nullable but <message>.<field> has no presence for them` (`the values of` for a map). The
+check sees record components only: an operation whose output is itself a `List<@Nullable T>` or a
+`PageResult<@Nullable T>` starts, and a `null` item in it fails the call at runtime (`INTERNAL`), as a `null` in any
+non-null output list does. Make the item type non-null, or bind the operation over REST only, where a `@Nullable`
+item type passes a `null` item through and a non-null one answers it `must not be null` (`stops[0]`), as gRPC answers
+an element that reads as `null` (an enum's unspecified zero value).
+
+A map value has a wire limit: over gRPC an unset message map value can't be told from an empty one, as
+protobuf fills in the default (the empty message) when it parses the entry. So it reads as an empty value: its
+required components are reported (`by_name.bin must not be null`), where REST answers a `null` map value by the
+map's name alone (`byName must not be null`), and a value type with no required component (every component
+`@Nullable` or a collection) binds as an empty record, where REST rejects the `null`.
 
 *`oneof`.* A `oneof` member is mapped only with an explicit `.map`. The synthetic `oneof` of a proto3 `optional` field
 doesn't count. Map each member you use to its own `@Nullable` component, on the request and on the response, and
@@ -249,7 +295,7 @@ make the record allow at most one of them in its constructor:
 
 [source,java]
 ----
-// message Item { string id = 1; oneof price { Money fixed = 2; Discount discounted = 3; } }
+// message Item { optional string id = 1; oneof price { Money fixed = 2; Discount discounted = 3; } }
 record Item(String id, @Nullable Money fixedPrice, @Nullable Discount discountedPrice) {
     Item {
         if (fixedPrice != null && discountedPrice != null) {
@@ -311,17 +357,18 @@ value too large for the component) |`is not a valid value`
 |An `etag` with more than one tag |`must be a single entity tag`
 |===
 
-The violation `field` is the proto field path from the request (`author.country_code`, `tags[2]`); in a map, it is
-the map field's path, because the key is the caller's data. A component set by `.context` is named by its component
-name. Violations never repeat the rejected value. The record is built with its canonical constructor once every field
-is read. A constructor that throws is `VALIDATION_FAILED` without violations for the request's own record, and
-`{field, is not a valid value}` for a nested record (the exception is logged at DEBUG); a `SynapseException` it throws
-reaches the caller unchanged. Jakarta Validation then runs in the pipeline, and its violations are named by the proto
-field path too (`published_on`), or by the component path when the binding maps no field to it. Inside a list the
-names are the proto ones and the index is kept (`authors[0].country_code`). Inside a map the key is left out, as the
-request's own violations leave it out (`authors_by_rank.country_code`), so a field has one name and the caller's key
-is never echoed. A path that names a list or map element but can't be read against the binding is cut before its
-first bracket.
+The violation `field` is the proto field path from the request (`author.country_code`, `tags[2]`, a scalar item
+included); in a map, it is the map field's path (`authors_by_rank.country_code`), because the key is the caller's data
+and is never written. A component set by `.context` is named by its component name. Violations never repeat the
+rejected value. The record is built with its canonical constructor once every field is read. A constructor that
+throws is `VALIDATION_FAILED` without violations for the request's own record, and `{field, is not a valid value}`
+for a nested record (the exception is logged at DEBUG); a `SynapseException` it throws reaches the caller unchanged.
+Jakarta Validation then runs in the pipeline, and its violations are named by the proto field path too
+(`published_on`), or by the component path when the binding maps no field to it. Core's path has one format (see
+xref:core.adoc#errors[Errors]), which the proto path follows: inside a list the names are the proto ones and the
+index is kept, a scalar item's too (`authors[0].country_code`, `tags[2]`). Inside a map the key is never written, as
+the request's own violations leave it out (`authors_by_rank.country_code`), so a field has one name and the caller's
+key is never echoed. A path with brackets that can't be read against the binding is cut before its first bracket.
 
 *Output.* Every output component needs a field; response fields without a component stay unset, and a `null`
 component leaves its field unset. A value that can't be written (outside its field's range, a `null` list element, or
@@ -342,8 +389,8 @@ message Book {
 }
 
 message DeleteBookRequest {
-  string id = 1;
-  string etag = 3;      // "7", or *: what If-Match carries over REST
+  optional string id = 1;  // a required UUID id: optional, so that an unsent id is missing
+  string etag = 3;         // "7", or *: what If-Match carries over REST
 }
 ----
 
@@ -376,8 +423,8 @@ the locale). `"5"` is `Version(5L)` for a `VersionCondition<Long>`. On a write (
 `PRECONDITION_REQUIRED` (REST's 428), before the operation runs, with a violation that says how to resubmit (below)
 |`*` |`AnyVersion` |`AnyVersion` (it satisfies "required")
 |`"5"` |`Version(5)` |`Version(5)`
-|A weak tag (`W/"5"`) in `etag`, which never matches under strong comparison |`FAILED_PRECONDITION` with
-`PRECONDITION_FAILED` (REST's 412), before the operation runs |The same
+|A weak tag (`W/"5"`) in `etag`, which never matches under strong comparison (Synapse emits strong tags only)
+|`FAILED_PRECONDITION` with `PRECONDITION_FAILED` (REST's 412), before the operation runs |The same
 |A weak tag in `if_none_match`, compared weakly |`Version(5)`, as REST binds a weak `If-None-Match` |The same
 |Two tags, or a value off the grammar |`INVALID_ARGUMENT` with `VALIDATION_FAILED` |The same
 |===
@@ -412,19 +459,30 @@ AIP-154 answers a stale etag: the client reads the resource again and retries. A
 race stays `STALE_VERSION` (`ABORTED` too, REST's 409), and so does one that sent only an `if_none_match`: REST's
 translation applies to `If-Match` only. So a stale write is `ABORTED` either way, and the `ErrorInfo` reason says
 whether the request named the version. A weak or unbound tag, and a `PRECONDITION_FAILED` the operation throws itself
-(such as a create-only write's), stay `FAILED_PRECONDITION`: reading again doesn't fix them. The rule looks at the
+(such as a create-only write's), stay `FAILED_PRECONDITION`. Synapse emits strong tags only, so a weak tag is never a
+stale version of the resource but a request that can't succeed in any state (strong comparison, RFC 9110 §13.1.1),
+and `ABORTED` would invite read-modify-write retries. The rule looks at the
 code and its direct cause only, so a `PRECONDITION_FAILED` an operation throws with a `STALE_VERSION` as its cause is
 `ABORTED` too.
 `synapse.api.grpc.errors.status.[PRECONDITION_FAILED]=FAILED_PRECONDITION`, for every operation or under
 `synapse.api.grpc.operations.<name>.errors.status` for one, makes a stale `etag` `FAILED_PRECONDITION` again. A
 `[STALE_VERSION]` status doesn't apply to it, since the code the caller sees is `PRECONDITION_FAILED`.
 
+*Missing resources*, as over REST. An update or delete of a missing resource is `NOT_FOUND` whether or not it sends an
+`etag`: the request would be `NOT_FOUND` without it, and RFC 9110 §13.2.1 says such failures take precedence over
+preconditions. An upsert that would create the resource answers a false `etag` (such as `*`) with
+`PRECONDITION_FAILED` (`FAILED_PRECONDITION`) instead, as REST answers 412 (see
+xref:rest.adoc#conditional-requests[Conditional requests]).
+
 *Response.* `.etag(Record::component)` writes an output component as the strong entity tag (`7` becomes `"7"`) to the
 response's `string etag` field, formatted as a version token, the same token REST sends as `ETag`; the component keeps
 its own field too, and a `null` one leaves `etag` empty. The component's type is a version type (a string, an integral
 number or a `java.time` value). As REST sends an `ETag` only on `GET`/`HEAD` and on the `201` of a `POST`, `.etag` is
 allowed on a method bound to a `QueryOperation`, and on a `CommandOperation` whose input has no `VersionCondition` (a
-create). An update or delete response carries no entity tag: read the resource again for the new one. A string an
+create). An update or delete response carries no entity tag, over either protocol: clients read the resource again
+for the new one (a `version` field of the response, where there is one, still carries the new version). This departs
+from AIP-154, which says the server must provide the etag on output, and is kept so that one contract holds on both
+protocols: REST sends no `ETag` on `PUT` (RFC 9110 §9.3.4). A string an
 entity tag can't carry (empty, or a double quote, a space, a control character, DEL or a character above U+00FF) fails
 the call with `INTERNAL`. Both token fields must be singular `string` fields outside a `oneof` (a proto3 `optional` is
 fine).
@@ -449,7 +507,7 @@ rules for its parameter (see *Unset* below):
 [source,protobuf]
 ----
 message SearchBooksRequest {
-  string author = 1;                // a filter: SearchBooksRequest(@Nullable String author, PageQuery page)
+  optional string author = 1;       // a filter: SearchBooksRequest(@Nullable String author, PageQuery page)
   optional int32 page_size = 2;
   optional string page_token = 3;
   optional int32 skip = 4;          // the request message may omit this field
@@ -510,8 +568,9 @@ names its query parameter, and the operation is not called:
 |`page_token` together with a sent `skip` |`{page_token, must not be combined with skip}`
 |A sent empty `page_token` (an `optional` field) |`{page_token, is not a valid value}`
 |A token the codec rejects |`{page_token, is not valid for this request}`
-|A token that carries an offset above `synapse.paging.max-offset` (issued before the cap was lowered) |`{page_token,
-must be less than or equal to 1000}` (the cap), as REST's `offset` over the cap
+|A token that carries an offset above `synapse.paging.max-offset`: the token of a page past the cap (*The page*,
+below), or one issued before the cap was lowered |`{page_token, has reached the offset limit (1000); narrow the query
+or use keyset paging}` (the cap), REST's text for such a `cursor`
 |`order_by` on a method without `.sortable` |`{order_by, is not supported}`, REST's text for `sort`
 |A key `.sortable` doesn't allow |`{order_by, has a key that is not allowed (allowed: title, published_year)}`
 |An empty key (`title,,author`), a key followed by a word other than `asc` or `desc` (`title DESC`), or whitespace
@@ -536,9 +595,9 @@ A `PageResult` is written to the response's one repeated message field (any name
 one, or with two), the token of the next page to `next_page_token`, its `hasNext` to `has_next`, and its total to
 `total_size`, when the response has that field.
 
-* `bool has_next` is required, beyond AIP-158 (which allows extra fields), because REST always writes `hasNext`. It is
-  the page's own `hasNext`, also when no token reaches the next page (below). A proto3 `optional bool has_next` is
-  accepted too; it is always written.
+* `bool has_next` is required, beyond AIP-158's fields, because REST always writes `hasNext`; AIP-158 doesn't forbid
+  other fields, and its linter doesn't flag them. It is the page's own `hasNext`, also when no token reaches the next
+  page (below). A proto3 `optional bool has_next` is accepted too; it is always written.
 * `total_size` is `optional int32` or `optional int64`, so an unknown total stays unset. AIP-158 prescribes `int32`. A
   total that an `int32` field can't hold is left unset, as an unknown one, and Synapse logs nothing about it; declare
   `int64`, which holds any total, when totals can exceed 2,147,483,647. A response without `total_size` doesn't carry
@@ -550,21 +609,24 @@ one, or with two), the token of the next page to `next_page_token`, its `hasNext
 
 * no token when the page has no next page (`hasNext` false), even if the operation returned a cursor;
 * the operation's next cursor, wrapped, when it returned one;
-* otherwise, when the request had no `page_token`, a token that carries the next offset (the request's `skip`, or 0,
-  plus its size), so an operation that pages by offset only (`PageResult.of(items, hasNext)`, as
-  `SpringDataPages.from(Page)` and `from(Slice)` return) pages through every item with tokens. The operation then
-  receives `PageQuery(null, offset, size, sort)`;
-* no token when the next offset would be past `synapse.paging.max-offset` (`has_next` is still true: page on by
-  cursor), or when a page read by cursor returns no cursor.
+* otherwise, when the request had no cursor (no `page_token`, or one that carries an offset only), a token that
+  carries the next offset (the request's offset, from `skip` or its token, or 0, plus its size), so an operation
+  that pages by offset only (`PageResult.of(items, hasNext)`, as `SpringDataPages.from(Page)` and `from(Slice)`
+  return) pages through every item with tokens. The operation then receives `PageQuery(null, offset, size, sort)`.
+  When that offset would be past `synapse.paging.max-offset`, the page still gets the token, and the token fails when
+  used: `{page_token, has reached the offset limit (1000); narrow the query or use keyset paging}`
+  (`INVALID_ARGUMENT`), the same token, code and violation as REST's `cursor`;
+* no token when a page read by cursor returns no cursor (`has_next` can still be true).
 
-`has_next` is the only signal for the capped case: AIP-158's empty `next_page_token` would mean "end", although more
-items exist beyond `synapse.paging.max-offset`, so a client reads `has_next`, not the empty token, to know whether
-another page exists.
+So, unless a page read by cursor returns no cursor, `next_page_token` is empty only at the real end of the
+collection, as AIP-158 asks: a client that follows tokens past the cap gets a clear `INVALID_ARGUMENT` that says why
+it stops, not an empty token while more items exist.
 
 === Page tokens
 
 `next_page_token` is a token of core's cursor codec, the one REST uses (xref:core.adoc#paging-cursors[Cursors]):
-`synapse.paging.cursor.key`, its rotation and expiry apply to both protocols. A token carries a raw cursor or a next
+`synapse.paging.cursor.key`, its rotation and expiry apply to both protocols (see xref:rest.adoc#cursor-keys[Cursor
+keys] for when and how to rotate it). A token carries a raw cursor or a next
 offset, and is bound to the operation, the sort and a digest of the other input components; a gRPC method adds no
 entries to the digest. So a token issued by an unversioned REST route pages over gRPC for the same operation, filters
 and sort, and the reverse: REST's `cursor` parameter accepts an offset token too. A token for another operation, sort
@@ -651,11 +713,14 @@ The status comes from the error's category:
 |`INTERNAL` |`INTERNAL`
 |===
 
+A code of your own that means a duplicate create (such as `ISBN_TAKEN`) is `ABORTED` like any `CONFLICT`, which
+clients may retry at a higher level. Map it to `ALREADY_EXISTS`, which they don't retry:
+`synapse.api.grpc.errors.status.[ISBN_TAKEN]=ALREADY_EXISTS`.
+
 Core's `STALE_VERSION` is therefore `ABORTED`, unless the request sent an `etag`: then its code is
 `PRECONDITION_FAILED`, as REST answers a stale `If-Match` 412, and its status is still `ABORTED`, as AIP-154 answers a
 stale etag (see <<versions>>). Every other `PRECONDITION_FAILED` (a weak or unbound tag, or one an operation throws
-without a `STALE_VERSION` as its direct cause)
-is `FAILED_PRECONDITION`.
+without a `STALE_VERSION` as its direct cause) is `FAILED_PRECONDITION`.
 
 Override the status of any code, for every operation or for one, with the code in brackets and a `Status.Code` name:
 
@@ -671,6 +736,64 @@ status of a built-in code (`ALREADY_EXISTS`, and `METHOD_NOT_FOUND`), the catego
 operation bean are listed in one WARN at startup,
 `No operation bean has these names under synapse.api.grpc.operations, so their settings have no effect: [<names>].
 Check the operation names for typos.`, as core lists those under `synapse.operations`.
+
+[#own-status]
+=== A hand-written service's own status
+
+A status that a hand-written service (see <<escape-hatch>>) throws as a `StatusException` or
+`StatusRuntimeException`, or passes to `responseObserver.onError(...)`, is usually a downstream call's failure that it
+forwards. Its description and trailers may describe the downstream service, so it keeps only its code:
+
+* the description is dropped, unless `synapse.errors.include-detail` is `true`;
+* its `grpc-status-details-bin` is always replaced by Synapse's `ErrorInfo`, even with `include-detail`: the
+  downstream service's `ErrorInfo` names that service, and its `BadRequest` names that service's fields;
+* its other trailers are dropped, unless `include-detail` is `true`;
+* Synapse's `ErrorInfo` is always added, with the correlation id and, as `reason`, the code the status maps back to:
+
+[cols="2,2",options="header"]
+|===
+|Status |`reason`
+|`INVALID_ARGUMENT`, `OUT_OF_RANGE` |`VALIDATION_FAILED`
+|`UNAUTHENTICATED` |`UNAUTHENTICATED`
+|`PERMISSION_DENIED` |`FORBIDDEN`
+|`NOT_FOUND` |`NOT_FOUND`
+|`ALREADY_EXISTS` |`ALREADY_EXISTS`
+|`ABORTED` |`CONFLICT`
+|`FAILED_PRECONDITION` |`PRECONDITION_FAILED`
+|`RESOURCE_EXHAUSTED` |`RATE_LIMITED`
+|`UNAVAILABLE` |`UNAVAILABLE`
+|`DEADLINE_EXCEEDED` |`DEADLINE_EXCEEDED`
+|Any other |`INTERNAL`
+|===
+
+`FAILED_PRECONDITION` maps to `PRECONDITION_FAILED`, the code that a weak or stale `etag` also gets (see
+<<versions>>), so the code alone doesn't tell them apart. `VALIDATION_FAILED` here carries no `BadRequest`:
+Synapse doesn't know which of your fields were wrong. Each rewritten status is logged at DEBUG on
+`io.americanexpress.synapse.api.grpc`, with its code and its original description.
+
+IMPORTANT: This changes what a deliberate `Status.NOT_FOUND.withDescription("...")` sends: by default the caller gets
+the code with no description. To send a message, throw a `SynapseException` with a code and a message template (it is
+written as any Synapse error, see above), or set `synapse.errors.include-detail`.
+
+The same holds for a status that one of your own server interceptors closes the call with, when it is ordered after
+`SynapseGrpcContextInterceptor.ORDER` (`100`), which includes any interceptor without `@Order`: it runs inside Synapse's
+interceptor, so Synapse can't tell its status from the service's. An interceptor ordered before `100` (outside
+Synapse's) keeps its description. To send a message from an inner one, order it before `100` or throw a
+`SynapseException` (see <<edge-interceptors>>).
+
+The services Boot adds are treated the same way, since Synapse's interceptor is global: an error status of the
+`grpc.health.v1.Health` service or of server reflection keeps only its code. A health `Check` for a service name the
+server doesn't know answers `NOT_FOUND` with no description and with Synapse's `ErrorInfo` (`reason` `NOT_FOUND`), so
+health probes and clients that read the code keep working.
+
+A status from your own `@GrpcAdvice` or exception handler, or from Spring Security's handler, is your application's
+answer and is left alone. An exception that isn't a status, passed to `onError(...)`, still goes through the exception
+handlers (see <<exception-handlers>>); trailers the service or an inner interceptor attached to it are dropped unless
+`include-detail` is `true`.
+
+The code is kept as it is, so a downstream `INVALID_ARGUMENT` or `NOT_FOUND` still blames your caller. P2 adds a
+marker that a Synapse client interceptor puts on every status received over the channels Spring gRPC creates, so that
+a forwarded code that blames the caller becomes `INTERNAL` while a deliberate status keeps its code.
 
 [#not-found]
 === Not found
@@ -717,6 +840,7 @@ id in the trailers and in `ErrorInfo`.
   (`SETTINGS_MAX_HEADER_LIST_SIZE`, 16384 bytes by default), so a grpc-java client refuses to send larger metadata
   and fails the call itself, before the server sees it.
 
+[#exception-handlers]
 === Exception handlers
 
 Synapse's `GrpcExceptionHandler` (`synapseGrpcExceptionHandler`) is ordered last, so your handlers, `@GrpcAdvice`
@@ -726,8 +850,9 @@ below `Ordered.LOWEST_PRECEDENCE`) or its auto-configuration is
 `@AutoConfiguration(before = SynapseGrpcErrorAutoConfiguration.class)`: otherwise it ties with Synapse's handler, and
 the one registered first answers. Synapse's handler always answers:
 
-* a `StatusException` or `StatusRuntimeException` passes through unchanged (an escape hatch's explicit choice); the
-  edge still adds the correlation id to the trailers;
+* a `StatusException` or `StatusRuntimeException` keeps only its code unless `synapse.errors.include-detail` is
+  `true`, and gets Synapse's `ErrorInfo` (see <<own-status>>); the edge adds the correlation id to the trailers. One
+  whose status is `OK` is treated as anything else;
 * a `SynapseException` is written as above;
 * anything else is `INTERNAL`, logged once at ERROR with its stack trace on `io.americanexpress.synapse.api.grpc`, with
   the correlation id.
@@ -853,8 +978,14 @@ and echoes the correlation id.
 |Boot's observation interceptor |`0` |The server observation and its span.
 |Boot's exception handling interceptor |`1` |Asks the `GrpcExceptionHandler` beans for a failure's status.
 |`synapseGrpcContextInterceptor` |`100` |Opens the request context (correlation id, attributes, locale, deadline)
-and caps concurrent calls.
+and caps concurrent calls. A status that anything inside it closes the call with keeps only its code (see
+<<own-status>>): a hand-written service, and your own interceptors ordered after `100`, including any without
+`@Order`.
 |===
+
+An interceptor of yours that closes the call with a status (an API-key or tenant check, for example) keeps its
+description only when it is ordered before `100`, outside Synapse's; ordered after `100`, its status keeps only its
+code unless `synapse.errors.include-detail` is `true`.
 
 The other beans (`grpcDeadlinePolicy`, `grpcConcurrencyLimit`, `grpcErrorStatuses`, `grpcStatusWriter`,
 `synapseGrpcExceptionHandler`, `synapseGrpcServiceCompiler`, `synapseGrpcBindingsCompiler`,
@@ -934,10 +1065,12 @@ class WatchService extends WatchServiceGrpc.WatchServiceImplBase {
 ----
 
 * An exception the service throws goes through the exception handlers above: a `SynapseException` gets the Synapse
-  error details, a `StatusException` or `StatusRuntimeException` passes through, anything else is `INTERNAL`. So does
-  an exception passed to `responseObserver.onError(...)`, except a status exception, which reaches the caller as it
-  is, with the correlation id added. This holds when the service completes the call from a thread of its own (a
-  future's callback, a streaming producer): the error details carry the call's correlation id and locale.
+  error details, a `StatusException` or `StatusRuntimeException` keeps only its code unless
+  `synapse.errors.include-detail` is `true` (see <<own-status>>), anything else is `INTERNAL`. So does an exception
+  passed to `responseObserver.onError(...)`. A status exception passed there, or any other status the service closes
+  its call with, keeps only its code the same way, with Synapse's `ErrorInfo` and the correlation id added. This holds
+  when the service completes the call from a thread of its own (a future's callback, a streaming producer): the error
+  details carry the call's correlation id and locale.
 * The service maps messages itself; no field mapping, violation paths or not-found handling apply.
 
 [#aot]

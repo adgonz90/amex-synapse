@@ -99,6 +99,12 @@ final class SchemaFixtures {
     record Customer(String name, @Nullable Address address, Optional<Address> billing) {
     }
 
+    /** Items whose type is {@code @Nullable}, in JSpecify's syntax, at every depth, next to non-null ones. */
+    @SuppressWarnings("ArrayRecordComponent")
+    record Gaps(List<@Nullable String> gaps, Map<String, @Nullable Address> notes, @Nullable Integer[] holes,
+            List<List<@Nullable String>> rows, List<String> plain, Map<String, Address> addresses) {
+    }
+
     enum Sort {
         @JsonProperty("by-title")
         TITLE, YEAR
@@ -340,5 +346,17 @@ final class SchemaFixtures {
     /** Annotated as an object; a mapper's config override can make it an array. */
     @JsonFormat(shape = JsonFormat.Shape.OBJECT)
     record Span(int left, int right) {
+    }
+
+    /**
+     * Collections and maps, which the binder binds empty when they aren't sent, so an input requires only those that
+     * must have items (@NotEmpty, @Size(min >= 1)); an array keeps its rule.
+     */
+    record Bag(String name, @NotEmpty List<String> tags, Set<String> labels, Map<String, Integer> counts,
+            String[] codes, @Size(min = 1) Map<String, String> notes, @Size(max = 3) List<String> few) {
+    }
+
+    /** Holds a bag, so its input is documented apart from its output too. */
+    record Crate(Bag bag) {
     }
 }

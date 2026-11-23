@@ -30,7 +30,8 @@ import io.americanexpress.synapse.core.error.SynapseException;
  * operation, the status configured for every operation, the fixed status of a built-in code
  * ({@link SynapseErrors#ALREADY_EXISTS} is ALREADY_EXISTS, a {@link GrpcErrors} code its own status), and the status
  * of the error's category. A stale {@code etag} is {@code ABORTED} unless a status is configured for its code (see
- * {@link #statusFor(SynapseException, String)}).
+ * {@link #statusFor(SynapseException, String)}). {@link #codeFor(Status.Code)} maps the other way, for a status that
+ * Synapse didn't write.
  */
 public final class GrpcErrorStatuses {
 
@@ -114,6 +115,36 @@ public final class GrpcErrorStatuses {
             case UNAVAILABLE -> Status.Code.UNAVAILABLE;
             case TIMEOUT -> Status.Code.DEADLINE_EXCEEDED;
             case INTERNAL -> Status.Code.INTERNAL;
+        };
+    }
+
+    /**
+     * Returns the Synapse code that a gRPC status maps back to: the code of a status that Synapse didn't write, such
+     * as a hand-written service's own or a downstream call's failure it forwards. {@code INVALID_ARGUMENT} and
+     * {@code OUT_OF_RANGE} are {@link SynapseErrors#VALIDATION_FAILED} (with no violations), {@code ABORTED} is
+     * {@link SynapseErrors#CONFLICT}, {@code FAILED_PRECONDITION} is {@link SynapseErrors#PRECONDITION_FAILED},
+     * {@code PERMISSION_DENIED} is {@link SynapseErrors#FORBIDDEN}, {@code RESOURCE_EXHAUSTED} is
+     * {@link SynapseErrors#RATE_LIMITED}; {@code UNAUTHENTICATED}, {@code NOT_FOUND}, {@code ALREADY_EXISTS},
+     * {@code UNAVAILABLE} and {@code DEADLINE_EXCEEDED} are the code of the same name; any other status is
+     * {@link SynapseErrors#INTERNAL}.
+     *
+     * @param code the gRPC status code
+     * @return the Synapse code, never {@code null}
+     */
+    public static ErrorDetails codeFor(Status.Code code) {
+        return switch (code) {
+            case INVALID_ARGUMENT, OUT_OF_RANGE -> SynapseErrors.VALIDATION_FAILED;
+            case UNAUTHENTICATED -> SynapseErrors.UNAUTHENTICATED;
+            case PERMISSION_DENIED -> SynapseErrors.FORBIDDEN;
+            case NOT_FOUND -> SynapseErrors.NOT_FOUND;
+            case ALREADY_EXISTS -> SynapseErrors.ALREADY_EXISTS;
+            case ABORTED -> SynapseErrors.CONFLICT;
+            case FAILED_PRECONDITION -> SynapseErrors.PRECONDITION_FAILED;
+            case RESOURCE_EXHAUSTED -> SynapseErrors.RATE_LIMITED;
+            case UNAVAILABLE -> SynapseErrors.UNAVAILABLE;
+            case DEADLINE_EXCEEDED -> SynapseErrors.DEADLINE_EXCEEDED;
+            // CANCELLED, UNKNOWN, UNIMPLEMENTED, INTERNAL, DATA_LOSS, and any code a later grpc-java adds.
+            default -> SynapseErrors.INTERNAL;
         };
     }
 

@@ -18,17 +18,31 @@ import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.Cookie;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.web.format.DateTimeFormatters;
 import org.springframework.boot.autoconfigure.web.format.WebConversionService;
 import org.springframework.format.support.DefaultFormattingConversionService;
@@ -36,12 +50,15 @@ import org.springframework.http.MediaType;
 import org.springframework.mock.web.DelegatingServletInputStream;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockServletContext;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.web.servlet.function.RouterFunctions;
 import org.springframework.web.servlet.function.ServerRequest;
+import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.exc.InvalidDefinitionException;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.NullNode;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
@@ -55,8 +72,13 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.BookChanges;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CheckedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ClashOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ClashingDocksOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ClashingDocksRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CodedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CodesOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConditionalReadRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ContainersOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ContainersRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConvertOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ConvertRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CountedBookOperation;
@@ -67,8 +89,16 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DatedOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DelegatedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DelegatedBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Dock;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DocksByNameOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DocksByNameRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DocksOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.DocksRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.EditionOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.FindBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.FindBooksRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.FreeFormOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.FreeFormRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetConditionalBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GetTaggedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GuardedOperation;
@@ -80,10 +110,27 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.HiddenOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.IdFilter;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Isbn;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ItemsOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ItemsRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LabelFilter;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LabelFilterOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LabelFilterRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LabelsCommandOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LabelsOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LabelsRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LimitedPageRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseConditionOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseConditionRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseSealDock;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseSealOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.LooseSealRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.MoveDockOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.MoveDockRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.NullableLabelsOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.NullableLabelsRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.OwnReadersOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.OwnReadersRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PagedBooksRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PairFilter;
@@ -92,24 +139,38 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathDatedOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathDatedRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PathFilterOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Pen;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PenOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PenRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PingOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PutBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PutBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeQuery;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RangeSearchRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReadersHolderOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReadersHolderRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RepeatedOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.RepeatedRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ReviseBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ScheduleBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ScheduleBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SealedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SealedYard;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SealedYardOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SearchAllOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ShipmentOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ShipmentRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ShoutedOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ShoutedRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SimpleSourcesOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SimpleSourcesRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SortKey;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SourcedOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SourcedRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SpareDocksOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.SpareDocksRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StockBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StockBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBookOperation;
@@ -118,20 +179,30 @@ import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtu
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictBothRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictConditionRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictLabelsOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictLabelsRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictPutBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictPutBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.StrictShelfOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TaggedReadRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TenantId;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.ThrowingRecordOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.TreeOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.UpdateBookOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.UpdateBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WholeRevisionOperation;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WholeRevisionRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WriteOptions;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.Writer;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WriterOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.WriterRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.YardOperation;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.YardRequest;
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.api.rest.internal.edge.SizeLimitedRequest;
+import io.americanexpress.synapse.api.rest.internal.error.RestProtocolException;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.conditional.VersionCondition;
@@ -148,6 +219,7 @@ import io.americanexpress.synapse.test.operation.RequestContexts;
 
 import static io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.BLANK_TITLE;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 class RequestBinderTest {
@@ -156,8 +228,11 @@ class RequestBinderTest {
 
     private static final UUID TWO = new UUID(0, 2);
 
+    /** A {@code Dock} with every required component. */
+    private static final String DOCK = "{\"warehouseCode\":\"w\",\"bin\":1}";
+
     private final RequestBinder binder = new RequestBinder(JsonMapper.builder().build(),
-            new DefaultFormattingConversionService(), PagingSettings.defaults());
+            new DefaultFormattingConversionService(), PagingSettings.defaults(), CookieDuplicates.none());
 
     private final RestConventions writeOptionsFromQuery = RestConventions.builder().query(WriteOptions.class).build();
 
@@ -177,6 +252,26 @@ class RequestBinderTest {
             .header("X-Tags", RepeatedRequest::labels)
             .query(RepeatedRequest::filter)
             .build());
+
+    /** A binder whose mapper names properties in snake case, so JSON names differ from component names. */
+    private final RequestBinder snakeCase = new RequestBinder(
+            JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build(),
+            new DefaultFormattingConversionService(), PagingSettings.defaults(), CookieDuplicates.none());
+
+    private final RouteDefinition edition = route(
+            RestBindings.builder().post("/editions", new EditionOperation()).build());
+
+    private final RouteDefinition sourced = route(RestBindings
+            .builder()
+            .put("/books/{bookId}", new SourcedOperation())
+            .path("bookId", SourcedRequest::id)
+            .query("sort_by", SourcedRequest::sort)
+            .header("X-Id", SourcedRequest::requestId)
+            .cookie("sess", SourcedRequest::session)
+            .build());
+
+    private final RouteDefinition labelsFromBody = route(
+            RestBindings.builder().post("/labels", new LabelsCommandOperation()).build());
 
     @Test
     void bindsIdFromPathAndRestFromBody() {
@@ -392,26 +487,26 @@ class RequestBinderTest {
 
     @Test
     void nonJsonContentTypeIsUnsupported() {
-        assertError(() -> bind(createBook,
+        assertUnsupported(() -> bind(createBook,
                 MockMvcRequestBuilders.post("/books").contentType(MediaType.TEXT_PLAIN).content("{\"title\":\"T\"}"),
-                Map.of()), RestErrors.UNSUPPORTED_MEDIA_TYPE);
+                Map.of()));
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"application/xml", "text/json", "not a media type", "*/*"})
     void otherContentTypesAreUnsupported(String contentType) {
-        assertError(() -> bind(createBook,
+        assertUnsupported(() -> bind(createBook,
                 MockMvcRequestBuilders.post("/books").contentType(contentType).content("{\"title\":\"T\"}"),
-                Map.of()), RestErrors.UNSUPPORTED_MEDIA_TYPE);
+                Map.of()));
     }
 
     @Test
     void bodyWithoutContentTypeIsUnsupported() {
-        assertError(
-                () -> bind(createBook, MockMvcRequestBuilders.post("/books").content("{\"title\":\"T\"}"), Map.of()),
-                RestErrors.UNSUPPORTED_MEDIA_TYPE);
-        assertError(() -> bind(createBook, MockMvcRequestBuilders.post("/books").header("Transfer-Encoding", "chunked"),
-                Map.of()), RestErrors.UNSUPPORTED_MEDIA_TYPE);
+        assertUnsupported(
+                () -> bind(createBook, MockMvcRequestBuilders.post("/books").content("{\"title\":\"T\"}"), Map.of()));
+        assertUnsupported(
+                () -> bind(createBook, MockMvcRequestBuilders.post("/books").header("Transfer-Encoding", "chunked"),
+                        Map.of()));
     }
 
     @Test
@@ -546,8 +641,8 @@ class RequestBinderTest {
         assertViolations(() -> RequestContexts
                 .with()
                 .call(() -> Objects.requireNonNull(bind(headers, MockMvcRequestBuilders.get("/books"), Map.of()))),
-                new Violation("channel", "must not be null"), new Violation("session", "must not be null"),
-                new Violation("tenant", "must not be null"));
+                new Violation("X-Channel", "must not be null"), new Violation("session", "must not be null"),
+                new Violation("X-Tenant", "must not be null"));
     }
 
     @Test
@@ -592,7 +687,7 @@ class RequestBinderTest {
                 .call(() -> Objects
                         .requireNonNull(bind(annotate, annotateRequest(body), Map.of("id", ONE.toString())))),
                 new Violation("id", "conflicts with the value from the path"),
-                new Violation("channel", "conflicts with the value from the header"),
+                new Violation("X-Channel", "conflicts with the value from the header"),
                 new Violation("session", "conflicts with the value from the cookie"),
                 new Violation("requestedBy", "conflicts with the value from the request context"),
                 new Violation("region", "conflicts with the value from the request"),
@@ -849,6 +944,45 @@ class RequestBinderTest {
     }
 
     @Test
+    void nestedComponentJacksonIgnoresFailsAtStartup() {
+        RouteDefinition list = route(RestBindings.builder().post("/sealed", new SealedOperation()).build());
+        RouteDefinition map = route(RestBindings.builder().post("/yards", new SealedYardOperation()).build());
+        RouteDefinition whole = route(RestBindings
+                .builder()
+                .post("/shipments", new SealedYardOperation())
+                .body(SealedYard::shipments)
+                .build());
+
+        // As at the top level, at every depth of the body: a list item's, a map value's, and under .body(...).
+        for (RouteDefinition route : List.of(list, map, whole)) {
+            assertThatExceptionOfType(SynapseConfigurationException.class)
+                    .isThrownBy(() -> binder.checkBindable(route))
+                    .satisfies(e -> {
+                        assertThat(e.description())
+                                .startsWith("REST route POST " + route.path() + " (")
+                                .endsWith("): component SealedDock.seal is in the body but Jackson ignores it");
+                        assertThat(e.action())
+                                .isEqualTo("Make it @Nullable, or remove the @JsonIgnore, @JsonIgnoreProperties or "
+                                        + "READ_ONLY access that hides it from JSON.");
+                    });
+        }
+    }
+
+    @Test
+    void nestedNullableOrCollectionComponentJacksonIgnoresStartsFine() {
+        RouteDefinition loose = route(RestBindings.builder().post("/loose", new LooseSealOperation()).build());
+        RouteDefinition tree = route(RestBindings.builder().post("/trees", new TreeOperation()).build());
+
+        // Exempt as at the top level: a @Nullable component binds null and a collection binds empty, whatever is sent.
+        assertThatCode(() -> binder.checkBindable(loose)).doesNotThrowAnyException();
+        assertThat(bind(loose, json(MockMvcRequestBuilders.post("/loose"),
+                "{\"dock\":{\"warehouseCode\":\"w\",\"seal\":\"s\",\"tags\":[\"a\"]}}"), Map.of()))
+                .isEqualTo(new LooseSealRequest(new LooseSealDock("w", null, List.of())));
+        // A record that holds itself is checked once.
+        assertThatCode(() -> binder.checkBindable(tree)).doesNotThrowAnyException();
+    }
+
+    @Test
     void inputTypeJacksonCannotDescribeFailsAtStartup() {
         RouteDefinition clash = route(RestBindings.builder().post("/clash", new ClashOperation()).build());
 
@@ -906,7 +1040,8 @@ class RequestBinderTest {
         assertThat(mvcConversionService.canConvert(String.class, PairFilter.class)).isFalse();
         RouteDefinition isbn = route(
                 RestBindings.builder().get("/x", convert).query("isbn", ConvertRequest::isbn).build());
-        new RequestBinder(JsonMapper.builder().build(), mvcConversionService, PagingSettings.defaults())
+        new RequestBinder(JsonMapper.builder().build(), mvcConversionService, PagingSettings.defaults(),
+                CookieDuplicates.none())
                 .checkBindable(isbn);
         binder.checkBindable(isbn);
         assertThat(bind(isbn, MockMvcRequestBuilders.get(URI.create("/x?isbn=978-0")), Map.of()))
@@ -1088,7 +1223,7 @@ class RequestBinderTest {
     @Test
     void repeatedScalarHeaderIsSingleValueViolation() {
         assertViolations(() -> bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Id", "1", "2")),
-                new Violation("requestId", "must have a single value"));
+                new Violation("X-Id", "must have a single value"));
         assertThat(bindRepeated(MockMvcRequestBuilders.get("/books").header("X-Id", "1")))
                 .isEqualTo(new RepeatedRequest(null, null, null, 1L, null, null));
     }
@@ -1165,8 +1300,95 @@ class RequestBinderTest {
     }
 
     @Test
-    void repeatedCookieIsSingleValueViolation() {
-        RouteDefinition headers = route(RestBindings
+    void repeatedCookieTakesTheFirstCopy() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RequestBinder counted = countingBinder(registry);
+        RouteDefinition route = sessionRoute();
+
+        // As Spring's @CookieValue: a browser can hold two copies (another path or domain), and a 400 would last
+        // until one expires, so the first copy binds and the duplicate is counted.
+        assertThat(bindSession(counted, route, "a", "b"))
+                .isEqualTo(new HeaderRequest("web", "a", "c-1", "eu", new TenantId("acme")));
+        assertThat(sessionDuplicates(registry, route).count()).isEqualTo(1);
+
+        bindSession(counted, route, "a", "b", "c");
+        assertThat(sessionDuplicates(registry, route).count())
+                .as("one per request, whatever the copies")
+                .isEqualTo(2);
+    }
+
+    @Test
+    void repeatedCookieIsLoggedAtDebugByNameOnly() {
+        RequestBinder counted = countingBinder(new SimpleMeterRegistry());
+        RouteDefinition route = sessionRoute();
+
+        List<ILoggingEvent> lines = logged(() -> bindSession(counted, route, "s-first-1", "s-second-2"));
+
+        assertThat(lines).singleElement().satisfies(line -> {
+            assertThat(line.getLevel()).isEqualTo(Level.DEBUG);
+            assertThat(line.getFormattedMessage())
+                    .isEqualTo("Request sent cookie session more than once; the first copy is used")
+                    .doesNotContain("s-first-1", "s-second-2");
+            assertThat(line.getArgumentArray()).containsExactly("session");
+            assertThat(line.getThrowableProxy()).isNull();
+        });
+    }
+
+    @Test
+    void listCookieGetsEveryCopyAndIsNotCounted() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RequestBinder counted = countingBinder(registry);
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .get("/labels", new LabelsOperation())
+                .cookie("session", LabelsRequest::tags)
+                .build());
+        counted.checkBindable(route);
+
+        assertThat(bind(counted, route, MockMvcRequestBuilders
+                .get("/labels")
+                .cookie(new Cookie("session", "a"), new Cookie("session", "b")), Map.of()))
+                .isEqualTo(new LabelsRequest(List.of("a", "b")));
+        assertThat(registry.find(CookieDuplicates.METER).meters()).isEmpty();
+    }
+
+    @Test
+    void singleCookieIsNotCounted() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RequestBinder counted = countingBinder(registry);
+        RouteDefinition route = sessionRoute();
+        counted.checkBindable(route);
+
+        // Registered at startup, so the series exists at 0 before any duplicate.
+        assertThat(sessionDuplicates(registry, route).count()).isZero();
+        assertThat(bindSession(counted, route, "a"))
+                .isEqualTo(new HeaderRequest("web", "a", "c-1", "eu", new TenantId("acme")));
+        assertThat(sessionDuplicates(registry, route).count()).isZero();
+        assertThat(registry.find(CookieDuplicates.METER).meters()).hasSize(1);
+    }
+
+    @Test
+    void withoutARegistryTheFirstCopyStillBinds() {
+        RouteDefinition route = sessionRoute();
+        binder.checkBindable(route);
+
+        List<ILoggingEvent> lines = logged(() -> assertThat(bindSession(binder, route, "a", "b"))
+                .isEqualTo(new HeaderRequest("web", "a", "c-1", "eu", new TenantId("acme"))));
+
+        // Nothing to count on, but the duplicate is still logged.
+        assertThat(lines)
+                .extracting(ILoggingEvent::getFormattedMessage)
+                .containsExactly("Request sent cookie session more than once; the first copy is used");
+    }
+
+    private static RequestBinder countingBinder(MeterRegistry registry) {
+        return new RequestBinder(JsonMapper.builder().build(), new DefaultFormattingConversionService(),
+                PagingSettings.defaults(), new CookieDuplicates(registry));
+    }
+
+    /** A route that binds the single-valued {@code session} cookie. */
+    private static RouteDefinition sessionRoute() {
+        return route(RestBindings
                 .builder()
                 .get("/books", new HeadersOperation())
                 .header("X-Channel", HeaderRequest::channel)
@@ -1174,15 +1396,43 @@ class RequestBinderTest {
                 .context(HeaderRequest::requestedBy, RequestContext::correlationId)
                 .from(HeaderRequest::region, request -> "eu")
                 .build(), RestConventions.builder().header("X-Tenant", TenantId.class).build());
+    }
+
+    private static @Nullable Object bindSession(RequestBinder binder, RouteDefinition route, String... sessions) {
         MockHttpServletRequestBuilder request = MockMvcRequestBuilders
                 .get("/books")
                 .header("X-Channel", "web")
                 .header("X-Tenant", "acme")
-                .cookie(new Cookie("session", "s-1"), new Cookie("session", "s-2"));
+                .cookie(Arrays
+                        .stream(sessions)
+                        .map(value -> new Cookie("session", value))
+                        .toArray(Cookie[]::new));
+        return RequestContexts.with().correlationId("c-1").call(() -> bind(binder, route, request, Map.of()));
+    }
 
-        // RFC 6265 4.2.2: servers should not rely on the order of two cookies of one name, so neither is chosen.
-        assertViolations(() -> RequestContexts.with().call(() -> bind(headers, request, Map.of())),
-                new Violation("session", "must have a single value"));
+    private static Counter sessionDuplicates(MeterRegistry registry, RouteDefinition route) {
+        return registry
+                .get(CookieDuplicates.METER)
+                .tag("cookie", "session")
+                .tag("operation", route.operationName())
+                .counter();
+    }
+
+    /** Runs the action and returns the events, DEBUG and above, logged on the REST logger meanwhile. */
+    private static List<ILoggingEvent> logged(Runnable action) {
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.api.rest");
+        Level level = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            action.run();
+        } finally {
+            logger.setLevel(level);
+            logger.detachAppender(appender);
+        }
+        return new ArrayList<>(appender.list);
     }
 
     @Test
@@ -1200,7 +1450,7 @@ class RequestBinderTest {
                         .get(URI.create("/books?id=1&id=2&q=a&q=b&owner=1&owner=2"))
                         .header("X-Id", "1", "2")),
                 new Violation("id", "must have a single value"), new Violation("q", "must have a single value"),
-                new Violation("requestId", "must have a single value"),
+                new Violation("X-Id", "must have a single value"),
                 new Violation("owner", "must have a single value"));
     }
 
@@ -1403,15 +1653,15 @@ class RequestBinderTest {
     @Test
     void listMalformedAndUnconvertibleKeepTheirViolations() {
         RouteDefinition route = ifMatchRoute();
-        Violation single = new Violation("version", "must be a single entity tag");
+        Violation single = new Violation("If-Match", "must be a single entity tag");
         assertViolations(() -> bindIfMatch(route, "\"5\", \"6\""), single);
         assertViolations(() -> bindIfMatch(route, "\"5\"", "\"6\""), single);
         for (String bad : List.of("5", "\"5", "*, \"5\"", "\"5\",,", "", "\"5\" \"6\"")) {
-            assertViolations(() -> bindIfMatch(route, bad), new Violation("version", "must be an entity tag"));
+            assertViolations(() -> bindIfMatch(route, bad), new Violation("If-Match", "must be an entity tag"));
         }
-        assertViolations(() -> bindIfMatch(route, "\"abc\""), new Violation("version", "is not a valid value"));
+        assertViolations(() -> bindIfMatch(route, "\"abc\""), new Violation("If-Match", "is not a valid value"));
         // An empty tag converts to no number, so it names no version.
-        assertViolations(() -> bindIfMatch(route, "\"\""), new Violation("version", "is not a valid value"));
+        assertViolations(() -> bindIfMatch(route, "\"\""), new Violation("If-Match", "is not a valid value"));
     }
 
     @Test
@@ -1424,7 +1674,7 @@ class RequestBinderTest {
         assertThat(taggedRead(route, "\"x\"").tag()).isEqualTo("x");
         assertThat(taggedRead(route, "*").tag()).isNull();
         assertThat(taggedRead(route, "W/\"x\"").tag()).isEqualTo("x");
-        assertViolations(() -> taggedRead(route, "x"), new Violation("tag", "must be an entity tag"));
+        assertViolations(() -> taggedRead(route, "x"), new Violation("If-None-Match", "must be an entity tag"));
     }
 
     @Test
@@ -1476,7 +1726,7 @@ class RequestBinderTest {
                     .as(token)
                     .isThrownBy(() -> bindIfMatch(route, token))
                     .satisfies(e -> assertThat(e.violations())
-                            .containsExactly(new Violation("version", "is not a valid value")));
+                            .containsExactly(new Violation("If-Match", "is not a valid value")));
         }
         assertThat(Objects.requireNonNull(bindIfMatch(route, "\"16\"")).version()).isEqualTo(VersionCondition.of(16L));
     }
@@ -1487,7 +1737,7 @@ class RequestBinderTest {
         assertThat(Objects
                 .requireNonNull(bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":5}", "\"5\""))
                 .version()).isEqualTo(VersionCondition.of(5L));
-        Violation conflict = new Violation("version", "conflicts with the value from the header");
+        Violation conflict = new Violation("If-Match", "conflicts with the value from the header");
         assertViolations(() -> bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":6}", "\"5\""), conflict);
         assertViolations(() -> bindIfMatchWithBody(route, "{\"title\":\"T\",\"version\":\"x\"}", "\"5\""), conflict);
         // As for a plain type, * and an absent header carry no value, so a body version conflicts with them...
@@ -1541,12 +1791,503 @@ class RequestBinderTest {
         return Objects.requireNonNull((TaggedReadRequest) bind(route, request, Map.of("id", ONE.toString())));
     }
 
+    @Test
+    void bodyViolationUsesTheJsonName() {
+        assertViolations(() -> bind(snakeCase, edition, json(MockMvcRequestBuilders.post("/editions"), "{\"yr\":1}"),
+                Map.of()), new Violation("published_year", "must not be null"));
+    }
+
+    @Test
+    void jsonPropertyWinsOverTheNamingStrategy() {
+        assertViolations(() -> bind(snakeCase, edition,
+                json(MockMvcRequestBuilders.post("/editions"), "{\"published_year\":1,\"yr\":\"x\"}"), Map.of()),
+                new Violation("yr", "is not a valid value"));
+    }
+
+    @Test
+    void aliasIsNotTheViolationName() {
+        assertViolations(() -> bind(snakeCase, edition,
+                json(MockMvcRequestBuilders.post("/editions"), "{\"year\":\"x\",\"yr\":1}"), Map.of()),
+                new Violation("published_year", "is not a valid value"));
+    }
+
+    @Test
+    void queryViolationUsesTheParameterName() {
+        assertViolations(() -> bindSourced(MockMvcRequestBuilders.put("/books/1?sort_by=x"), "1"),
+                new Violation("sort_by", "is not a valid value"));
+        assertViolations(() -> bindSourced(MockMvcRequestBuilders.put("/books/1?sort_by=1&sort_by=2"), "1"),
+                new Violation("sort_by", RequestBinder.SINGLE_VALUE));
+    }
+
+    @Test
+    void headerViolationUsesTheHeaderName() {
+        assertViolations(() -> bindSourced(MockMvcRequestBuilders.put("/books/1").header("X-Id", "abc"), "1"),
+                new Violation("X-Id", "is not a valid value"));
+    }
+
+    @Test
+    void cookieViolationUsesTheCookieName() {
+        assertViolations(
+                () -> bindSourced(MockMvcRequestBuilders.put("/books/1").cookie(new Cookie("sess", "abc")), "1"),
+                new Violation("sess", "is not a valid value"));
+    }
+
+    @Test
+    void pathViolationUsesTheVariableName() {
+        assertViolations(() -> bindSourced(MockMvcRequestBuilders.put("/books/abc"), "abc"),
+                new Violation("bookId", "is not a valid value"));
+        assertViolations(() -> bindSourced(MockMvcRequestBuilders.put("/books/1"), null),
+                new Violation("bookId", "must not be null"));
+    }
+
+    @Test
+    void conflictUsesTheDeclaredName() {
+        assertViolations(
+                () -> bind(snakeCase, sourced, json(MockMvcRequestBuilders.put("/books/1"), "{\"id\":2}"),
+                        Map.of("bookId", "1")),
+                new Violation("bookId", "conflicts with the value from the path"));
+    }
+
+    @Test
+    void absentBodyListBindsEmpty() {
+        assertThat(bind(labelsFromBody, json(MockMvcRequestBuilders.post("/labels"), "{}"), Map.of()))
+                .isEqualTo(new LabelsRequest(List.of()));
+    }
+
+    @Test
+    void jsonNullListBindsEmpty() {
+        assertThat(bind(labelsFromBody, json(MockMvcRequestBuilders.post("/labels"), "{\"tags\":null}"), Map.of()))
+                .isEqualTo(new LabelsRequest(List.of()));
+    }
+
+    @Test
+    void absentQueryListBindsEmpty() {
+        RouteDefinition route = route(RestBindings.builder().get("/labels", new LabelsOperation()).build());
+        RouteDefinition filtered = route(RestBindings
+                .builder()
+                .get("/labels", new LabelFilterOperation())
+                .query(LabelFilterRequest::filter)
+                .build());
+
+        assertThat(bind(route, MockMvcRequestBuilders.get("/labels"), Map.of()))
+                .isEqualTo(new LabelsRequest(List.of()));
+        // A record bound from the query string: its list component is a query parameter too.
+        assertThat(bind(filtered, MockMvcRequestBuilders.get("/labels"), Map.of()))
+                .isEqualTo(new LabelFilterRequest(new LabelFilter(null, List.of())));
+    }
+
+    @Test
+    void absentHeaderListBindsEmpty() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .get("/labels", new LabelsOperation())
+                .header("X-Tags", LabelsRequest::tags)
+                .build());
+
+        assertThat(bind(route, MockMvcRequestBuilders.get("/labels"), Map.of()))
+                .isEqualTo(new LabelsRequest(List.of()));
+    }
+
+    @Test
+    void absentCookieListBindsEmpty() {
+        RouteDefinition route = route(
+                RestBindings
+                        .builder()
+                        .get("/labels", new LabelsOperation())
+                        .cookie("tags", LabelsRequest::tags)
+                        .build());
+
+        assertThat(bind(route, MockMvcRequestBuilders.get("/labels"), Map.of()))
+                .isEqualTo(new LabelsRequest(List.of()));
+    }
+
+    @Test
+    void absentSetAndMapBindEmpty() {
+        RouteDefinition route = route(RestBindings.builder().post("/containers", new ContainersOperation()).build());
+        ContainersRequest empty = new ContainersRequest(List.of(), Set.of(), new TreeSet<>(), new TreeSet<>(), Map.of(),
+                new TreeMap<>(), new TreeMap<>());
+
+        // The canonical constructor takes each value, so each has its declared type.
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/containers"), "{}"), Map.of())).isEqualTo(empty);
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/containers"),
+                "{\"all\":null,\"labels\":null,\"sorted\":null,\"navigable\":null,\"counts\":null,"
+                        + "\"sortedCounts\":null,\"navigableCounts\":null}"),
+                Map.of())).isEqualTo(empty);
+    }
+
+    @Test
+    void nestedRecordListBindsEmpty() {
+        RouteDefinition route = route(RestBindings.builder().post("/writers", new WriterOperation()).build());
+        // A nested @Nullable collection binds empty too: only a top-level one binds null.
+        WriterRequest empty = new WriterRequest(
+                new Writer("a", List.of(), List.of(), Set.of(), Map.of(), new TreeSet<>(), new TreeMap<>()));
+
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/writers"), "{\"writer\":{\"name\":\"a\"}}"),
+                Map.of())).isEqualTo(empty);
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/writers"),
+                "{\"writer\":{\"name\":\"a\",\"aliases\":null,\"notes\":null,\"genres\":null,\"ranks\":null,"
+                        + "\"sorted\":null,\"shelves\":null}}"),
+                Map.of())).isEqualTo(empty);
+    }
+
+    @Test
+    void nestedArrayListComponentBindsEmpty() {
+        RouteDefinition route = route(RestBindings.builder().post("/pens", new PenOperation()).build());
+        PenRequest empty = new PenRequest(new Pen("a", new ArrayList<>()));
+
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/pens"), "{\"pen\":{\"name\":\"a\"}}"), Map.of()))
+                .isEqualTo(empty);
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/pens"),
+                "{\"pen\":{\"name\":\"a\",\"aliases\":null}}"), Map.of())).isEqualTo(empty);
+    }
+
+    @Test
+    void unsentNestedComponentIsMissingAtEveryDepth() {
+        RouteDefinition route = route(RestBindings.builder().post("/shipments", new ShipmentOperation()).build());
+        String body = "{\"sku\":\"a\",\"origin\":{},\"stops\":[" + DOCK + ",{\"bin\":2}],"
+                + "\"docksByName\":{\"east\":{\"warehouseCode\":\"w\"}},\"spares\":[{\"warehouseCode\":null,\"bin\":3}],"
+                + "\"backup\":{\"warehouseCode\":\"w\"}}";
+
+        // As gRPC's presence rule: an unsent or null non-null component of a nested record, in a list item (by
+        // index), a map value (no key) or a set item (no index); @Nullable components and collections are exempt.
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/shipments"), body), Map.of()),
+                new Violation("origin.warehouseCode", "must not be null"),
+                new Violation("origin.bin", "must not be null"),
+                new Violation("stops[1].warehouseCode", "must not be null"),
+                new Violation("docksByName.bin", "must not be null"),
+                new Violation("spares.warehouseCode", "must not be null"),
+                new Violation("backup.bin", "must not be null"));
+    }
+
+    @Test
+    void violationsStopAtFifty() {
+        RouteDefinition route = route(RestBindings.builder().post("/shipments", new ShipmentOperation()).build());
+        RouteDefinition docks = route(
+                RestBindings.builder().post("/docks", new DocksOperation()).body(DocksRequest::docks).build());
+        String stops = String.join(",", Collections.nCopies(60, "{\"bin\":1}"));
+        String body = "{\"sku\":\"a\",\"origin\":" + DOCK + ",\"stops\":[" + stops + "]}";
+
+        // As gRPC's reader (RecordReaderTest.nestedViolationsStopAtFifty): a request reports its first 50 violations
+        // and reading stops there, so a body of thousands of items costs no more than one of fifty.
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> bind(route, json(MockMvcRequestBuilders.post("/shipments"), body), Map.of()))
+                .satisfies(e -> {
+                    assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+                    assertThat(e.violations()).hasSize(50).allMatch(v -> v.message().equals("must not be null"));
+                    assertThat(e.violations().getFirst().field()).isEqualTo("stops[0].warehouseCode");
+                    assertThat(e.violations().getLast().field()).isEqualTo("stops[49].warehouseCode");
+                });
+        // Two per item: the cap counts violations, not items, and stops inside the 25th.
+        String empty = "[" + String.join(",", Collections.nCopies(5_000, "{}")) + "]";
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> bind(docks, json(MockMvcRequestBuilders.post("/docks"), empty), Map.of()))
+                .satisfies(e -> {
+                    assertThat(e.violations()).hasSize(50);
+                    assertThat(e.violations().getLast()).isEqualTo(new Violation("[24].bin", "must not be null"));
+                });
+    }
+
+    @Test
+    void nestedRecordWithEveryRequiredComponentBinds() {
+        RouteDefinition route = route(RestBindings.builder().post("/shipments", new ShipmentOperation()).build());
+        String body = "{\"sku\":\"a\",\"origin\":" + DOCK + ",\"stops\":[" + DOCK + "],\"docksByName\":{\"east\":"
+                + DOCK + "},\"spares\":[" + DOCK + "]}";
+        Dock dock = new Dock("w", 1, null, List.of());
+
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/shipments"), body), Map.of()))
+                .isEqualTo(new ShipmentRequest("a", dock, List.of(dock), Map.of("east", dock), Set.of(dock), null));
+    }
+
+    @Test
+    void unsentNestedComponentUsesJsonNames() {
+        RouteDefinition route = route(RestBindings.builder().post("/shipments", new ShipmentOperation()).build());
+        String body = "{\"sku\":\"a\",\"origin\":{\"bin\":1},\"docks_by_name\":{\"east\":{\"warehouse_code\":\"w\"}}}";
+
+        assertViolations(() -> bind(snakeCase, route, json(MockMvcRequestBuilders.post("/shipments"), body), Map.of()),
+                new Violation("origin.warehouse_code", "must not be null"),
+                new Violation("docks_by_name.bin", "must not be null"));
+    }
+
+    @Test
+    void unsentComponentInAWholeBodyRecordIsMissing() {
+        RouteDefinition move = route(
+                RestBindings.builder().put("/docks/{id}", new MoveDockOperation()).body(MoveDockRequest::dock).build());
+        RouteDefinition docks = route(
+                RestBindings.builder().post("/docks", new DocksOperation()).body(DocksRequest::docks).build());
+
+        // The whole body is the record, so its components are named from the body's root.
+        assertViolations(() -> bind(move, json(MockMvcRequestBuilders.put("/docks/{id}", ONE), "{\"bin\":1}"),
+                Map.of("id", ONE.toString())), new Violation("warehouseCode", "must not be null"));
+        assertViolations(() -> bind(docks, json(MockMvcRequestBuilders.post("/docks"), "[" + DOCK + ",{}]"),
+                Map.of()), new Violation("[1].warehouseCode", "must not be null"),
+                new Violation("[1].bin", "must not be null"));
+        assertThat(bind(move, json(MockMvcRequestBuilders.put("/docks/{id}", ONE), DOCK), Map.of("id", ONE.toString())))
+                .isEqualTo(new MoveDockRequest(ONE, new Dock("w", 1, null, List.of())));
+    }
+
+    @Test
+    void unsentNestedComponentIsReportedBeforeAnInvalidSibling() {
+        RouteDefinition route = route(RestBindings.builder().post("/shipments", new ShipmentOperation()).build());
+
+        // A sent value that can't be read stays invalid; next to an unsent one, the unsent one is the answer.
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/shipments"),
+                "{\"sku\":\"a\",\"origin\":{\"warehouseCode\":\"w\",\"bin\":\"x\"}}"), Map.of()),
+                new Violation("origin", "is not a valid value"));
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/shipments"),
+                "{\"sku\":\"a\",\"origin\":{\"bin\":\"x\"}}"), Map.of()),
+                new Violation("origin.warehouseCode", "must not be null"));
+    }
+
+    @Test
+    void nestedValueWithItsOwnReaderIsNotChecked() {
+        RouteDefinition route = route(RestBindings.builder().post("/readers", new OwnReadersOperation()).build());
+        RouteDefinition held = route(RestBindings.builder().post("/held", new ReadersHolderOperation()).build());
+        String readers = "{\"custom\":{\"title\":\"T\"},\"delegated\":{\"name\":\"n\"},\"lenient\":{\"bin\":1},"
+                + "\"lenientItems\":[{\"bin\":1}]}";
+        OwnReadersRequest expected = new OwnReadersRequest(new CustomBookRequest(null, "T", 0),
+                new DelegatedBookRequest(null, "n", 0), new Dock("", 0, null, List.of()),
+                List.of(new Dock("", 0, null, List.of())));
+
+        // A record's own deserializer, a delegating creator and a component's own deserializer decide what they need,
+        // on the input record and deeper.
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/readers"), readers), Map.of())).isEqualTo(expected);
+        assertThat(bind(held, json(MockMvcRequestBuilders.post("/held"), "{\"readers\":" + readers + "}"), Map.of()))
+                .isEqualTo(new ReadersHolderRequest(expected));
+    }
+
+    @Test
+    void unsentComponentInsideAnOptionalOrAnArrayIsMissing() {
+        RouteDefinition route = route(RestBindings.builder().post("/yards", new YardOperation()).build());
+
+        // An Optional is looked through, and an array item is indexed like a list item.
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/yards"),
+                "{\"sku\":\"a\",\"spare\":{\"bin\":1},\"berths\":[" + DOCK + ",{\"warehouseCode\":\"w\"}]}"),
+                Map.of()), new Violation("spare.warehouseCode", "must not be null"),
+                new Violation("berths[1].bin", "must not be null"));
+        YardRequest bound = (YardRequest) Objects
+                .requireNonNull(bind(route,
+                        json(MockMvcRequestBuilders.post("/yards"),
+                                "{\"sku\":\"a\",\"spare\":" + DOCK + ",\"berths\":[]}"),
+                        Map.of()));
+        assertThat(bound.spare()).contains(new Dock("w", 1, null, List.of()));
+        assertThat(bound.berths()).isEmpty();
+    }
+
+    @Test
+    void nullItemIsMissing() {
+        RouteDefinition route = route(RestBindings.builder().post("/shipments", new ShipmentOperation()).build());
+        RouteDefinition items = route(RestBindings.builder().post("/items", new ItemsOperation()).build());
+        RouteDefinition docks = route(
+                RestBindings.builder().post("/docks", new DocksOperation()).body(DocksRequest::docks).build());
+
+        // As gRPC answers an element that reads as null: a list or array item by its index, a set item and a map
+        // value by the component (never the key), at every depth, each one counted.
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/shipments"),
+                "{\"sku\":\"a\",\"origin\":{\"warehouseCode\":\"w\",\"bin\":1,\"labels\":[\"x\",null]},"
+                        + "\"stops\":[null," + DOCK + ",null],\"docksByName\":{\"east\":null},\"spares\":[null]}"),
+                Map.of()), new Violation("origin.labels[1]", "must not be null"),
+                new Violation("stops[0]", "must not be null"), new Violation("stops[2]", "must not be null"),
+                new Violation("docksByName", "must not be null"), new Violation("spares", "must not be null"));
+        // Scalars too, and a primitive item, which Jackson alone rejects as not valid.
+        assertViolations(() -> bind(items, json(MockMvcRequestBuilders.post("/items"),
+                "{\"tags\":[\"a\",null],\"labels\":{\"k\":null},\"counts\":[1,null],\"holes\":[]}"), Map.of()),
+                new Violation("tags[1]", "must not be null"), new Violation("labels", "must not be null"),
+                new Violation("counts[1]", "must not be null"));
+        // The whole body is the list, so its items are named from the body's root.
+        assertViolations(() -> bind(docks, json(MockMvcRequestBuilders.post("/docks"), "[" + DOCK + ",null]"),
+                Map.of()), new Violation("[1]", "must not be null"));
+        // Each one counts towards the limit.
+        String nulls = String.join(",", Collections.nCopies(60, "null"));
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> bind(items, json(MockMvcRequestBuilders.post("/items"), "{\"tags\":[" + nulls + "]}"),
+                        Map.of()))
+                .satisfies(e -> assertThat(e.violations())
+                        .hasSize(50)
+                        .last()
+                        .isEqualTo(new Violation("tags[49]", "must not be null")));
+    }
+
+    @Test
+    void nullableOrCollectionItemKeepsItsNull() {
+        RouteDefinition items = route(RestBindings.builder().post("/items", new ItemsOperation()).build());
+
+        // A @Nullable item type (REST only: gRPC fails startup for it) passes the null through, and a collection item
+        // binds empty.
+        ItemsRequest bound = (ItemsRequest) Objects
+                .requireNonNull(bind(items,
+                        json(MockMvcRequestBuilders.post("/items"),
+                                "{\"gaps\":[null],\"notes\":{\"k\":null},\"counts\":[],\"holes\":[null],\"rows\":[null]}"),
+                        Map.of()));
+        assertThat(bound.gaps()).containsExactly((Dock) null);
+        assertThat(bound.notes()).containsEntry("k", null);
+        assertThat(bound.holes()).containsExactly((Dock) null);
+        assertThat(bound.rows()).containsExactly(List.of());
+    }
+
+    @Test
+    void nullJsonNodeOrOptionalItemIsMissing() {
+        RouteDefinition route = route(RestBindings.builder().post("/free", new FreeFormOperation()).build());
+
+        // Pin: the rule holds for every item type that isn't @Nullable, JsonNode and Optional included, though
+        // Jackson would read the null as NullNode or Optional.empty().
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/free"),
+                "{\"attrs\":{\"k\":null},\"opts\":[null]}"), Map.of()), new Violation("attrs", "must not be null"),
+                new Violation("opts[0]", "must not be null"));
+    }
+
+    @Test
+    void nullableJsonNodeItemKeepsItsNull() {
+        RouteDefinition route = route(RestBindings.builder().post("/free", new FreeFormOperation()).build());
+
+        // Pin: a free-form body that must carry JSON nulls declares its item type @Nullable (REST only), and the
+        // operation gets NullNode.
+        FreeFormRequest bound = (FreeFormRequest) Objects
+                .requireNonNull(bind(route, json(MockMvcRequestBuilders.post("/free"),
+                        "{\"loose\":{\"k\":null},\"nodes\":[null]}"), Map.of()));
+        assertThat(bound.loose().get("k")).isInstanceOf(NullNode.class);
+        assertThat(bound.nodes()).singleElement().isInstanceOf(NullNode.class);
+    }
+
+    @Test
+    void nullSetItemOrMapValueOfTheWholeBodyIsNamedByTheComponent() {
+        RouteDefinition spares = route(RestBindings
+                .builder()
+                .post("/spares", new SpareDocksOperation())
+                .body(SpareDocksRequest::spares)
+                .build());
+        RouteDefinition byName = route(RestBindings
+                .builder()
+                .post("/byName", new DocksByNameOperation())
+                .body(DocksByNameRequest::byName)
+                .build());
+
+        // A set item or map value at the body's root has no index or key, so it takes the whole-body component's
+        // name, as the component's other violations do.
+        assertViolations(() -> bind(spares, json(MockMvcRequestBuilders.post("/spares"), "[null]"), Map.of()),
+                new Violation("spares", "must not be null"));
+        assertViolations(
+                () -> bind(byName, json(MockMvcRequestBuilders.post("/byName"), "{\"east\":null}"), Map.of()),
+                new Violation("byName", "must not be null"));
+    }
+
+    @Test
+    void nestedRecordJacksonCannotDescribeIsInvalidNotMissing() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .post("/clashing", new ClashingDocksOperation())
+                .body(ClashingDocksRequest::docks)
+                .build());
+
+        // The check leaves a record Jackson can't describe to Jackson, whose failure is the value's violation.
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/clashing"), "[{}]"), Map.of()),
+                new Violation("docks", "is not a valid value"));
+    }
+
+    @Test
+    void theEmptyRuleIsOnTheBindersOwnMapperOnly() {
+        JsonMapper application = JsonMapper.builder().build();
+        RequestBinder own = new RequestBinder(application, new DefaultFormattingConversionService(),
+                PagingSettings.defaults(), CookieDuplicates.none());
+        String json = "{\"name\":\"a\",\"aliases\":null}";
+        RouteDefinition route = route(RestBindings.builder().post("/pens", new PenOperation()).build());
+
+        // One copy, made by the constructor: the mapper the binder reads the body with is the one mapper() returns
+        // (WireNames names with it), and the mapper passed in, in an application Boot's JsonMapper bean, keeps
+        // reading null.
+        assertThat(ReflectionTestUtils.getField(own, "bodyMapper")).isSameAs(own.mapper());
+        assertThat(own.mapper()).isNotSameAs(application);
+        assertThat(bind(own, route, json(MockMvcRequestBuilders.post("/pens"), "{\"pen\":" + json + "}"), Map.of()))
+                .isEqualTo(new PenRequest(new Pen("a", new ArrayList<>())));
+        assertThat(own.mapper().readValue(json, Pen.class).aliases()).isEmpty();
+        assertThat(application.readValue(json, Pen.class).aliases()).isNull();
+    }
+
+    @Test
+    void aComponentThatRejectsNullIsMissingWhenUnsent() {
+        // Its own null handling (Nulls.FAIL) answers the empty rule's null; the client sent nothing, so it is missing.
+        RouteDefinition route = route(RestBindings.builder().post("/labels", new StrictLabelsOperation()).build());
+
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/labels"), "{}"), Map.of()),
+                new Violation("tags", "must not be null"));
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/labels"), "{\"tags\":null}"), Map.of()),
+                new Violation("tags", "must not be null"));
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/labels"), "{\"tags\":[\"a\"]}"), Map.of()))
+                .isEqualTo(new StrictLabelsRequest(List.of("a")));
+        // Deeper, in a value that was sent, the rejected null makes that value invalid.
+        RouteDefinition shelf = route(RestBindings.builder().post("/shelves", new StrictShelfOperation()).build());
+        assertViolations(() -> bind(shelf, json(MockMvcRequestBuilders.post("/shelves"), "{\"shelf\":{\"tags\":null}}"),
+                Map.of()), new Violation("shelf", "is not a valid value"));
+    }
+
+    @Test
+    void nullableTopLevelListStaysNull() {
+        RouteDefinition route = route(RestBindings.builder().post("/labels", new NullableLabelsOperation()).build());
+
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/labels"), "{}"), Map.of()))
+                .isEqualTo(new NullableLabelsRequest(null));
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/labels"), "{\"tags\":null}"), Map.of()))
+                .isEqualTo(new NullableLabelsRequest(null));
+    }
+
+    @Test
+    void absentArrayIsStillMissing() {
+        RouteDefinition route = route(RestBindings.builder().post("/codes", new CodesOperation()).build());
+
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/codes"), "{}"), Map.of()),
+                new Violation("codes", "must not be null"));
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/codes"), "{\"codes\":null}"), Map.of()),
+                new Violation("codes", "must not be null"));
+    }
+
+    @Test
+    void nullWholeBodyListBindsEmpty() {
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .post("/labels", new LabelsCommandOperation())
+                .body(LabelsRequest::tags)
+                .build());
+
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/labels"), "null"), Map.of()))
+                .isEqualTo(new LabelsRequest(List.of()));
+        // Pin: a missing or empty body counts as {}, which is not a list, so the empty rule doesn't apply to it.
+        assertViolations(() -> bind(route, json(MockMvcRequestBuilders.post("/labels"), ""), Map.of()),
+                new Violation("tags", "is not a valid value"));
+        assertViolations(() -> bind(route, MockMvcRequestBuilders.post("/labels"), Map.of()),
+                new Violation("tags", "is not a valid value"));
+    }
+
+    @Test
+    void absentQueryListEqualsANullBodyProperty() {
+        // The query list binds empty, and so would the body's null: no conflict. A body list that has items differs.
+        RouteDefinition route = route(RestBindings
+                .builder()
+                .post("/containers", new ContainersOperation())
+                .query(ContainersRequest::all)
+                .build());
+
+        assertThat(bind(route, json(MockMvcRequestBuilders.post("/containers"), "{\"all\":null}"), Map.of()))
+                .isEqualTo(new ContainersRequest(List.of(), Set.of(), new TreeSet<>(), new TreeSet<>(), Map.of(),
+                        new TreeMap<>(), new TreeMap<>()));
+        assertViolations(
+                () -> bind(route, json(MockMvcRequestBuilders.post("/containers"), "{\"all\":[\"a\"]}"), Map.of()),
+                new Violation("all", "conflicts with the value from the query string"));
+    }
+
+    private @Nullable Object bindSourced(MockHttpServletRequestBuilder builder, @Nullable String bookId) {
+        return bind(snakeCase, sourced, json(builder, "{}"), bookId == null ? Map.of() : Map.of("bookId", bookId));
+    }
+
     private static MockHttpServletRequestBuilder json(MockHttpServletRequestBuilder builder, String body) {
         return builder.contentType(MediaType.APPLICATION_JSON).content(body);
     }
 
     private @Nullable Object bind(RouteDefinition route, MockHttpServletRequestBuilder builder,
             Map<String, String> pathVariables) {
+        return bind(binder, route, builder, pathVariables);
+    }
+
+    private static @Nullable Object bind(RequestBinder binder, RouteDefinition route,
+            MockHttpServletRequestBuilder builder, Map<String, String> pathVariables) {
         MockHttpServletRequest servletRequest = builder.buildRequest(new MockServletContext());
         servletRequest.setAttribute(RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, pathVariables);
         return binder.bind(route, ServerRequest.create(servletRequest, List.of()));
@@ -1576,6 +2317,14 @@ class RequestBinderTest {
         assertThatExceptionOfType(SynapseException.class).isThrownBy(call::run).satisfies(e -> {
             assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
             assertThat(e.violations()).containsExactly(violations);
+        });
+    }
+
+    /** A 415 that lists, in {@code Accept}, the body types a route reads: JSON and any {@code +json} type. */
+    private static void assertUnsupported(Runnable call) {
+        assertThatExceptionOfType(RestProtocolException.class).isThrownBy(call::run).satisfies(e -> {
+            assertThat(e.details()).isEqualTo(RestErrors.UNSUPPORTED_MEDIA_TYPE);
+            assertThat(e.headers()).containsExactly(Map.entry("Accept", "application/json, application/*+json"));
         });
     }
 

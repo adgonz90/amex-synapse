@@ -13,13 +13,18 @@
  */
 package io.americanexpress.synapse.api.rest.internal.error;
 
+import java.util.Map;
+
+import org.jspecify.annotations.Nullable;
+
 import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 
 /**
- * The one table that maps an HTTP status reported by the container or by a Spring {@code ErrorResponse} to a Synapse
- * error.
+ * The one table that maps an HTTP status reported by the container or by Spring MVC (an {@code ErrorResponse} or a
+ * {@code @ResponseStatus}) to a Synapse error. A status outside the table is kept: any other 4xx is
+ * {@link RestErrors#CLIENT_ERROR} and any other 5xx {@link RestErrors#SERVER_ERROR}, with that status.
  */
 final class StatusErrors {
 
@@ -27,14 +32,14 @@ final class StatusErrors {
     }
 
     /**
-     * Returns the error for a status.
+     * Returns the error for a status in the table.
      *
      * @param status the HTTP status
      * @param container whether the status comes from the servlet container's error dispatch, where a 404 means that no
      *     route matched
-     * @return the error; any other 4xx is {@code MALFORMED_REQUEST} and any other status {@code INTERNAL}
+     * @return the error, or {@code null} for a status outside the table
      */
-    static ErrorDetails forStatus(int status, boolean container) {
+    static @Nullable ErrorDetails forStatus(int status, boolean container) {
         return switch (status) {
             case 400 -> SynapseErrors.MALFORMED_REQUEST;
             case 401 -> SynapseErrors.UNAUTHENTICATED;
@@ -47,9 +52,40 @@ final class StatusErrors {
             case 413 -> RestErrors.PAYLOAD_TOO_LARGE;
             case 415 -> RestErrors.UNSUPPORTED_MEDIA_TYPE;
             case 429 -> SynapseErrors.RATE_LIMITED;
+            case 500 -> SynapseErrors.INTERNAL;
             case 503 -> SynapseErrors.UNAVAILABLE;
             case 504 -> SynapseErrors.DEADLINE_EXCEEDED;
-            default -> status >= 400 && status < 500 ? SynapseErrors.MALFORMED_REQUEST : SynapseErrors.INTERNAL;
+            default -> null;
         };
+    }
+
+    /**
+     * Returns the error a status is written as, with the headers and reason of the exception that answered it.
+     *
+     * @param status the HTTP status
+     * @param container whether the status comes from the servlet container's error dispatch
+     * @param headers the response headers of the exception, by name
+     * @param reason the reason of the exception, or {@code null}
+     * @param cause the exception, or {@code null} for a bare status
+     * @return the error: the table's code without a status of its own, or {@code CLIENT_ERROR} or
+     *     {@code SERVER_ERROR} keeping the status; {@code null} for 500 and for a status outside 400-599, which are
+     *     {@code INTERNAL}
+     */
+    static @Nullable KeptStatusException keep(int status, boolean container, Map<String, String> headers,
+            @Nullable String reason, @Nullable Throwable cause) {
+        ErrorDetails details = forStatus(status, container);
+        if (details == SynapseErrors.INTERNAL) {
+            return null;
+        }
+        if (details != null) {
+            return new KeptStatusException(details, null, headers, reason, cause);
+        }
+        if (status >= 400 && status <= 499) {
+            return new KeptStatusException(RestErrors.CLIENT_ERROR, status, headers, reason, cause);
+        }
+        if (status >= 500 && status <= 599) {
+            return new KeptStatusException(RestErrors.SERVER_ERROR, status, headers, reason, cause);
+        }
+        return null;
     }
 }

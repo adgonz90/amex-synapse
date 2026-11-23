@@ -32,9 +32,13 @@ import org.jspecify.annotations.Nullable;
  * @param etagComponent the name of the {@code .etag} output component, or {@code null} without {@code .etag}
  * @param sortKeys the sort keys of {@code .sortable}, as the operation receives them in {@code SortOrder.property()}
  *        (an enum's constant names), or {@code null} without {@code .sortable}; kept sorted
+ * @param majorVersion the binding's major version, which pairs it with the bindings of the same major version over
+ *        the other protocols: the major of a REST route's {@code .version(...)}, or the {@code v<N>} of the last
+ *        segment of a gRPC method's proto package ({@code bookstore.v1} is 1, {@code bookstore.v2beta1} is 2);
+ *        {@code null} for an unversioned binding, which pairs with every binding over the other protocols
  */
 public record BindingDeclaration(String protocol, String operationName, String binding, String notFoundCode,
-        @Nullable String etagComponent, @Nullable Set<String> sortKeys) {
+        @Nullable String etagComponent, @Nullable Set<String> sortKeys, @Nullable Integer majorVersion) {
 
     /**
      * Creates the declaration.
@@ -45,6 +49,7 @@ public record BindingDeclaration(String protocol, String operationName, String b
      * @param notFoundCode the effective not-found code
      * @param etagComponent the {@code .etag} component name, or {@code null}
      * @param sortKeys the sort keys, or {@code null}
+     * @param majorVersion the major version, or {@code null} for an unversioned binding
      */
     public BindingDeclaration {
         sortKeys = sortKeys == null ? null : Collections.unmodifiableSortedSet(new TreeSet<>(sortKeys));

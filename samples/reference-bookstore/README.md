@@ -362,6 +362,52 @@ grpcurl -plaintext -d '{"isbn": "978-1481465274", "title": "The Farthest Shore",
 }
 ```
 
+A required field the request leaves out is `must not be null` on both protocols, as REST reports a missing property.
+The contract declares the requests' required scalars `optional` (proto3), so the gRPC edge sees that `title` wasn't
+sent, instead of reading `""`, and neither call reaches the operation:
+
+```bash
+curl -s -i -X POST http://localhost:8080/books -H 'Content-Type: application/json' \
+  -d '{"isbn": "978-1481465281", "author": "Ursula K. Le Guin"}'
+grpcurl -plaintext -d '{"isbn": "978-1481465281", "author": "Ursula K. Le Guin"}' \
+  host.docker.internal:9090 synapse.samples.bookstore.v1.BookService/CreateBook
+```
+
+```
+HTTP/1.1 400 
+X-Correlation-Id: f6d41a10-8996-4b5b-90be-0a2bfd139d3d
+Vary: Origin
+Vary: Access-Control-Request-Method
+Vary: Access-Control-Request-Headers
+Content-Type: application/problem+json;charset=UTF-8
+Transfer-Encoding: chunked
+Date: Sun, 22 Nov 2026 07:45:16 GMT
+Connection: close
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request is invalid","code":"VALIDATION_FAILED","correlationId":"f6d41a10-8996-4b5b-90be-0a2bfd139d3d","violations":[{"field":"title","message":"must not be null"}]}
+ERROR:
+  Code: InvalidArgument
+  Message: The request is invalid
+  Details:
+  1)	{
+    	  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+    	  "domain": "bookstore",
+    	  "metadata": {
+    	    "correlationId": "ba0825ae-463c-4618-98ba-2ecef854d54b"
+    	  },
+    	  "reason": "VALIDATION_FAILED"
+    	}
+  2)	{
+    	  "@type": "type.googleapis.com/google.rpc.BadRequest",
+    	  "field_violations": [
+    	    {
+    	      "field": "title",
+    	      "description": "must not be null"
+    	    }
+    	  ]
+    	}
+```
+
 ### ETags across protocols
 
 An update or a delete must name the version it changes: `UpdateBookRequest.version` and `DeleteBookRequest.version`

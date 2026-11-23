@@ -497,6 +497,110 @@ class SynapseGrpcContextInterceptorTest {
     }
 
     @Test
+    void handWrittenStatusAtCloseKeepsOnlyItsCode() throws Exception {
+        start(interceptor(10));
+
+        assertThatThrownBy(() -> stub("x-correlation-id", "c-own").getItem(id("status")))
+                .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+                    assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+                    assertThat(e.getStatus().getDescription()).isNullOrEmpty();
+                    ErrorInfo info = detail(e, ErrorInfo.class);
+                    assertThat(info.getReason()).isEqualTo("FORBIDDEN");
+                    assertThat(info.getDomain()).isEqualTo("synapse");
+                    assertThat(info.getMetadataMap()).containsEntry("correlationId", "c-own");
+                    Metadata trailers = Objects.requireNonNull(e.getTrailers(), "trailers");
+                    assertThat(trailers.containsKey(key("x-internal"))).isFalse();
+                    assertThat(trailers.getAll(CORRELATION)).containsExactly("c-own");
+                });
+    }
+
+    @Test
+    void anInnerInterceptorsStatusKeepsOnlyItsCodeAndAnOuterOneKeepsItsDescription() throws Exception {
+        // Pin (R-11, review I1): an interceptor inside Synapse's closes through the same call as the service.
+        start(interceptor(10), null, List.of(closing("x-outer-check")), List.of(closing("x-inner-check")));
+
+        assertThatThrownBy(() -> stub("x-inner-check", "1").getItem(id("ok")))
+                .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+                    assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+                    assertThat(e.getStatus().getDescription()).isNullOrEmpty();
+                    assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("UNAUTHENTICATED");
+                });
+        assertThatThrownBy(() -> stub("x-outer-check", "1").getItem(id("ok")))
+                .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+                    assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+                    assertThat(e.getStatus().getDescription()).isEqualTo("missing API key");
+                });
+    }
+
+    /** An interceptor that closes the call with {@code UNAUTHENTICATED} when the request has the given metadata. */
+    private static ServerInterceptor closing(String trigger) {
+        return new ServerInterceptor() {
+            @Override
+            public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(ServerCall<ReqT, RespT> call,
+                    Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+                if (!headers.containsKey(key(trigger))) {
+                    return next.startCall(call, headers);
+                }
+                call.close(Status.UNAUTHENTICATED.withDescription("missing API key"), new Metadata());
+                return new ServerCall.Listener<>() {
+                };
+            }
+        };
+    }
+
+    @Test
+    void unknownWithAPlainCauseIsLeftForTheExceptionHandlers() throws Exception {
+        start(interceptor(10));
+
+        // Pin (R-11): Spring gRPC's exception handling call, which sits outside, hands the cause to the handlers (here
+        // none runs), so the rewrite leaves this status as it is.
+        assertThatThrownBy(() -> stub().getItem(id("plain")))
+                .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+                    assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.UNKNOWN);
+                    assertThat(Objects.requireNonNull(StatusProto.fromThrowable(e)).getDetailsList()).isEmpty();
+                });
+    }
+
+    @Test
+    void unknownWithAPlainCauseLeftForTheHandlersDropsTheServicesTrailers() throws Exception {
+        start(interceptor(10));
+
+        // Spring gRPC's exception handling call merges the handler's trailers into these, keeping them.
+        assertThatThrownBy(() -> stub().getItem(id("plain-trailers")))
+                .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+                    assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.UNKNOWN);
+                    Metadata trailers = Objects.requireNonNull(e.getTrailers(), "trailers");
+                    assertThat(trailers.containsKey(key("x-internal"))).isFalse();
+                });
+    }
+
+    @Test
+    void unknownCausedByAStatusIsRewritten() throws Exception {
+        start(interceptor(10));
+
+        // Spring gRPC's handlers would get only the cause, a status that Synapse didn't write.
+        assertThatThrownBy(() -> stub().getItem(id("status-cause")))
+                .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+                    assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.UNKNOWN);
+                    assertThat(e.getStatus().getDescription()).isNullOrEmpty();
+                    assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("INTERNAL");
+                });
+    }
+
+    @Test
+    void unknownCausedByACheckedStatusIsRewrittenToo() throws Exception {
+        // Pin (R-11): the checked StatusException branch of isForTheHandlers.
+        start(interceptor(10));
+
+        assertThatThrownBy(() -> stub().getItem(id("checked-status-cause")))
+                .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+                    assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.UNKNOWN);
+                    assertThat(e.getStatus().getDescription()).isNullOrEmpty();
+                    assertThat(detail(e, ErrorInfo.class).getReason()).isEqualTo("INTERNAL");
+                });
+    }
+
+    @Test
     void onlyTheServerObservationIsTagged() throws Exception {
         // An interceptor between Boot's observation interceptor and this one opens its own observation.
         ServerInterceptor ownObservation = new ServerInterceptor() {
@@ -556,7 +660,11 @@ class SynapseGrpcContextInterceptorTest {
 
     /**
      * A {@code CatalogService} whose {@code GetItem} records the request context, answers {@code ok}, throws for
-     * {@code fail}, and for {@code block} waits until it is released or the call's gRPC context is cancelled.
+     * {@code fail}, and for {@code block} waits until it is released or the call's gRPC context is cancelled. It
+     * completes with {@code onError} for {@code status} (a status with a description and a trailer of its own),
+     * {@code plain} (an exception that isn't a status), {@code plain-trailers} ({@code UNKNOWN} caused by such an
+     * exception, with a trailer of its own), {@code status-cause} ({@code UNKNOWN} caused by a status runtime
+     * exception) and {@code checked-status-cause} ({@code UNKNOWN} caused by a checked status exception).
      */
     static final class ProbeService extends CatalogServiceGrpc.CatalogServiceImplBase {
 
@@ -590,6 +698,27 @@ class SynapseGrpcContextInterceptorTest {
                             Thread.currentThread().getName()));
             if ("fail".equals(request.getId())) {
                 throw new IllegalStateException("operation failed");
+            }
+            @Nullable
+            Throwable failure = switch (request.getId()) {
+                case "status" -> Status.PERMISSION_DENIED
+                        .withDescription("secret")
+                        .asRuntimeException(metadata("x-internal", "1"));
+                case "plain" -> new IllegalStateException("plain");
+                case "plain-trailers" -> Status.UNKNOWN
+                        .withCause(new IllegalStateException("plain"))
+                        .asRuntimeException(metadata("x-internal", "1"));
+                case "checked-status-cause" -> Status.UNKNOWN
+                        .withCause(Status.NOT_FOUND.withDescription("row 7").asException())
+                        .asRuntimeException();
+                case "status-cause" -> Status.UNKNOWN
+                        .withCause(Status.NOT_FOUND.withDescription("row 7").asRuntimeException())
+                        .asRuntimeException();
+                default -> null;
+            };
+            if (failure != null) {
+                responseObserver.onError(failure);
+                return;
             }
             if ("block".equals(request.getId())) {
                 Context context = Context.current();

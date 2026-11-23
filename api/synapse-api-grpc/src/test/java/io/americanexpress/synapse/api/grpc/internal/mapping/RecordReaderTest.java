@@ -23,12 +23,15 @@ import java.util.Objects;
 import com.google.protobuf.BoolValue;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.BytesValue;
+import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.DoubleValue;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Empty;
 import com.google.protobuf.FloatValue;
 import com.google.protobuf.Int32Value;
 import com.google.protobuf.Int64Value;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.Message;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.UInt32Value;
@@ -54,6 +57,7 @@ import io.americanexpress.synapse.api.grpc.fixture.proto.PagedUpdateRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.PutDocRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.RenameDocRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Scalars;
+import io.americanexpress.synapse.api.grpc.fixture.proto.Titled;
 import io.americanexpress.synapse.api.grpc.fixture.proto.UpdateDocRequest;
 import io.americanexpress.synapse.api.grpc.internal.binding.ContextSource;
 import io.americanexpress.synapse.api.grpc.internal.binding.SortKeys;
@@ -149,7 +153,16 @@ class RecordReaderTest {
         Item empty = Item.newBuilder().setName("n").build();
 
         assertViolations(() -> items.read(dynamic(empty)), new Violation("id", MISSING),
-                new Violation("genre", MISSING), new Violation("author", MISSING));
+                new Violation("genre", MISSING), new Violation("author", MISSING), new Violation("version", MISSING));
+    }
+
+    @Test
+    void unsentOptionalRequiredScalarIsMustNotBeNull() {
+        // Pin (R-11): with presence, an unsent required scalar is missing, as REST reports an absent property.
+        RecordReader reader = MessageMapping.reader(Titled.getDescriptor(), Title.class, List.of(), List.of());
+
+        assertViolations(() -> reader.read(dynamic(Titled.getDefaultInstance())), new Violation("title", MISSING));
+        assertThat(reader.read(dynamic(Titled.newBuilder().setTitle("").build()))).isEqualTo(new Title(""));
     }
 
     @Test
@@ -239,7 +252,12 @@ class RecordReaderTest {
         assertThat(((Unsigned) Objects
                 .requireNonNull(reader
                         .read(dynamic(
-                                Scalars.newBuilder().setUint64Value(1L).setFixed32Value(-1).build()))))
+                                Scalars
+                                        .newBuilder()
+                                        .setUint32Value(0)
+                                        .setUint64Value(1L)
+                                        .setFixed32Value(-1)
+                                        .build()))))
                 .fixed32Value())
                 .isEqualTo(4_294_967_295L);
     }
@@ -301,7 +319,7 @@ class RecordReaderTest {
         }
         assertThat(depth).isEqualTo(90);
         com.google.protobuf.ByteString tooDeep = chain(150).toByteString();
-        assertThatExceptionOfType(com.google.protobuf.InvalidProtocolBufferException.class)
+        assertThatExceptionOfType(InvalidProtocolBufferException.class)
                 .isThrownBy(() -> DynamicMessage.parseFrom(Node.getDescriptor(), tooDeep));
     }
 
@@ -371,6 +389,26 @@ class RecordReaderTest {
     }
 
     @Test
+    void nestedViolationsStopAtFifty() {
+        RecordReader reader = MessageMapping.reader(Scalars.getDescriptor(), Containers.class, List.of(), List.of());
+        Scalars.Builder many = Scalars.newBuilder();
+        for (int i = 0; i < 60; i++) {
+            many.addAuthors(Author.newBuilder().setName("a"));
+        }
+
+        // REST answers the same shape the same way (RequestBinderTest.violationsStopAtFifty): the first 50 elements'
+        // unsent required field, then reading stops.
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> reader.read(dynamic(many.build())))
+                .satisfies(e -> {
+                    assertThat(e.code()).isEqualTo(SynapseErrors.VALIDATION_FAILED.code());
+                    assertThat(e.violations()).hasSize(50).allMatch(v -> v.message().equals(MISSING));
+                    assertThat(e.violations().getFirst()).isEqualTo(new Violation("authors[0].country_code", MISSING));
+                    assertThat(e.violations().getLast()).isEqualTo(new Violation("authors[49].country_code", MISSING));
+                });
+    }
+
+    @Test
     void elementViolationsCarryTheirIndexOrTheMapField() {
         RecordReader reader = MessageMapping.reader(Scalars.getDescriptor(), Containers.class, List.of(), List.of());
         Scalars invalid = Scalars
@@ -384,6 +422,27 @@ class RecordReaderTest {
 
         assertViolations(() -> reader.read(dynamic(invalid)), new Violation("authors[1].country_code", INVALID),
                 new Violation("authors_by_rank.country_code", INVALID), new Violation("genres[1]", MISSING));
+    }
+
+    @Test
+    void unsetMapValueReadsAsAnEmptyMessage() throws InvalidProtocolBufferException {
+        RecordReader reader = MessageMapping.reader(Scalars.getDescriptor(), Containers.class, List.of(), List.of());
+        FieldDescriptor byRank = Scalars.getDescriptor().findFieldByName("authors_by_rank");
+        FieldDescriptor value = byRank.getMessageType().findFieldByNumber(2);
+        // authors_by_rank (field 31, length-delimited) holding one entry with its key (7) and no value.
+        DynamicMessage keyOnly = DynamicMessage
+                .parseFrom(Scalars.getDescriptor(), new byte[]{(byte) 0xFA, 0x01, 0x02, 0x08, 0x07});
+
+        // Pin: protobuf-java fills a map entry's missing value with its default when it parses it, so hasField can't
+        // tell an unset value from an empty one, and REST's {"7": null} (byName must not be null) has no gRPC
+        // counterpart: the value is a message whose fields are unsent, reported by those fields.
+        assertThat(((Message) ((List<?>) keyOnly.getField(byRank)).getFirst()).hasField(value)).isTrue();
+        assertViolations(() -> reader.read(keyOnly), new Violation("authors_by_rank.name", MISSING),
+                new Violation("authors_by_rank.country_code", MISSING));
+        assertViolations(
+                () -> reader
+                        .read(dynamic(Scalars.newBuilder().putAuthorsByRank(7, Author.getDefaultInstance()).build())),
+                new Violation("authors_by_rank.name", MISSING), new Violation("authors_by_rank.country_code", MISSING));
     }
 
     @Test
@@ -426,7 +485,9 @@ class RecordReaderTest {
                         List.of(override("author.country_code", Flat::country)), List.of());
 
         assertThat(reader.read(dynamic(item()))).isEqualTo(new Flat("Dune", "US"));
-        assertThat(reader.read(dynamic(Item.newBuilder().setName("n").build()))).isEqualTo(new Flat("n", ""));
+        // An unsent country_code, inside an unsent author, is missing: it has presence.
+        assertViolations(() -> reader.read(dynamic(Item.newBuilder().setName("n").build())),
+                new Violation("author.country_code", MISSING));
         assertThat(reader.fieldPaths()).containsEntry("country", "author.country_code");
     }
 
@@ -452,7 +513,7 @@ class RecordReaderTest {
         RecordReader reader = MessageMapping.reader(Author.getDescriptor(), CheckedAuthor.class, List.of(), List.of());
 
         assertThatExceptionOfType(SynapseException.class)
-                .isThrownBy(() -> reader.read(dynamic(Author.getDefaultInstance())))
+                .isThrownBy(() -> reader.read(dynamic(Author.newBuilder().setName("").build())))
                 .satisfies(e -> {
                     assertThat(e.code()).isEqualTo(SynapseErrors.VALIDATION_FAILED.code());
                     assertThat(e.violations()).isEmpty();
@@ -467,7 +528,7 @@ class RecordReaderTest {
                         List.of());
 
         assertThatExceptionOfType(SynapseException.class)
-                .isThrownBy(() -> reader.read(dynamic(Author.getDefaultInstance())))
+                .isThrownBy(() -> reader.read(dynamic(Author.newBuilder().setName("").build())))
                 .satisfies(e -> assertThat(e.code()).isEqualTo(SynapseErrors.NOT_FOUND.code()));
     }
 
@@ -1042,6 +1103,9 @@ class RecordReaderTest {
     }
 
     record Containers(List<AuthorRec> authors, Map<Integer, AuthorRec> authorsByRank, List<Genre> genres) {
+    }
+
+    record Title(String title) {
     }
 
     record Flat(String name, String country) {

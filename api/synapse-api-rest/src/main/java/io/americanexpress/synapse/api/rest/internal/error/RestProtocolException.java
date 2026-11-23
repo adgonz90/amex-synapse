@@ -15,6 +15,8 @@ package io.americanexpress.synapse.api.rest.internal.error;
 
 import java.util.Map;
 
+import org.jspecify.annotations.Nullable;
+
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseException;
 
@@ -36,6 +38,24 @@ public class RestProtocolException extends SynapseException {
     public RestProtocolException(ErrorDetails details, Map<String, String> headers) {
         super(details);
         this.headers = Map.copyOf(headers);
+    }
+
+    /**
+     * Creates the exception with a cause.
+     *
+     * @param details the error
+     * @param headers the response headers to set, by name
+     * @param cause the cause, or {@code null} when there is none (a bare status of the container's error dispatch)
+     */
+    // initCause is Throwable's, called with a cause the caller passed: no subclass overrides it (KeptStatusException,
+    // the only one, is final), and SynapseException has no constructor that takes a null cause.
+    @SuppressWarnings("this-escape")
+    protected RestProtocolException(ErrorDetails details, Map<String, String> headers, @Nullable Throwable cause) {
+        super(details);
+        this.headers = Map.copyOf(headers);
+        if (cause != null) {
+            initCause(cause);
+        }
     }
 
     /**

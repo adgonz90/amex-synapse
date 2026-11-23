@@ -64,7 +64,7 @@ import io.americanexpress.synapse.core.paging.PageResult;
  * {@link NotFoundWithoutArgumentsException}, described with {@code NOT_FOUND}'s message;</li>
  * <li>writes the response and completes the call. A {@code PageResult} gets the token of its next page, by REST's
  * {@code Link: next} rule: its next cursor wrapped, or the next offset when it has none (none when {@code hasNext} is
- * false, or past {@code synapse.paging.max-offset}); the token is in the
+ * false; past {@code synapse.paging.max-offset}, a token that fails with the offset limit when used); it is in the
  * {@code next_page_token}, bound to the operation, the sort and the input's filters with no extra entries, so a token
  * issued over an unversioned REST route for the same request pages here too, and the reverse.</li>
  * </ol>
@@ -123,16 +123,28 @@ public final class UnaryOperationHandler implements ServerCalls.UnaryMethod<byte
      * @param cursors core's page cursors, which wrap and unwrap page tokens
      * @param paging core's {@code synapse.paging} properties: the page sizes and the offset cap
      * @return the handler
-     * @throws MappingException when the messages can't be mapped to the records
+     * @throws MappingException when the messages can't be mapped to the records; when the request's only problem is
+     *         required scalars without presence ({@link MappingException#presenceOnly()}), only once the response
+     *         mapped
      */
     public static UnaryOperationHandler create(MethodDeclaration method, Descriptor input, Descriptor output,
             PageCursors cursors, SynapsePagingProperties paging) {
         // As REST checks the preconditions of a write only (every method but GET and HEAD), gRPC does so for a method
         // bound to a CommandOperation.
         boolean write = CommandOperation.class.isAssignableFrom(OperationTypes.userClassOf(method.operation()));
-        RecordReader reader = MessageMapping
-                .reader(input, method.inputType(), method.overrides(), method.contexts(), write,
-                        PagingRules.of(paging, method.sortKeys()));
+        RecordReader reader;
+        try {
+            reader = MessageMapping
+                    .reader(input, method.inputType(), method.overrides(), method.contexts(), write,
+                            PagingRules.of(paging, method.sortKeys()));
+        } catch (MappingException e) {
+            if (!e.presenceOnly()) {
+                throw e;
+            }
+            // The response is still checked: any other problem fails at once, before the presence problems.
+            MessageMapping.writer(output, method.outputGenericType(), method.overrides(), method.etag());
+            throw e;
+        }
         RecordWriter writer = MessageMapping
                 .writer(output, method.outputGenericType(), method.overrides(), method.etag());
         return new UnaryOperationHandler(method, input, reader, writer, cursors, paging.maxOffset());
@@ -181,8 +193,8 @@ public final class UnaryOperationHandler implements ServerCalls.UnaryMethod<byte
 
     /**
      * Writes the output; a page with the token of the next page by REST's Link: next rule ({@link PageCursors#next}):
-     * its wrapped cursor, or for a page without one the next offset, capped by {@code synapse.paging.max-offset}, so
-     * the operation's raw cursor never reaches the caller.
+     * its wrapped cursor, or for a page without one the next offset (past {@code synapse.paging.max-offset}, a token
+     * that fails with the offset limit when used), so the operation's raw cursor never reaches the caller.
      */
     private DynamicMessage write(@Nullable Object record, @Nullable Object output) {
         if (!writer.pages()) {

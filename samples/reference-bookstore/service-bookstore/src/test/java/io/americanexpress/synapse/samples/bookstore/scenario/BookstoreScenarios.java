@@ -16,6 +16,7 @@ package io.americanexpress.synapse.samples.bookstore.scenario;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -121,6 +122,16 @@ public abstract class BookstoreScenarios {
 
         assertThat(invalid).isEqualTo(Outcome.failed(SynapseErrors.VALIDATION_FAILED, "title"));
         assertThat(invalid.category()).isEqualTo(ErrorCategory.INVALID_INPUT);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Protocol.class)
+    void missingTitleIsMustNotBeNullOnTitle(Protocol protocol) {
+        // REST leaves the property out; gRPC leaves the optional field unset, which it reads as unsent, not as "".
+        Outcome missing = client(protocol).create(isbn(), null, AUTHOR, null);
+
+        assertThat(missing).isEqualTo(Outcome.failed(SynapseErrors.VALIDATION_FAILED, "title"));
+        assertThat(client(protocol).lastViolations()).containsExactly(Map.entry("title", "must not be null"));
     }
 
     @ParameterizedTest

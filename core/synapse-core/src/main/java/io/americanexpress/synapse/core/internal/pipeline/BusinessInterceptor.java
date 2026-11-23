@@ -32,7 +32,8 @@ import io.americanexpress.synapse.core.operation.BusinessOperation;
  * observation (or timer, by {@link BusinessObservation} mode), then validation. There is no context, deadline,
  * translation or logging step: exceptions propagate unchanged. A rejected input is {@code INTERNAL}, with the
  * {@code VALIDATION_FAILED} as its cause: the service builds a business input, so its violations are never the
- * caller's to see.
+ * caller's to see. Each call's rejection records a token of its own, so an operation that unwraps the
+ * {@code VALIDATION_FAILED} and rethrows it still fails with {@code INTERNAL} (a rejection raised by another call).
  */
 final class BusinessInterceptor implements MethodInterceptor {
 
@@ -69,7 +70,8 @@ final class BusinessInterceptor implements MethodInterceptor {
 
     private @Nullable Object execute(MethodInvocation invocation) throws Throwable {
         try {
-            pipeline.validate(invocation.getArguments()[0]);
+            // A token of this call's own, so a caller that unwraps the rejection and rethrows it gets INTERNAL.
+            pipeline.validate(invocation.getArguments()[0], new Object());
         } catch (SynapseException rejected) {
             // The service built this input, so a violation is its bug, never the caller's.
             throw new SynapseException(SynapseErrors.INTERNAL, rejected);

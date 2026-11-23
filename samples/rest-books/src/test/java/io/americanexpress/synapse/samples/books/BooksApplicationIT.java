@@ -330,7 +330,7 @@ class BooksApplicationIT {
                 .body(read.body()));
 
         assertThat(conflict.status()).isEqualTo(400);
-        assertThat(conflict.json().get("violations").get(0).get("field").asString()).isEqualTo("version");
+        assertThat(conflict.json().get("violations").get(0).get("field").asString()).isEqualTo("If-Match");
         assertThat(conflict.json().get("violations").get(0).get("message").asString())
                 .isEqualTo("conflicts with the value from the header");
 

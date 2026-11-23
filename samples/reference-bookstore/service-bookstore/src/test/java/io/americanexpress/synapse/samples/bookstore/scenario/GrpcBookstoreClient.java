@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.samples.bookstore.scenario;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -88,6 +89,8 @@ public final class GrpcBookstoreClient implements BookstoreClient {
 
     private Status.@Nullable Code lastStatus;
 
+    private Map<String, String> lastViolations = Map.of();
+
     /**
      * Creates the client.
      *
@@ -108,12 +111,15 @@ public final class GrpcBookstoreClient implements BookstoreClient {
     }
 
     @Override
-    public Outcome create(String isbn, String title, String author, @Nullable Integer year) {
+    public Outcome create(String isbn, @Nullable String title, String author, @Nullable Integer year) {
         CreateBookRequest.Builder request = CreateBookRequest
                 .newBuilder()
                 .setIsbn(isbn)
-                .setTitle(title)
                 .setAuthor(author);
+        if (title != null) {
+            // An optional field: left unset, it is a required field the request didn't send.
+            request.setTitle(title);
+        }
         if (year != null) {
             request.setPublishedYear(Int32Value.of(year));
         }
@@ -227,6 +233,11 @@ public final class GrpcBookstoreClient implements BookstoreClient {
     }
 
     @Override
+    public Map<String, String> lastViolations() {
+        return lastViolations;
+    }
+
+    @Override
     public void close() {
         channel.shutdownNow();
         try {
@@ -250,8 +261,9 @@ public final class GrpcBookstoreClient implements BookstoreClient {
     }
 
     /**
-     * A failed call: its {@code ErrorInfo.reason}, its {@code BadRequest} fields and the status its code must have
-     * (kept in {@link #lastStatus()}, and not checked for {@code PRECONDITION_FAILED}).
+     * A failed call: its {@code ErrorInfo.reason}, its {@code BadRequest} fields (their messages kept in
+     * {@link #lastViolations()}) and the status its code must have (kept in {@link #lastStatus()}, and not checked for
+     * {@code PRECONDITION_FAILED}).
      */
     private Outcome failure(StatusRuntimeException e) {
         lastStatus = e.getStatus().getCode();
@@ -259,21 +271,25 @@ public final class GrpcBookstoreClient implements BookstoreClient {
         assertThat(status).as("status details of %s", e.getStatus()).isNotNull();
         String code = null;
         List<String> violations = new ArrayList<>();
+        Map<String, String> messages = new LinkedHashMap<>();
         for (Any detail : Objects.requireNonNull(status).getDetailsList()) {
             try {
                 if (detail.is(ErrorInfo.class)) {
                     code = detail.unpack(ErrorInfo.class).getReason();
                 } else if (detail.is(BadRequest.class)) {
-                    detail
+                    for (BadRequest.FieldViolation violation : detail
                             .unpack(BadRequest.class)
-                            .getFieldViolationsList()
-                            .forEach(violation -> violations
-                                    .add(CONTRACT_NAMES.getOrDefault(violation.getField(), violation.getField())));
+                            .getFieldViolationsList()) {
+                        String field = CONTRACT_NAMES.getOrDefault(violation.getField(), violation.getField());
+                        violations.add(field);
+                        messages.put(field, violation.getDescription());
+                    }
                 }
             } catch (InvalidProtocolBufferException ex) {
                 throw new AssertionError(ex);
             }
         }
+        lastViolations = messages;
         assertThat(code).as("ErrorInfo of %s", e.getStatus()).isNotNull();
         Outcome failure = Outcome.failed(Objects.requireNonNull(code), violations);
         ErrorDetails details = Outcome.details(code);

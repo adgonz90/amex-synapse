@@ -178,10 +178,11 @@ class GrpcBindingsCompilerTest {
 
         assertThat(registry.forOperation("get-item"))
                 .containsExactly(new BindingDeclaration("gRPC", "get-item", SERVICE + "/GetItem", "ITEM_NOT_FOUND",
-                        null, null));
+                        null, null, 1));
         // A method .bindAllByName() binds declares nothing: NOT_FOUND, no etag, no sort keys.
         assertThat(registry.forOperation("ping"))
-                .containsExactly(new BindingDeclaration("gRPC", "ping", SERVICE + "/Ping", "NOT_FOUND", null, null));
+                .containsExactly(
+                        new BindingDeclaration("gRPC", "ping", SERVICE + "/Ping", "NOT_FOUND", null, null, 1));
         assertThat(registry.operationNames()).hasSize(6);
     }
 
@@ -218,6 +219,20 @@ class GrpcBindingsCompilerTest {
                         .of("TITLE",
                                 "PUBLISHED_YEAR")),
                         tuple("synapse.fixture.v1.PagedBookService/ListTitles", null));
+    }
+
+    @Test
+    void packageVersionIsTheTrailingVSegment() {
+        assertThat(GrpcBindingsCompiler.packageVersion("bookstore.v1.Bookstore")).isEqualTo(1);
+        assertThat(GrpcBindingsCompiler.packageVersion("a.v2beta1.S")).isEqualTo(2);
+        assertThat(GrpcBindingsCompiler.packageVersion("a.v1p1beta1.S")).isEqualTo(1);
+        assertThat(GrpcBindingsCompiler.packageVersion("a.v10.S")).isEqualTo(10);
+        assertThat(GrpcBindingsCompiler.packageVersion("a.b.S")).isNull();
+        assertThat(GrpcBindingsCompiler.packageVersion("S")).isNull();
+        assertThat(GrpcBindingsCompiler.packageVersion("a.v1x.S")).isNull();
+        // A one-segment package is its own last segment; a version too large for an int reads as unversioned.
+        assertThat(GrpcBindingsCompiler.packageVersion("v3.S")).isEqualTo(3);
+        assertThat(GrpcBindingsCompiler.packageVersion("a.v99999999999.S")).isNull();
     }
 
     @Test

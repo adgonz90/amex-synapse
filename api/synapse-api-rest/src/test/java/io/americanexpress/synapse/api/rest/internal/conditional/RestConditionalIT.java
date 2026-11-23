@@ -347,7 +347,7 @@ class RestConditionalIT {
             assertThat(invalid.status()).as(bad).isEqualTo(400);
             assertThat(invalid.json().get("code").asString()).as(bad).isEqualTo("VALIDATION_FAILED");
             assertThat(invalid.json().get("violations")).as(bad).hasSize(1);
-            assertThat(invalid.json().get("violations").get(0).get("field").asString()).as(bad).isEqualTo("version");
+            assertThat(invalid.json().get("violations").get(0).get("field").asString()).as(bad).isEqualTo("If-Match");
         }
         assertThat(updateBook.calls()).hasValue(0);
     }

@@ -37,8 +37,12 @@ class RestErrorsTest {
                 ErrorCategory.INVALID_INPUT, 400);
         assertError(RestErrors.CORS_REJECTED, "The cross-origin request is not allowed", ErrorCategory.FORBIDDEN,
                 403);
+        // A Spring status outside Synapse's table keeps its status; these are the codes' defaults.
+        assertError(RestErrors.CLIENT_ERROR, "The request was rejected", ErrorCategory.INVALID_INPUT, 400);
+        assertError(RestErrors.SERVER_ERROR, "The server could not complete the request", ErrorCategory.INTERNAL,
+                500);
         // PRECONDITION_REQUIRED is core's (SynapseErrors), so that every protocol can raise it.
-        assertThat(RestErrors.values()).hasSize(8);
+        assertThat(RestErrors.values()).hasSize(10);
     }
 
     private static void assertError(RestErrors error, String message, ErrorCategory category, int status) {

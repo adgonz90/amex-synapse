@@ -36,15 +36,19 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.support.StaticMessageSource;
 
+import io.americanexpress.synapse.api.grpc.fixture.proto.Item;
+import io.americanexpress.synapse.api.grpc.fixture.proto.ListPagedBooksRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Scalars;
 import io.americanexpress.synapse.api.grpc.internal.edge.GrpcCallState;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MessageMapping;
+import io.americanexpress.synapse.api.grpc.internal.mapping.PagingRules;
 import io.americanexpress.synapse.api.grpc.internal.mapping.RecordReader;
 import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.paging.PageQuery;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,20 +148,20 @@ class GrpcStatusWriterTest {
                 .fieldPaths(MessageMapping
                         .reader(Scalars.getDescriptor(), Shelf.class, List.of(), List.of())
                         .fieldPaths());
-        // As Jakarta Validation names them: an element by its index, a map value by its key.
+        // As core names them (ViolationPaths): an element by its index, a map value without its key.
         SynapseException error = SynapseException
                 .ofViolations(SynapseErrors.VALIDATION_FAILED,
                         List
                                 .of(new Violation("authors[0].countryCode", "must not be blank"),
-                                        new Violation("authorsByRank[7].countryCode", "must not be blank"),
-                                        new Violation("authorsByRank[7]", "must not be null"),
+                                        new Violation("authorsByRank.countryCode", "must not be blank"),
+                                        new Violation("authorsByRank", "must not be null"),
                                         new Violation("authors[1]", "must not be null"),
                                         new Violation("missing[0].countryCode", "must not be blank")));
 
         StatusException written = writer(false).write(error, state);
 
-        // A list keeps its index; a map's key, the caller's data, is dropped; an unmapped path with brackets is cut
-        // before its first bracket, which may open a key.
+        // A list keeps its index; a map value continues with the value's field; an unmapped path with brackets is
+        // cut before its first bracket.
         BadRequest badRequest = statusOf(written).getDetails(1).unpack(BadRequest.class);
         assertThat(badRequest.getFieldViolationsList())
                 .extracting(BadRequest.FieldViolation::getField)
@@ -172,7 +176,8 @@ class GrpcStatusWriterTest {
                 .fieldPaths(MessageMapping
                         .reader(Scalars.getDescriptor(), Shelf.class, List.of(), List.of())
                         .fieldPaths());
-        // Jakarta Validation writes a String key as it is, brackets included.
+        // Core never writes a key, but a path that holds one (Jakarta Validation writes a String key as it is,
+        // brackets included) still fails closed.
         List<String> keys = List.of("a]b", "[x]", "]", "a].countryCode[b", "0");
         List<Violation> violations = new ArrayList<>();
         for (String key : keys) {
@@ -204,16 +209,17 @@ class GrpcStatusWriterTest {
                         "shelves[].by_rank{}.country_code", "rooms", "rooms", "rooms[]", "rooms{}",
                         "rooms[].tags", "rooms{}.tag_list", "rooms[].tags[]", "rooms{}.tag_list[]");
 
-        assertThat(GrpcStatusWriter.protoPath("shelves[2].byRank[fr].countryCode", paths))
+        assertThat(GrpcStatusWriter.protoPath("shelves[2].byRank.countryCode", paths))
                 .isEqualTo("shelves[2].by_rank.country_code");
-        assertThat(GrpcStatusWriter.protoPath("shelves[2].byRank[a]b].countryCode", paths))
-                .isEqualTo("shelves[2].by_rank.country_code");
-        assertThat(GrpcStatusWriter.protoPath("shelves[2].byRank[fr]", paths)).isEqualTo("shelves[2].by_rank");
-        assertThat(GrpcStatusWriter.protoPath("rooms[a]b].tags[3]", paths)).isEqualTo("rooms.tag_list[3]");
-        assertThat(GrpcStatusWriter.protoPath("rooms[[x]].tags", paths)).isEqualTo("rooms.tag_list");
+        assertThat(GrpcStatusWriter.protoPath("shelves[2].byRank", paths)).isEqualTo("shelves[2].by_rank");
+        assertThat(GrpcStatusWriter.protoPath("rooms.tags[3]", paths)).isEqualTo("rooms.tag_list[3]");
+        assertThat(GrpcStatusWriter.protoPath("rooms.tags", paths)).isEqualTo("rooms.tag_list");
         // An index that isn't a number can't be a list's, so nothing after the first bracket is used.
-        assertThat(GrpcStatusWriter.protoPath("shelves[x].byRank[fr].countryCode", paths)).isEqualTo("shelves");
-        // Many brackets in nested keys: the search is bounded and fails closed.
+        assertThat(GrpcStatusWriter.protoPath("shelves[x].byRank.countryCode", paths)).isEqualTo("shelves");
+        // A bracket after a map is a key, which core never writes, so nothing after the first bracket is used.
+        assertThat(GrpcStatusWriter.protoPath("shelves[2].byRank[fr].countryCode", paths)).isEqualTo("shelves");
+        assertThat(GrpcStatusWriter.protoPath("rooms[a]b].tags[3]", paths)).isEqualTo("rooms");
+        // Many brackets: read once, and cut.
         String brackets = "]".repeat(2_000);
         assertThat(GrpcStatusWriter
                 .protoPath("rooms[" + brackets + "].tags[" + brackets + "].x[" + brackets + "]", paths))
@@ -243,7 +249,7 @@ class GrpcStatusWriterTest {
         state.fieldPaths(reader.fieldPaths());
         SynapseException validation = SynapseException
                 .ofViolations(SynapseErrors.VALIDATION_FAILED,
-                        List.of(new Violation("authorsByRank[7].countryCode", "must not be null")));
+                        List.of(new Violation("authorsByRank.countryCode", "must not be null")));
 
         BadRequest badRequest = statusOf(writer(false).write(validation, state)).getDetails(1).unpack(BadRequest.class);
 
@@ -251,6 +257,58 @@ class GrpcStatusWriterTest {
         assertThat(badRequest.getFieldViolationsList())
                 .extracting(BadRequest.FieldViolation::getField)
                 .containsExactly(readerField);
+    }
+
+    @Test
+    void scalarListItemKeepsItsIndexOverGrpc() {
+        Map<String, String> paths = MessageMapping
+                .reader(Item.getDescriptor(), Tagged.class, List.of(), List.of())
+                .fieldPaths();
+
+        assertThat(GrpcStatusWriter.protoPath("tags[0]", paths)).isEqualTo("tags[0]");
+    }
+
+    @Test
+    void mapValuePropertyWithoutAKey() {
+        Map<String, String> paths = MessageMapping
+                .reader(Scalars.getDescriptor(), Shelf.class, List.of(), List.of())
+                .fieldPaths();
+
+        assertThat(GrpcStatusWriter.protoPath("authorsByRank.countryCode", paths))
+                .isEqualTo("authors_by_rank.country_code");
+        assertThat(GrpcStatusWriter.protoPath("authorsByRank", paths)).isEqualTo("authors_by_rank");
+        // A map value has no property the record doesn't declare: unmapped, so returned as it is.
+        assertThat(GrpcStatusWriter.protoPath("authorsByRank.missing", paths)).isEqualTo("authorsByRank.missing");
+    }
+
+    /**
+     * A hand-built violation field written as a binding key ({@code []} for an element) is read as a path, never looked
+     * up, so the binding's list and map markers ({@code []}, {@code {}}) never reach the caller.
+     */
+    @Test
+    void aFieldWrittenAsABindingKeyKeepsNoMarker() {
+        Map<String, String> shelf = MessageMapping
+                .reader(Scalars.getDescriptor(), Shelf.class, List.of(), List.of())
+                .fieldPaths();
+        Map<String, String> nested = Map
+                .of("shelves", "shelves", "shelves[]", "shelves[]", "shelves[].byRank", "shelves[].by_rank",
+                        "shelves[].byRank[]", "shelves[].by_rank{}", "shelves[].byRank[].countryCode",
+                        "shelves[].by_rank{}.country_code");
+
+        assertThat(shelf).containsEntry("authorsByRank[].countryCode", "authors_by_rank{}.country_code");
+        assertThat(GrpcStatusWriter.protoPath("authorsByRank[].countryCode", shelf)).isEqualTo("authors_by_rank");
+        assertThat(GrpcStatusWriter.protoPath("shelves[].byRank[].countryCode", nested)).isEqualTo("shelves");
+        assertThat(GrpcStatusWriter.protoPath("shelves[]", nested)).isEqualTo("shelves");
+    }
+
+    @Test
+    void pagingViolationFromThePipelineNamesTheField() {
+        Map<String, String> paths = MessageMapping
+                .reader(ListPagedBooksRequest.getDescriptor(), Listing.class, List.of(), List.of(), false,
+                        new PagingRules(20, 100, 1000, null))
+                .fieldPaths();
+
+        assertThat(GrpcStatusWriter.protoPath("page.size", paths)).isEqualTo("page_size");
     }
 
     @Test
@@ -375,6 +433,74 @@ class GrpcStatusWriterTest {
         assertThat(size).isLessThan(8192);
     }
 
+    @Test
+    void foreignStatusDropsItsTrailersAndKeepsTheCallersOnesUntouched() throws Exception {
+        Metadata.Key<String> internal = Metadata.Key.of("x-internal", Metadata.ASCII_STRING_MARSHALLER);
+        Metadata trailers = new Metadata();
+        trailers.put(internal, "1");
+
+        StatusException written = writer(false)
+                .writeForeign(Status.ABORTED.withDescription("lock on row 7"), trailers, state("c-1"));
+
+        assertThat(written.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
+        assertThat(written.getStatus().getDescription()).isNullOrEmpty();
+        Metadata out = Objects.requireNonNull(written.getTrailers());
+        assertThat(out.containsKey(internal)).isFalse();
+        com.google.rpc.Status status = statusOf(written);
+        assertThat(status.getCode()).isEqualTo(Status.Code.ABORTED.value());
+        assertThat(status.getDetailsList()).hasSize(1);
+        ErrorInfo info = status.getDetails(0).unpack(ErrorInfo.class);
+        assertThat(info.getReason()).isEqualTo("CONFLICT");
+        assertThat(info.getDomain()).isEqualTo("books");
+        assertThat(info.getMetadataMap()).isEqualTo(Map.of("correlationId", "c-1"));
+        // The status the service gave is not changed in place.
+        assertThat(trailers.get(internal)).isEqualTo("1");
+    }
+
+    @Test
+    void foreignStatusWithoutADescriptionHasNoneWithIncludeDetail() {
+        StatusException written = writer(true).writeForeign(Status.UNAVAILABLE, new Metadata(), state("c-1"));
+
+        assertThat(written.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+        assertThat(written.getStatus().getDescription()).isNullOrEmpty();
+        assertThat(errorInfo(written).getReason()).isEqualTo("UNAVAILABLE");
+    }
+
+    @Test
+    void foreignStatusOutsideACallGetsANewCorrelationId() {
+        StatusException written = writer(false).writeForeign(Status.DATA_LOSS, new Metadata(), null);
+
+        assertThat(written.getStatus().getCode()).isEqualTo(Status.Code.DATA_LOSS);
+        assertThat(errorInfo(written).getReason()).isEqualTo("INTERNAL");
+        assertThat(errorInfo(written).getMetadataOrThrow("correlationId")).matches(UUID_PATTERN);
+    }
+
+    @Test
+    void foreignTrailersAreKeptOnlyWithIncludeDetailAndNeverTheirDetails() {
+        Metadata.Key<String> internal = Metadata.Key.of("x-internal", Metadata.ASCII_STRING_MARSHALLER);
+        Metadata.Key<byte[]> details = Metadata.Key.of("grpc-status-details-bin", Metadata.BINARY_BYTE_MARSHALLER);
+        Metadata trailers = new Metadata();
+        trailers.put(internal, "1");
+        trailers.put(details, new byte[]{1, 2});
+
+        Metadata hidden = writer(false).foreignTrailers(trailers);
+        Metadata shown = writer(true).foreignTrailers(trailers);
+
+        assertThat(hidden.keys()).isEmpty();
+        assertThat(shown.get(internal)).isEqualTo("1");
+        assertThat(shown.containsKey(details)).isFalse();
+        // The service's trailers are not changed in place.
+        assertThat(trailers.get(internal)).isEqualTo("1");
+        assertThat(trailers.containsKey(details)).isTrue();
+    }
+
+    @Test
+    void foreignOkIsRejected() {
+        assertThatThrownBy(() -> writer(false).writeForeign(Status.OK, new Metadata(), state("c-1")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("status must not be OK");
+    }
+
     private GrpcStatusWriter writer(boolean includeDetail) {
         return new GrpcStatusWriter(new GrpcErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messageSource),
                 new SynapseErrorProperties(includeDetail, null), "books");
@@ -410,5 +536,11 @@ class GrpcStatusWriterTest {
     }
 
     record CodedShelf(Map<Integer, CodedAuthor> authorsByRank) {
+    }
+
+    record Tagged(List<String> tags) {
+    }
+
+    record Listing(String shelf, PageQuery page) {
     }
 }

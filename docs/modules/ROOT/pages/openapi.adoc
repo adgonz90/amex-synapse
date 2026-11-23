@@ -38,7 +38,9 @@ One operation per declared route, at its served path (`+/v2/books/{id}+` for a r
 * *Parameters.*
 ** Path variables are required.
 ** Query parameters (one per component of a query record), cookies and headers are required when the component is not
-   nullable.
+   nullable. A collection that isn't sent binds empty (xref:rest.adoc#input[REST input binding]), so it is required
+   only when its constraints need items (`@NotEmpty`, or `@Size` with a minimum of 1 or more), as an absent one is
+   then rejected; its schema has the `minItems`.
 ** `If-Match` and `If-None-Match` are strings described as `An entity tag ("5"), or *.`, required when their
    `VersionCondition` component is not nullable, as the edge requires them. `If-None-Match` is also documented on an
    `.etag` read.
@@ -48,7 +50,9 @@ One operation per declared route, at its served path (`+/v2/books/{id}+` for a r
 ** Every operation takes the correlation header and the deadline header, both optional.
 ** Components from `.context(...)` and `.from(...)` are not documented: the server derives them.
 * *Request body* (`application/json`): the input record when every component comes from the body, otherwise an object
-  of the body components, or the component of `.body(...)`. It is required when a body component is not nullable.
+  of the body components, or the component of `.body(...)`. It is required when a body component is required (not
+  nullable, and not a collection or map unless its constraints need items, as above), or when the `.body(...)`
+  component is not nullable.
 * *Success responses.*
 ** The status: `.status(201)` documents 201, `.status(fn)` documents `2XX`, `.created` 201 and `.accepted` 202 (both
    with `Location`), a `void` output or a `DELETE` without `.status` 204, anything else 200. `.emptyAs(n)` adds `n`
@@ -129,14 +133,21 @@ Synapse's own schema generator describes the types, on the application's `JsonMa
 * A record is a component, referenced with `$ref`. Its properties are the components the mapper writes (for an
   output) or reads (for an input), named by Jackson 3 introspection of the application's mapper, in component order:
   naming strategy, `@JsonProperty` and `@JsonIgnore` all apply. When a record is read with other names or properties
-  than it is written, its input is a second component, `<name>Input`.
-* `required` lists the non-nullable components (JSpecify). In an output, only those the mapper always writes.
-  A nullable property is `type: [<type>, "null"]`, or `anyOf` with `{"type": "null"}` for a reference.
+  than it is written, or has a non-nullable collection or map its input doesn't require (see `required`), its input
+  is a second component, `<name>Input`.
+* `required` lists the non-nullable components (JSpecify). In an output, only those the mapper always writes. In an
+  input record, at any depth, a collection or map only when its constraints need items (`@NotEmpty`, or `@Size` with
+  a minimum of 1 or more): the binder binds one that isn't sent, or is `null`, empty, which only those reject.
+  A nullable property is `type: [<type>, "null"]`, or `anyOf` with `{"type": "null"}` for a reference. So are the
+  `items` or `additionalProperties` of a record component whose item type is `@Nullable` (`List<@Nullable String>`,
+  `Map<String, @Nullable Address>`, `@Nullable Integer[]`), at any depth: the binder passes such a `null` item
+  through and answers any other `must not be null` (xref:rest.adoc#input[REST input binding]).
 * Components are named by the type's simple name; a generic record by its arguments (`EnvelopeOfBook`). When two
   types claim one name, both take their fully qualified name, and so does a type named `SynapseProblem` or
   `SynapseViolation`.
 * Constraints come from the `Validator`'s metadata (the `Default` group): `@NotNull` (required), `@NotBlank` and
-  `@NotEmpty` (required, length or items at least 1), `@Size`, `@Min`, `@Max`, `@DecimalMin`, `@DecimalMax`,
+  `@NotEmpty` (required, length or items at least 1), `@Size` (a minimum of 1 or more also makes an input collection
+  or map required), `@Min`, `@Max`, `@DecimalMin`, `@DecimalMax`,
   `@Positive`, `@PositiveOrZero`, `@Negative`, `@NegativeOrZero`, `@Pattern` and `@Email`. Other constraints are not
   described.
 

@@ -19,7 +19,9 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.LongStream;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -73,6 +75,10 @@ class RestPagingIT {
 
     private static final String NOT_VALID = "is not valid for this request";
 
+    /** The violation of a token past {@code synapse.paging.max-offset}, at its default of 1000. */
+    private static final String OFFSET_LIMIT = "has reached the offset limit (1000); narrow the query or use keyset "
+            + "paging";
+
     @Autowired
     private RestTestClient client;
 
@@ -87,6 +93,9 @@ class RestPagingIT {
 
     @Autowired
     private NumbersOperation numbers;
+
+    @Autowired
+    private EndlessOperation endless;
 
     @Autowired
     private PageCursors cursors;
@@ -477,6 +486,44 @@ class RestPagingIT {
         assertCursorViolation(call(client.get().uri("/books?size=2&cursor={cursor}", token)));
     }
 
+    @Test
+    void cappedPageLinksTheTokenAsCursor() {
+        Result capped = call(client.get().uri("/endless?offset=990&size=20"));
+
+        // 990 + 20 is past max-offset 1000: the Link carries the body's token as the cursor parameter.
+        assertThat(capped.status()).isEqualTo(200);
+        assertThat(capped.json().get("hasNext").asBoolean()).isTrue();
+        String token = capped.nextCursor();
+        assertThat(token).matches("[A-Za-z0-9_-]+");
+        assertThat(capped.headers().get(HttpHeaders.LINK))
+                .containsExactly("</endless?size=20&cursor=" + token + ">; rel=\"next\"");
+    }
+
+    @Test
+    void followingTheCappedLinkIsTheOffsetLimitViolation() {
+        String link = Objects
+                .requireNonNull(
+                        call(client.get().uri("/endless?offset=990&size=20")).headers().getFirst(HttpHeaders.LINK));
+        int calls = endless.inputs().size();
+
+        Result followed = call(client.get().uri(URI.create(link.substring(1, link.indexOf('>')))));
+
+        assertThat(followed.status()).isEqualTo(400);
+        assertThat(followed.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        assertThat(violations(followed)).containsExactly(Map.entry("cursor", OFFSET_LIMIT));
+        assertThat(endless.inputs()).hasSize(calls);
+    }
+
+    @Test
+    void offsetParameterPastTheCapKeepsItsMessage() {
+        // Pin (R-11): only a token past the cap gets the offset limit message; the offset parameter keeps its own.
+        Result over = call(client.get().uri("/endless?offset=1001"));
+
+        assertThat(over.status()).isEqualTo(400);
+        assertThat(over.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
+        assertThat(violations(over)).containsExactly(Map.entry("offset", "must be less than or equal to 1000"));
+    }
+
     private static void assertCursorViolation(Result result) {
         assertThat(result.status()).isEqualTo(400);
         assertThat(result.json().get("code").asString()).isEqualTo("VALIDATION_FAILED");
@@ -522,9 +569,14 @@ class RestPagingIT {
         }
 
         @Bean
+        EndlessOperation endlessOperation() {
+            return new EndlessOperation();
+        }
+
+        @Bean
         RestBindings paging(SearchBooksOperation books, ListAuthorsOperation authors, LettersOperation letters,
                 NumbersOperation numbers,
-                TenantBooksOperation tenantBooks) {
+                TenantBooksOperation tenantBooks, EndlessOperation endless) {
             return RestBindings
                     .builder()
                     .get("/books", books)
@@ -534,6 +586,7 @@ class RestPagingIT {
                     .get("/authors", authors)
                     .get("/letters", letters)
                     .get("/numbers", numbers)
+                    .get("/endless", endless)
                     .get("/shelves", tenantBooks)
                     .from(TenantBooksRequest::tenant, request -> request.headers().firstHeader("X-Tenant"))
                     .build();
@@ -674,6 +727,28 @@ class RestPagingIT {
             int start = input.offset() == null ? 0 : input.offset().intValue();
             int end = Math.min(start + input.size(), NUMBERS.size());
             return PageResult.of(NUMBERS.subList(start, end), end < NUMBERS.size());
+        }
+    }
+
+    /**
+     * Pages by offset only over a collection with no end: each page holds its offsets and has a next page, so the
+     * next offset passes {@code synapse.paging.max-offset}.
+     */
+    static class EndlessOperation implements QueryOperation<PageQuery, PageResult<String>> {
+
+        private final List<PageQuery> inputs = new CopyOnWriteArrayList<>();
+
+        /** Public, so the call reaches the target through the pipeline proxy. */
+        public List<PageQuery> inputs() {
+            return inputs;
+        }
+
+        @Override
+        public PageResult<String> execute(PageQuery input) {
+            inputs.add(input);
+            long start = input.offset() == null ? 0 : input.offset();
+            return PageResult
+                    .of(LongStream.range(start, start + input.size()).mapToObj(Long::toString).toList(), true);
         }
     }
 

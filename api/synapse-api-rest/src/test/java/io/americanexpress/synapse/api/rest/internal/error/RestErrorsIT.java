@@ -35,6 +35,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.client.RestTestClient;
@@ -43,6 +44,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -71,7 +73,7 @@ class RestErrorsIT {
     private RestTestClient client;
 
     private record Result(int status, String contentType, @Nullable String allow, @Nullable String correlationHeader,
-            String body) {
+            String body, @Nullable String accept) {
 
         JsonNode json() {
             return MAPPER.readTree(body);
@@ -82,7 +84,7 @@ class RestErrorsIT {
         var result = spec.exchange().returnResult(String.class);
         return new Result(result.getStatus().value(), String.valueOf(result.getResponseHeaders().getContentType()),
                 result.getResponseHeaders().getFirst("Allow"), result.getResponseHeaders().getFirst("X-Correlation-Id"),
-                String.valueOf(result.getResponseBody()));
+                String.valueOf(result.getResponseBody()), result.getResponseHeaders().getFirst("Accept"));
     }
 
     @Test
@@ -138,6 +140,8 @@ class RestErrorsIT {
 
         assertThat(result.status()).isEqualTo(415);
         assertThat(result.json().get("code").asString()).isEqualTo("UNSUPPORTED_MEDIA_TYPE");
+        // Spring's 415 keeps its Accept: what the controller consumes (review I1).
+        assertThat(result.accept()).isEqualTo("application/json");
     }
 
     @Test
@@ -147,6 +151,7 @@ class RestErrorsIT {
         assertThat(result.status()).isEqualTo(406);
         assertThat(result.contentType()).startsWith("application/problem+json");
         assertThat(result.json().get("code").asString()).isEqualTo("NOT_ACCEPTABLE");
+        assertThat(result.accept()).isEqualTo("application/json");
     }
 
     @Test
@@ -235,6 +240,33 @@ class RestErrorsIT {
     }
 
     @Test
+    void keptClientStatusFromAFilterIsAnsweredAtTheEdgeWithItsReason(CapturedOutput output) {
+        int start = output.getAll().length();
+
+        Result result = call(client.get().uri("/filter-unprocessable"));
+
+        // The innermost edge filter answers a kept 4xx; include-detail is on here, so the reason is the detail.
+        assertThat(result.status()).isEqualTo(422);
+        assertThat(result.contentType()).startsWith("application/problem+json");
+        assertThat(result.json().get("code").asString()).isEqualTo("CLIENT_ERROR");
+        assertThat(result.json().get("detail").asString()).isEqualTo("too many tags");
+        assertThat(result.correlationHeader()).isEqualTo(result.json().get("correlationId").asString());
+        assertThat(output.getAll().substring(start).lines().filter(line -> line.contains("ERROR"))).isEmpty();
+    }
+
+    @Test
+    void keptServerStatusFromAFilterReachesTheErrorController() {
+        Result result = call(client.get().uri("/filter-bad-gateway"));
+
+        // A server error leaves the filter chain; the container's error dispatch classifies the exception.
+        assertThat(result.status()).isEqualTo(502);
+        assertThat(result.contentType()).startsWith("application/problem+json");
+        assertThat(result.json().get("code").asString()).isEqualTo("SERVER_ERROR");
+        assertThat(result.json().get("detail").asString()).isEqualTo("upstream down");
+        assertThat(result.body()).doesNotContain("Exception");
+    }
+
+    @Test
     void neverAStackTrace() {
         Result result = call(client.get().uri("/boom"));
 
@@ -281,6 +313,12 @@ class RestErrorsIT {
                                 FilterChain chain) throws ServletException, IOException {
                             if (request.getRequestURI().equals("/filter-boom")) {
                                 throw new IllegalStateException("secret filter internals");
+                            }
+                            if (request.getRequestURI().equals("/filter-unprocessable")) {
+                                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT, "too many tags");
+                            }
+                            if (request.getRequestURI().equals("/filter-bad-gateway")) {
+                                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "upstream down");
                             }
                             chain.doFilter(request, response);
                         }

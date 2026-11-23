@@ -35,6 +35,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.CookieDuplicates;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
@@ -178,6 +179,13 @@ class PageQueryReaderTest {
     }
 
     @Test
+    void cursorWithRenamedOffsetNamesTheRenamedParameter() {
+        // M8: the violation names the offset parameter the caller sent, under its configured name.
+        assertViolations(new PageQueryReader(skipSettings()), query("cursor", "x", "skip", "5"), KEYS,
+                new Violation("cursor", "must not be combined with skip"));
+    }
+
+    @Test
     void sortWithoutSortableIsAViolation() {
         assertViolations(query("sort", "title"), null, new Violation("sort", "is not supported"));
         assertViolations(query("sort", ""), null, new Violation("sort", "is not supported"));
@@ -248,7 +256,7 @@ class PageQueryReaderTest {
         assertViolations(renamed, query("skip", "501"), KEYS,
                 new Violation("skip", "must be less than or equal to 500"));
         assertViolations(renamed, query("after", "x", "skip", "1"), KEYS,
-                new Violation("after", "must not be combined with offset"));
+                new Violation("after", "must not be combined with skip"));
         assertViolations(renamed, query("order", "price"), KEYS,
                 new Violation("order", "has a key that is not allowed (allowed: title, year, authorName)"));
         List<Violation> violations = new ArrayList<>();
@@ -311,7 +319,7 @@ class PageQueryReaderTest {
                         List.of())
                 .getFirst();
         return new PostBinder(new RequestBinder(JsonMapper.builder().build(),
-                new DefaultFormattingConversionService(), settings), route);
+                new DefaultFormattingConversionService(), settings, CookieDuplicates.none()), route);
     }
 
     private record PostBinder(RequestBinder binder, RouteDefinition route) {
