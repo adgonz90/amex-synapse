@@ -46,6 +46,8 @@ ${rootArtifactId}/
   mvnw, mvnw.cmd                            the Maven Wrapper, for POSIX shells and for Windows
   pom.xml                                   aggregator, parent synapse-parent; the three modules
   compose.yaml                              ${serviceName}-db (5432), postgres:18.6-alpine by digest
+  buf.yaml, buf.lock                        buf's lint and breaking-change rules for the contract; googleapis, locked
+  .github/workflows/buf.yml                 the Proto contracts (buf) check on pull requests to main
   contract-${serviceName}/
     pom.xml                                 protobuf-java, grpc-protobuf, grpc-stub, jakarta.validation-api, synapse-core
     src/main/proto/${packageInPathFormat}/v1/${serviceName}.proto
@@ -389,5 +391,10 @@ recipe fails the build, not a deployment. The recipe is in
   `otel-agent` profile, failsafe's `service.otel-agent` property, and the three `opentelemetry-javaagent`/`otel-agent`
   properties in `service-${serviceName}/pom.xml`.
 * When you upgrade Synapse, check its `SynapseContainers.POSTGRES_IMAGE` and update `compose.yaml`'s digest to match.
+* The proto contract check, `.github/workflows/buf.yml`, runs `buf lint` and `buf breaking` on every pull request to
+  `main`: make `Proto contracts (buf)` a required check, and create the `buf skip breaking` label, which a deliberate
+  breaking change needs. The workflow assumes github.com, an x86_64 Linux runner and a branch named `main`. On GitHub
+  Enterprise Server, buf-action downloads buf from github.com, so give it a github.com token (read access to public
+  repositories) in its `public_github_token` input.
 * The poms' `description`s; deploy the contract module, so that callers can depend on it.
 * The license header at the top of each file is the one of Synapse's own sources: put your own in its place.

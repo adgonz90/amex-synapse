@@ -77,6 +77,11 @@ Everything here is in the repository's **Settings** pages unless noted.
 - [ ] **`publish-snapshot` label.** *Issues → Labels → New label* (not under Settings).
   Why: adding it to a pull request from a branch in this repository publishes `<version>-pr<number>-SNAPSHOT`.
 
+- [ ] **`buf skip breaking` label.** *Issues → Labels → New label*, named exactly `buf skip breaking`.
+  Why: `buf.yml` skips `buf breaking` on a pull request with this label (lint still runs), for a deliberate breaking
+  change to a sample's `.proto`. Adding or removing it runs the `Proto contracts (buf)` check again. Anyone with
+  triage access or more can apply it.
+
 - **`nightly-failure` label: nothing to do.** The nightly workflow opens one issue with this label when a nightly job
   fails, and comments on it while it stays open. It creates the label itself before reporting (with `--force`, which
   also resets the label's colour and description each time).

@@ -115,8 +115,11 @@ What it generates, under `orders/`:
   profile for `spring-boot:run`, and the configuration classes that hand Boot's bridge the agent's SDK and fail an
   AOT-mode start under the agent (see xref:opentelemetry-agent.adoc[OpenTelemetry Java agent]).
 * The proto contract check: `buf.yaml`, `buf.lock` and `.github/workflows/buf.yml`, which lint
-  `com/example/orders/v1/orders.proto` and check it for breaking changes on every pull request (see
-  xref:grpc.adoc#buf[Contract checks with buf]).
+  `com/example/orders/v1/orders.proto` and check it for breaking changes on every pull request to `main` (see
+  xref:grpc.adoc#buf[Contract checks with buf]). The workflow assumes github.com, an x86_64 Linux runner (the buf
+  checksum is `buf-Linux-x86_64`'s) and a branch named `main`. On GitHub Enterprise Server, buf-action downloads buf
+  from github.com and needs a github.com token (read access to public repositories) in its `public_github_token`
+  input.
 * The tests: the operations with `@SynapseOperationTest`, the bindings with `@SynapseRestTest` and `@SynapseGrpcTest`,
   the repository with `@SynapseDataTest`, `ArchitectureTest`, and integration tests: one scenario suite run over both
   protocols against the whole service (`ServiceJvmIT`), health, the OpenAPI default and the audit user
