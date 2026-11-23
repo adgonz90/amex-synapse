@@ -14,6 +14,7 @@
 package io.americanexpress.synapse.api.rest.openapi.internal;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.AnnotatedType;
 import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
@@ -89,6 +90,7 @@ import tools.jackson.databind.introspect.ClassIntrospector;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.internal.binding.JsonNames;
+import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.paging.PageBody;
 import io.americanexpress.synapse.core.internal.binding.ResolvedComponent;
 import io.americanexpress.synapse.core.paging.PageResult;
@@ -102,13 +104,17 @@ import io.americanexpress.synapse.core.paging.PageResult;
  * integer; the other {@code java.time} types are strings.</li>
  * <li>Arrays and collections map to {@code array} ({@code Set} adds {@code uniqueItems}); a {@code Map} maps to
  * {@code object} with {@code additionalProperties}, whatever its key type, since Jackson writes every key as a string.
- * {@code Optional<T>} is {@code T}, nullable; {@code OptionalInt}, {@code OptionalLong} and {@code OptionalDouble} are
- * nullable numbers.</li>
+ * In a record component, items or map values of a {@code @Nullable} type ({@code List<@Nullable T>}) admit
+ * {@code null}; others don't. {@code Optional<T>} is {@code T}, nullable; {@code OptionalInt}, {@code OptionalLong}
+ * and {@code OptionalDouble} are nullable numbers.</li>
  * <li>A record or an enum is a component, referenced with {@code $ref}. A record's properties are its components that
- * the mapper writes (outputs) or reads (inputs), in component order. {@code required} lists the non-nullable ones, and
- * in outputs only those the mapper always writes (its inclusion is {@code ALWAYS} or {@code NON_NULL}). When a record's
- * input differs from its output (its own JSON names, an output the mapper may leave out, its own serialization code,
- * or a record it holds), its input is a second component, {@code <name>Input}. An enum lists its constants as the
+ * the mapper writes (outputs) or reads (inputs), in component order. {@code required} lists the non-nullable ones: in
+ * outputs only those the mapper always writes (its inclusion is {@code ALWAYS} or {@code NON_NULL}), and in inputs a
+ * collection or map, which the binder binds empty when it isn't sent, only when its constraints need items
+ * ({@code @NotEmpty}, {@code @Size} with a minimum of 1 or more), as an absent one is then rejected. When a record's
+ * input differs from its output (its own JSON names, an output the mapper may leave out, a collection or map only the
+ * output requires, its own serialization code, or a record it holds), its input is
+ * a second component, {@code <name>Input}. An enum lists its constants as the
  * mapper writes them: strings ({@code DayOfWeek}) or integers ({@code Month}, a numeric {@code @JsonValue}). A
  * {@linkplain #parameter parameter} of an enum type is not the component: it lists the constant names, which the
  * {@code ConversionService} reads.</li>
@@ -203,6 +209,15 @@ public final class SchemaGenerator {
 
     private int buildSchemas;
 
+    /**
+     * Whether the input object last walked left out of {@code required} a collection or map its output requires: the
+     * binder binds it empty when it isn't sent.
+     */
+    private boolean unsentBindsEmpty;
+
+    /** How many times a component has been walked. */
+    private int walks;
+
     private boolean limitReached;
 
     /** How many components there were when they were last named. */
@@ -234,6 +249,11 @@ public final class SchemaGenerator {
     /** How many schemas the generator has created. */
     int schemaCount() {
         return schemas;
+    }
+
+    /** How many components the generator has walked. */
+    int walkCount() {
+        return walks;
     }
 
     /**
@@ -322,6 +342,28 @@ public final class SchemaGenerator {
         Schema<?> schema = converted(type.raw() == Optional.class ? argument(type, Optional.class, 0) : type);
         constrain(component.recordType(), component.name(), schema);
         return finish(schema);
+    }
+
+    /**
+     * Tells whether a collection or map component's constraints need items ({@code @NotEmpty}, {@code @Size} with a
+     * minimum of 1 or more), so that an absent one, which the binder binds empty, is rejected: then it is required.
+     *
+     * @param component a collection or map component
+     * @return whether its constraints need at least one item or entry
+     */
+    public boolean needsItems(ResolvedComponent component) {
+        // A probe outside the walk: it is never published, so the limits don't count it.
+        Schema<?> probe = new JsonSchema();
+        probe.addType(Map.class.isAssignableFrom(component.type()) ? "object" : "array");
+        constrain(component.recordType(), component.name(), probe);
+        return needsItems(probe);
+    }
+
+    /** Whether an array or object schema needs items: {@code minItems} or {@code minProperties} of 1 or more. */
+    private static boolean needsItems(Schema<?> schema) {
+        Integer items = schema.getMinItems();
+        Integer properties = schema.getMinProperties();
+        return (items != null && items >= 1) || (properties != null && properties >= 1);
     }
 
     /** A value the {@code ConversionService} converts: an enum by its constant names, each element of a collection. */
@@ -552,8 +594,10 @@ public final class SchemaGenerator {
      * {@code {}} instead, and the components first referenced while walking it are dropped with it.
      */
     private void build(Node node) {
+        walks++;
         building = node;
         buildSchemas = 0;
+        unsentBindsEmpty = false;
         createdInBuild.clear();
         countedInBuild.clear();
         try {
@@ -566,7 +610,8 @@ public final class SchemaGenerator {
             if (node.key.view() == View.INPUT) {
                 Class<?> record = type.raw();
                 node.viewsDiffer = !names(record, View.INPUT).equals(names(record, View.OUTPUT))
-                        || !omittable(record).isEmpty() || customOutput(record) || customInput(record);
+                        || !omittable(record).isEmpty() || customOutput(record) || customInput(record)
+                        || unsentBindsEmpty;
             }
         } catch (TooLarge | JacksonFailure stopped) {
             for (Node created : createdInBuild) {
@@ -638,10 +683,18 @@ public final class SchemaGenerator {
             TypeKey value = optionalValue(type);
             Schema<?> schema = schema(value != null ? value : type, view);
             boolean notNull = constrain(record, component.getName(), schema);
-            boolean nullable = !notNull && (value != null || new ResolvedComponent(record, component).nullable());
+            ResolvedComponent resolved = new ResolvedComponent(record, component);
+            nullableItems(schema, resolved.annotatedType(), resolved.nullMarked());
+            boolean nullable = !notNull && (value != null || resolved.nullable());
             object.addProperty(name, nullable ? nullable(schema) : schema);
             if (!nullable && !omittable.contains(component.getName())) {
-                required.add(name);
+                if (view == View.INPUT && RequestBinder.bindsEmptyWhenUnsent(type.raw()) && !needsItems(schema)) {
+                    // The binder binds an unsent collection or map empty, so the input requires it only when its
+                    // constraints need items; the output always writes it.
+                    unsentBindsEmpty = true;
+                } else {
+                    required.add(name);
+                }
             }
         }
         if (!required.isEmpty()) {
@@ -915,6 +968,38 @@ public final class SchemaGenerator {
     private static boolean has(Schema<?> schema, String type) {
         Set<String> types = schema.getTypes();
         return types != null && types.contains(type);
+    }
+
+    /**
+     * Makes the items (or map values) of a component's schema admit {@code null} wherever its declared type says they
+     * may be null ({@code List<@Nullable T>}, {@code Map<K, @Nullable V>}, {@code @Nullable T[]}), at every depth: the
+     * mapper writes such an item and the binder passes it through. An {@code Optional} is looked through, as its
+     * schema is its value's.
+     */
+    private void nullableItems(Schema<?> schema, AnnotatedType declared, boolean nullMarked) {
+        AnnotatedType items = ResolvedComponent.items(declared);
+        if (items == null) {
+            return;
+        }
+        if (declared.getType() instanceof ParameterizedType parameterized
+                && parameterized.getRawType() == Optional.class) {
+            nullableItems(schema, items, nullMarked);
+            return;
+        }
+        Schema<?> inner = schema.getItems() != null
+                ? schema.getItems()
+                : schema.getAdditionalProperties() instanceof Schema<?> values ? values : null;
+        if (inner == null) {
+            return;
+        }
+        nullableItems(inner, items, nullMarked);
+        if (ResolvedComponent.nullable(items, nullMarked)) {
+            if (schema.getItems() != null) {
+                schema.setItems(nullable(inner));
+            } else {
+                schema.setAdditionalProperties(nullable(inner));
+            }
+        }
     }
 
     /** Admits {@code null}: {@code types: [<t>, "null"]}, or {@code anyOf: [<ref>, {type: null}]} for a reference. */

@@ -66,6 +66,7 @@ import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.PageResult;
@@ -572,16 +573,48 @@ class ResponseWriterTest {
     }
 
     @Test
-    void offsetPastTheCapHasNextWithoutANextCursor() throws Exception {
+    void offsetPastTheCapLinksATokenThatFailsWhenUsed() throws Exception {
         PagingSettings capped = new PagingSettings("cursor", "offset", "size", "sort", 30, 20, 100);
+        ResponseWriter cappedWriter = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(),
+                RouteFixtures.cursors(), capped, RouteFixtures.etags());
+        RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
+        PagedBooksRequest input = new PagedBooksRequest(null, PageQuery.ofOffset(20, 20, List.of()));
+
+        Written written = write(cappedWriter, paged, PageResult.of(List.of(BOOK), true), "GET", Map.of(), input);
+
+        // 20 + 20 is past max-offset 30: the body's token, also in the Link as the cursor parameter (as gRPC's
+        // next_page_token), which fails with the offset limit when it is used.
+        assertThat(written.json().get("hasNext").asBoolean()).isTrue();
+        String token = written.json().get("nextCursor").asString();
+        assertThat(written.header("Link")).isEqualTo("</?cursor=" + token + ">; rel=\"next\"");
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> RouteFixtures
+                        .cursors()
+                        .unwrap(paged.operationName(), new PagedBooksRequest(null, PageQuery
+                                .ofCursor(token, 20,
+                                        List.of())),
+                                Map.of(), "cursor", 30))
+                .satisfies(e -> assertThat(e.violations())
+                        .containsExactly(new Violation("cursor",
+                                "has reached the offset limit (30); narrow the query or use keyset paging")));
+        // A POST gets the token in its body, and no Link.
+        RouteDefinition search = route(RestBindings.builder().post("/books/search", new PagedBooksOperation()).build());
+        Written post = write(cappedWriter, search, PageResult.of(List.of(BOOK), true), "POST", Map.of(), input);
+        assertThat(post.json().get("nextCursor").asString()).isNotEmpty();
+        assertThat(post.header("Link")).isNull();
+    }
+
+    @Test
+    void cappedCursorPageWithoutACursorHasNeitherTokenNorLink() throws Exception {
+        // Pin (R-11): a page read by cursor can't continue by offset, past the cap too.
+        PagingSettings capped = new PagingSettings("cursor", "offset", "size", "sort", 0, 20, 100);
         ResponseWriter cappedWriter = new ResponseWriter(MAPPER, new DefaultFormattingConversionService(),
                 RouteFixtures.cursors(), capped, RouteFixtures.etags());
         RouteDefinition paged = route(RestBindings.builder().get("/books", new PagedBooksOperation()).build());
 
         Written written = write(cappedWriter, paged, PageResult.of(List.of(BOOK), true), "GET", Map.of(),
-                new PagedBooksRequest(null, PageQuery.ofOffset(20, 20, List.of())));
+                new PagedBooksRequest(null, PageQuery.ofCursor("raw", 20, List.of())));
 
-        // 20 + 20 is past max-offset 30: hasNext, but neither a token nor a Link (as gRPC: has_next, empty token).
         assertThat(written.json().get("hasNext").asBoolean()).isTrue();
         assertThat(written.json().has("nextCursor")).isFalse();
         assertThat(written.header("Link")).isNull();

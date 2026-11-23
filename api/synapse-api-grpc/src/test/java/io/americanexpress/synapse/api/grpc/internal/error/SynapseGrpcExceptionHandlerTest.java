@@ -22,12 +22,14 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.google.protobuf.Any;
 import com.google.rpc.ErrorInfo;
 import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -58,6 +60,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SynapseGrpcExceptionHandlerTest {
 
     private static final String LOGGER = "io.americanexpress.synapse.api.grpc";
+
+    private static final Metadata.Key<String> INTERNAL_TRAILER = Metadata.Key
+            .of("x-internal", Metadata.ASCII_STRING_MARSHALLER);
+
+    private static final Metadata.Key<byte[]> GRPC_DETAILS = Metadata.Key
+            .of("grpc-status-details-bin", Metadata.BINARY_BYTE_MARSHALLER);
 
     private final SynapseGrpcExceptionHandler handler = handler(false);
 
@@ -174,19 +182,102 @@ class SynapseGrpcExceptionHandlerTest {
     }
 
     @Test
-    void statusExceptionsPassThrough() {
+    void thrownStatusKeepsOnlyItsCode() throws Exception {
+        AtomicReference<StatusException> handled = new AtomicReference<>();
+
+        List<ILoggingEvent> events = logged(
+                () -> inCall(state("c-1"), () -> handled.set(handler.handleException(downstreamNotFound()))));
+
+        Status status = handled.get().getStatus();
+        assertThat(status.getCode()).isEqualTo(Status.Code.NOT_FOUND);
+        assertThat(status.getDescription()).isNullOrEmpty();
+        assertThat(status.getCause()).isNull();
+        Metadata trailers = Objects.requireNonNull(handled.get().getTrailers(), "trailers");
+        assertThat(trailers.containsKey(INTERNAL_TRAILER)).isFalse();
+        com.google.rpc.Status details = statusOf(handled.get());
+        assertThat(details.getMessage()).isEmpty();
+        assertThat(details.getDetailsList()).hasSize(1);
+        ErrorInfo info = details.getDetails(0).unpack(ErrorInfo.class);
+        assertThat(info.getReason()).isEqualTo("NOT_FOUND");
+        assertThat(info.getDomain()).isEqualTo("books");
+        assertThat(info.getMetadataMap()).isEqualTo(Map.of("correlationId", "c-1"));
+        assertThat(handled.get().toString() + trailers).doesNotContain("row 7");
+        // C12: one DEBUG line with the code and the original description, never at ERROR.
+        assertThat(events).singleElement().satisfies(event -> {
+            assertThat(event.getLevel()).isEqualTo(Level.DEBUG);
+            assertThat(event.getLoggerName()).isEqualTo(LOGGER);
+            assertThat(event.getFormattedMessage()).contains("NOT_FOUND").contains("row 7 in table x");
+        });
+    }
+
+    @Test
+    void thrownStatusKeepsItsDescriptionWithIncludeDetail() throws Exception {
+        AtomicReference<StatusException> handled = new AtomicReference<>();
+
+        inCall(state("c-1"), () -> handled.set(handlerWithDetail().handleException(downstreamNotFound())));
+
+        Status status = handled.get().getStatus();
+        assertThat(status.getCode()).isEqualTo(Status.Code.NOT_FOUND);
+        assertThat(status.getDescription()).isEqualTo("row 7 in table x");
+        Metadata trailers = Objects.requireNonNull(handled.get().getTrailers(), "trailers");
+        assertThat(trailers.get(INTERNAL_TRAILER)).isEqualTo("1");
+        // R-10: the foreign details are always replaced by Synapse's ErrorInfo.
+        com.google.rpc.Status details = statusOf(handled.get());
+        assertThat(details.getMessage()).isEqualTo("row 7 in table x");
+        assertThat(details.getDetailsList()).hasSize(1);
+        ErrorInfo info = details.getDetails(0).unpack(ErrorInfo.class);
+        assertThat(info.getReason()).isEqualTo("NOT_FOUND");
+        assertThat(info.getDomain()).isEqualTo("books");
+        assertThat(info.getMetadataMap()).isEqualTo(Map.of("correlationId", "c-1"));
+        assertThat(trailers.getAll(GRPC_DETAILS)).hasSize(1);
+    }
+
+    @Test
+    void thrownCheckedStatusKeepsOnlyItsCodeToo() {
+        AtomicReference<StatusException> handled = new AtomicReference<>();
+
+        inCall(state("c-1"), () -> handled
+                .set(handler.handleException(Status.FAILED_PRECONDITION.withDescription("stock row 9").asException())));
+
+        assertThat(handled.get().getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(handled.get().getStatus().getDescription()).isNullOrEmpty();
+        assertThat(errorInfo(handled.get()).getReason()).isEqualTo("PRECONDITION_FAILED");
+        assertThat(errorInfo(handled.get()).getMetadataOrThrow("correlationId")).isEqualTo("c-1");
+    }
+
+    @Test
+    void thrownOkStatusIsAnUnexpectedFailure() {
+        AtomicReference<StatusException> handled = new AtomicReference<>();
+
+        List<ILoggingEvent> events = logged(() -> inCall(state("c-1"),
+                () -> handled.set(handler.handleException(Status.OK.withDescription("fine").asRuntimeException()))));
+
+        // A status exception that says OK is no error the caller can get: it is the service's bug.
+        assertThat(handled.get().getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+        assertThat(errorInfo(handled.get()).getReason()).isEqualTo("INTERNAL");
+        assertThat(events).singleElement().satisfies(event -> assertThat(event.getLevel()).isEqualTo(Level.ERROR));
+    }
+
+    /**
+     * A downstream call's failure, as a stub throws it: {@code NOT_FOUND} with an internal description, a trailer of
+     * its own and the downstream service's {@code ErrorInfo}.
+     */
+    private static StatusRuntimeException downstreamNotFound() {
         Metadata trailers = new Metadata();
-        Metadata.Key<String> key = Metadata.Key.of("x-reason", Metadata.ASCII_STRING_MARSHALLER);
-        trailers.put(key, "policy");
-        StatusRuntimeException runtime = Status.PERMISSION_DENIED.withDescription("no").asRuntimeException(trailers);
-
-        StatusException fromRuntime = handler.handleException(runtime);
-        assertThat(fromRuntime.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
-        assertThat(fromRuntime.getStatus().getDescription()).isEqualTo("no");
-        assertThat(Objects.requireNonNull(fromRuntime.getTrailers()).get(key)).isEqualTo("policy");
-
-        StatusException checked = Status.FAILED_PRECONDITION.asException();
-        assertThat(handler.handleException(checked)).isSameAs(checked);
+        trailers.put(INTERNAL_TRAILER, "1");
+        com.google.rpc.Status downstream = com.google.rpc.Status
+                .newBuilder()
+                .setCode(Status.Code.NOT_FOUND.value())
+                .setMessage("row 7 in table x")
+                .addDetails(Any
+                        .pack(ErrorInfo
+                                .newBuilder()
+                                .setReason("ROW_MISSING")
+                                .setDomain("other")
+                                .putMetadata("correlationId", "c-downstream")
+                                .build()))
+                .build();
+        return StatusProto.toStatusRuntimeException(downstream, trailers);
     }
 
     @Test

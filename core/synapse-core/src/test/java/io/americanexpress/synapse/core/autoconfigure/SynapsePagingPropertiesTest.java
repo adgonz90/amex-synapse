@@ -66,6 +66,26 @@ class SynapsePagingPropertiesTest {
     }
 
     @Test
+    void maxOffsetPlusMaxSizeMustFitALong() {
+        // An offset at the cap plus the largest page size is the next page's offset; it must not overflow.
+        runner.withPropertyValues("synapse.paging.max-offset=" + Long.MAX_VALUE).run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(rootMessage(context.getStartupFailure()))
+                    .isEqualTo("synapse.paging.max-offset must be at most 9223372036854775707 (the largest long "
+                            + "minus synapse.paging.max-size, 100) but was 9223372036854775807");
+        });
+        runner
+                .withPropertyValues("synapse.paging.max-offset=" + (Long.MAX_VALUE - 50), "synapse.paging.max-size=51",
+                        "synapse.paging.default-size=20")
+                .run(context -> assertThat(context).hasFailed());
+        // At the bound, inclusive, it binds.
+        runner
+                .withPropertyValues("synapse.paging.max-offset=" + (Long.MAX_VALUE - 100))
+                .run(context -> assertThat(context.getBean(SynapsePagingProperties.class).maxOffset())
+                        .isEqualTo(Long.MAX_VALUE - 100));
+    }
+
+    @Test
     void cursorMaxAgeMustBePositive() {
         for (String maxAge : List.of("0s", "-1s")) {
             runner.withPropertyValues("synapse.paging.cursor.max-age=" + maxAge).run(context -> {

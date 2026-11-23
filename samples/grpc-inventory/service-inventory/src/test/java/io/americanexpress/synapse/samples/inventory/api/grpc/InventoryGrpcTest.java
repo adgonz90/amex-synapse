@@ -424,7 +424,12 @@ class InventoryGrpcTest {
 
     /** A valid CreateItem request, without a price. */
     private static CreateItemRequest.Builder newItem() {
-        return CreateItemRequest.newBuilder().setSkuCode("WID-002").setLocation(location("east", "A1", 3));
+        // quantity is optional, so a required int is sent explicitly, 0 included: unsent, it is must not be null.
+        return CreateItemRequest
+                .newBuilder()
+                .setSkuCode("WID-002")
+                .setLocation(location("east", "A1", 3))
+                .setQuantity(0);
     }
 
     private static Location location(String warehouse, String aisle, int bin) {

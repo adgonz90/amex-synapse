@@ -35,6 +35,7 @@ import io.americanexpress.synapse.api.grpc.fixture.proto.CatalogServiceGrpc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.GetItemRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.NoItemsServiceGrpc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBookServiceGrpc;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PlainServiceGrpc;
 import io.americanexpress.synapse.api.grpc.fixture.proto.WatchServiceGrpc;
 import io.americanexpress.synapse.api.grpc.internal.binding.ServiceDeclaration;
 import io.americanexpress.synapse.api.grpc.internal.binding.fixture.BindingFixtures;
@@ -56,6 +57,10 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 class ServiceCompilerTest {
 
     private static final String SERVICE = "synapse.fixture.v1.CatalogService";
+
+    private static final String PLAIN = "synapse.fixture.v1.PlainService";
+
+    private static final String PRESENCE = "synapse.fixture.v1.Presence";
 
     private static final List<String> METHODS = List
             .of(SERVICE + "/GetItem", SERVICE + "/CreateItem", SERVICE + "/DeleteItem", SERVICE + "/Ping",
@@ -303,6 +308,71 @@ class ServiceCompilerTest {
     }
 
     @Test
+    void presenceProblemsOfEveryMethodAreOneFailure() {
+        ServiceDeclaration declaration = plain(new FirstPlainOperation(), new SecondPlainOperation());
+
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> compiler.compile(declaration, List.of()))
+                .satisfies(e -> {
+                    assertThat(e.description())
+                            .isEqualTo("gRPC method " + PLAIN + "/First (first-plain): FirstInput.title is required, "
+                                    + "but " + PRESENCE + ".title has no presence, so an unsent field would bind its "
+                                    + "default\n"
+                                    + "gRPC method " + PLAIN + "/First (first-plain): FirstInput.pages is required, "
+                                    + "but " + PRESENCE + ".pages has no presence, so an unsent field would bind its "
+                                    + "default\n"
+                                    + "gRPC method " + PLAIN + "/Second (second-plain): SecondInput.author is "
+                                    + "required, but " + PRESENCE + ".author has no presence, so an unsent field "
+                                    + "would bind its default");
+                    assertThat(e.action())
+                            .isEqualTo("Declare these fields optional (proto3 optional), use a wrapper type, or make "
+                                    + "the components @Nullable.");
+                    assertThat(e.getCause()).isInstanceOf(MappingException.class);
+                    assertThat(e.getSuppressed()).singleElement().isInstanceOf(MappingException.class);
+                });
+    }
+
+    @Test
+    void otherMappingProblemsStillFailAtOnce() {
+        // Pin (R-11): today's behaviour, kept: a problem other than presence fails at once, in each of these orders.
+        String unmappable = "Change the component type, or map another field with .map(...).";
+
+        // An unmappable type in the first method: today's failure, without the second method's presence problem.
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> compiler
+                        .compile(plain(new ListedPlainOperation(), new SecondPlainOperation()), List.of()))
+                .satisfies(e -> {
+                    assertThat(e.description())
+                            .isEqualTo("gRPC method " + PLAIN + "/First (listed-plain): ListedInput.title can't "
+                                    + "be mapped to " + PRESENCE + ".title (string)");
+                    assertThat(e.action()).isEqualTo(unmappable);
+                });
+        // After a method that fails only on presence, another problem still fails at once.
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> compiler
+                        .compile(plain(new FirstPlainOperation(), new ListedPlainOperation()), List.of()))
+                .satisfies(e -> assertThat(e.description())
+                        .isEqualTo("gRPC method " + PLAIN + "/Second (listed-plain): ListedInput.title can't be "
+                                + "mapped to " + PRESENCE + ".title (string)"));
+        // The response of a method whose request fails only on presence is still checked, and its problem wins.
+        assertThatExceptionOfType(SynapseConfigurationException.class)
+                .isThrownBy(() -> compiler
+                        .compile(plain(new TitledPlainOperation(), new SecondPlainOperation()), List.of()))
+                .satisfies(e -> assertThat(e.description())
+                        .isEqualTo("gRPC method " + PLAIN + "/First (titled-plain): TitledOutput.title has no field "
+                                + "in google.protobuf.Empty"));
+    }
+
+    private static ServiceDeclaration plain(ServiceOperation<?, ?> first, ServiceOperation<?, ?> second) {
+        return GrpcBindingsAccess
+                .declaration(GrpcBindings
+                        .service(PlainServiceGrpc.getServiceDescriptor())
+                        .unary(PlainServiceGrpc.getFirstMethod(), first)
+                        .unary(PlainServiceGrpc.getSecondMethod(), second)
+                        .build());
+    }
+
+    @Test
     void compiledDescriptorKeepsNamesAndSchema() {
         ServiceDescriptor generated = CatalogServiceGrpc.getServiceDescriptor();
 
@@ -429,6 +499,58 @@ class ServiceCompilerTest {
         @Override
         public SkuItem execute(BindingFixtures.GetItem input) {
             return new SkuItem(input.id(), "SKU-1");
+        }
+    }
+
+    /** Binds two required scalars of {@code Presence} that have no presence. */
+    record FirstInput(String title, int pages) {
+    }
+
+    /** Named {@code first-plain}. */
+    static class FirstPlainOperation implements QueryOperation<FirstInput, Void> {
+
+        @Override
+        public Void execute(FirstInput input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** Binds one required scalar of {@code Presence} that has no presence. */
+    record SecondInput(String author) {
+    }
+
+    /** Named {@code second-plain}. */
+    static class SecondPlainOperation implements QueryOperation<SecondInput, Void> {
+
+        @Override
+        public Void execute(SecondInput input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** A component that can't be mapped to {@code Presence.title}. */
+    record ListedInput(List<String> title) {
+    }
+
+    /** Named {@code listed-plain}. */
+    static class ListedPlainOperation implements QueryOperation<ListedInput, Void> {
+
+        @Override
+        public Void execute(ListedInput input) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /** An output that {@code google.protobuf.Empty} can't hold. */
+    record TitledOutput(String title) {
+    }
+
+    /** Named {@code titled-plain}: its request fails on presence and its response can't be mapped. */
+    static class TitledPlainOperation implements QueryOperation<SecondInput, TitledOutput> {
+
+        @Override
+        public TitledOutput execute(SecondInput input) {
+            throw new UnsupportedOperationException();
         }
     }
 }

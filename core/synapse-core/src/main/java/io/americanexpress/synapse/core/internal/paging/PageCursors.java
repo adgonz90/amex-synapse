@@ -52,8 +52,9 @@ import io.americanexpress.synapse.core.paging.SortOrder;
  * <p>
  * A token carries one of two kinds of payload, inside the codec's envelope: the operation's raw cursor
  * ({@code c:<raw>}), or the next offset of a page that has a next page but no cursor ({@code o:<offset>}, see
- * {@link #next}). The codec sees the tagged payload, at most {@value #MAX_CURSOR_BYTES} + 2 UTF-8 bytes; a token
- * without a known kind is rejected.
+ * {@link #next}), also past {@code synapse.paging.max-offset}, where {@link #unwrap} rejects it with the offset limit.
+ * The codec sees the tagged payload, at most {@value #MAX_CURSOR_BYTES} + 2 UTF-8 bytes; a token without a known kind
+ * is rejected.
  */
 public final class PageCursors {
 
@@ -150,8 +151,9 @@ public final class PageCursors {
      * Replaces the caller's token in the bound input with what it carries, scoped by the sort of the input's
      * {@code PageQuery}: the raw cursor it wraps ({@code PageQuery(raw, null, size, sort)}), or the next offset of an
      * offset page ({@code PageQuery(null, offset, size, sort)}). An input without a token is returned as it is. An
-     * offset is checked against the cap as REST checks its {@code offset} parameter, so a token issued under a higher
-     * cap, or forged through a replacement codec that doesn't authenticate, can't reach past it.
+     * offset is checked against the cap, so the token of a page past the cap ({@link #next}), one issued under a higher
+     * cap, or one forged through a replacement codec that doesn't authenticate, can't reach past it. Its violation says
+     * the offset limit was reached; REST's {@code offset} parameter over the cap keeps its own text.
      *
      * @param operation the name of the operation
      * @param input the bound input
@@ -161,7 +163,7 @@ public final class PageCursors {
      * @return the input with the raw cursor or the offset: a new record built with its canonical constructor
      * @throws SynapseException {@link SynapseErrors#VALIDATION_FAILED} with the violation
      *         {@code {<field>, "is not valid for this request"}} when the codec rejects the token, or
-     *         {@code {<field>, "must be less than or equal to <maxOffset>"}} when it carries an offset over the cap
+     *         {@code {<field>, PagingViolations.offsetLimitReached(maxOffset)}} when it carries an offset over the cap
      */
     public @Nullable Object unwrap(String operation, @Nullable Object input, Map<String, ?> extra, String field,
             long maxOffset) {
@@ -174,10 +176,10 @@ public final class PageCursors {
         Position position = open(operation, page.sort(), input, extra, token, field);
         Long offset = position.offset();
         if (offset != null && offset > maxOffset) {
-            // REST's offset=N over the cap, named after the token's field.
+            // The token of a page at the cap, or one from a higher cap: the same text on every protocol.
             throw SynapseException
                     .ofViolations(SynapseErrors.VALIDATION_FAILED,
-                            List.of(new Violation(field, "must be less than or equal to " + maxOffset)));
+                            List.of(new Violation(field, PagingViolations.offsetLimitReached(maxOffset))));
         }
         PageQuery unwrapped = new PageQuery(position.cursor(), offset, page.size(), page.sort());
         return input instanceof Record record && !(input instanceof PageQuery) ? rebuild(record, unwrapped) : unwrapped;
@@ -211,10 +213,12 @@ public final class PageCursors {
      * <li>no token when the page has no next page ({@code hasNext} is false), even with a cursor;</li>
      * <li>the page's next cursor, wrapped, when it has one;</li>
      * <li>otherwise, when the request had no cursor, a token that carries the next offset, the request's offset (0
-     * without one) plus its size, when that is at most {@code maxOffset}; {@link #unwrap} turns it into
-     * {@code PageQuery(null, offset, size, sort)};</li>
-     * <li>otherwise no token: a cursor page that returns no cursor can't continue by offset, a next offset past the cap
-     * can't be reached, and an input without a {@code PageQuery} has no size to add.</li>
+     * without one) plus its size; {@link #unwrap} turns it into {@code PageQuery(null, offset, size, sort)}. When that
+     * offset passes {@code maxOffset} ({@link #pastCap}), the token is the same kind, and {@link #unwrap} rejects it
+     * with {@link PagingViolations#offsetLimitReached}: a client that follows tokens learns why it stops, and an empty
+     * token still means the end of the collection, as AIP-158 asks;</li>
+     * <li>otherwise no token: a cursor page that returns no cursor can't continue by offset, and an input without a
+     * {@code PageQuery} has no size to add.</li>
      * </ul>
      * Both kinds of token have the same scope: the operation, the sort of the input's {@code PageQuery} and the input's
      * digest.
@@ -224,7 +228,7 @@ public final class PageCursors {
      * @param extra the plugin's extra digest entries ({@link InputDigest#of})
      * @param page the operation's page
      * @param maxOffset {@code synapse.paging.max-offset}
-     * @return the token, or {@code null} when there is no page after this one to reach
+     * @return the token, or {@code null} when there is no page after this one
      * @throws IllegalStateException when the raw cursor is too long, or the codec returns a token that is empty or
      *         not URL-safe
      */
@@ -241,12 +245,32 @@ public final class PageCursors {
         if (query == null || query.cursor() != null) {
             return null;
         }
-        long offset = query.offset() == null ? 0 : query.offset();
-        long next = offset + query.size();
-        if (next > maxOffset) {
-            return null;
+        // Past the cap too: unwrap rejects that token with the offset limit.
+        return seal(operation, query.sort(), input, extra, OFFSET + nextOffset(query));
+    }
+
+    /**
+     * Returns whether the token {@link #next} returns for this page carries an offset past the cap: the page has a next
+     * page, no next cursor, the request had no cursor, and its offset (0 without one) plus its size passes
+     * {@code maxOffset}. REST's {@code Link: next} carries that token as the cursor parameter, as no offset
+     * parameter past the cap is valid.
+     *
+     * @param input the input the operation was called with
+     * @param page the operation's page
+     * @param maxOffset {@code synapse.paging.max-offset}
+     * @return whether the next page's token is past the cap
+     */
+    public static boolean pastCap(@Nullable Object input, PageResult<?> page, long maxOffset) {
+        if (!page.hasNext() || page.nextCursor() != null) {
+            return false;
         }
-        return seal(operation, query.sort(), input, extra, OFFSET + next);
+        PageQuery query = query(input);
+        return query != null && query.cursor() == null && nextOffset(query) > maxOffset;
+    }
+
+    /** The offset of the page after an offset page: its offset, 0 without one, plus its size. */
+    private static long nextOffset(PageQuery query) {
+        return (query.offset() == null ? 0 : query.offset()) + query.size();
     }
 
     /**

@@ -15,10 +15,11 @@
 // The gRPC API of the bookstore. Each method is bound to the same operation as the REST route of the same name, so the
 // two APIs take the same requests and give the same answers and error codes; the comments name each method's route
 // and each field's REST counterpart. Synapse maps each message field to the record component with the same name
-// (published_year to publishedYear). A nullable component needs a field with presence, hence the wrapper types; the
-// page fields are optional so that unset and 0 (or "") differ, and a value that is sent follows REST's rules. A version
-// travels as REST's entity tag token, "3" with its double quotes, in a string field named etag, so a client can copy
-// it between the two protocols.
+// (published_year to publishedYear). A nullable component needs a field with presence, hence the wrapper types, and so
+// does a required scalar of a request, hence optional on the requests' ids, ISBNs, titles and authors: unsent, it is
+// "must not be null", as a missing REST property is, not "" or 0. The page fields are optional so that unset and 0 (or
+// "") differ, and a value that is sent follows REST's rules. A version travels as REST's entity tag token, "3" with
+// its double quotes, in a string field named etag, so a client can copy it between the two protocols.
 syntax = "proto3";
 
 package synapse.samples.bookstore.v1;
@@ -75,18 +76,18 @@ message Book {
 
 message CreateBookRequest {
   // isbn: not blank, at most 17 characters, such as 978-0-441-17271-9.
-  string isbn = 1;
+  optional string isbn = 1;
   // title: not blank, at most 255 characters.
-  string title = 2;
+  optional string title = 2;
   // author: not blank, at most 255 characters.
-  string author = 3;
+  optional string author = 3;
   // publishedYear: positive; unset when not known, as REST's null or a missing property.
   google.protobuf.Int32Value published_year = 4;
 }
 
 message GetBookRequest {
   // The path's {id}: a UUID.
-  string id = 1;
+  optional string id = 1;
 }
 
 // A client that never sets a page field pages normally: it gets the first 20 books by title, then id.
@@ -123,13 +124,13 @@ message SearchBooksResponse {
 
 message UpdateBookRequest {
   // The path's {id}: a UUID.
-  string id = 1;
+  optional string id = 1;
   // isbn, as in CreateBookRequest.
-  string isbn = 2;
+  optional string isbn = 2;
   // title, as in CreateBookRequest.
-  string title = 3;
+  optional string title = 3;
   // author, as in CreateBookRequest.
-  string author = 4;
+  optional string author = 4;
   // publishedYear, as in CreateBookRequest.
   google.protobuf.Int32Value published_year = 5;
   // The If-Match header, required: the etag of a GetBook or CreateBook (or a REST ETag), such as "3" with its double
@@ -139,7 +140,7 @@ message UpdateBookRequest {
 
 message DeleteBookRequest {
   // The path's {id}: a UUID.
-  string id = 1;
+  optional string id = 1;
   // The If-Match header, required, as in UpdateBookRequest.
   string etag = 2;
 }

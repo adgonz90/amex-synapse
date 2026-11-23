@@ -29,13 +29,20 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestErrors;
+import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
+import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.binding.WireNames;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
+import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.error.ErrorMessages;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.operation.QueryOperation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -139,6 +146,37 @@ class ProblemWriterTest {
         assertThat(body.toString()).doesNotContain("internalLedgerCode", "must not be null");
     }
 
+    record FindBookRequest(long id) {
+    }
+
+    static final class FindBookOperation implements QueryOperation<FindBookRequest, String> {
+        @Override
+        public String execute(FindBookRequest input) {
+            return "found";
+        }
+    }
+
+    @Test
+    void operationViolationsUseTheRoutesWireNames() {
+        RouteDefinition route = new BindingValidator(PagingSettings.defaults())
+                .validate(RestBindingsAccess
+                        .routes(RestBindings
+                                .builder()
+                                .get("/books/{bookId}", new FindBookOperation())
+                                .path("bookId", FindBookRequest::id)
+                                .build()),
+                        List.of())
+                .getFirst();
+        request.setAttribute(RestRequestAttributes.WIRE_NAMES, WireNames.of(route, MAPPER, PagingSettings.defaults()));
+
+        JsonNode body = write(writer(false, null), SynapseException
+                .ofViolations(SynapseErrors.VALIDATION_FAILED,
+                        List.of(new Violation("id", "must be positive"), new Violation("isbn", "must not be blank"))));
+
+        assertThat(body.get("violations").get(0).get("field").asString()).isEqualTo("bookId");
+        assertThat(body.get("violations").get(1).get("field").asString()).isEqualTo("isbn");
+    }
+
     @Test
     void violationsAlwaysIncluded() {
         JsonNode body = write(writer(false, null), SynapseException
@@ -182,6 +220,57 @@ class ProblemWriterTest {
 
         assertThat(response.getStatus()).isEqualTo(405);
         assertThat(response.getHeader("Allow")).isEqualTo("GET, PUT");
+    }
+
+    @Test
+    void keptStatusIsWrittenWithItsPhrase() {
+        JsonNode body = write(writer(false, null),
+                new KeptStatusException(RestErrors.CLIENT_ERROR, 418, Map.of(), null, null));
+
+        assertThat(response.getStatus()).isEqualTo(418);
+        assertThat(body.get("status").asInt()).isEqualTo(418);
+        assertThat(body.get("title").asString()).isEqualTo("I'm a teapot");
+        assertThat(body.get("code").asString()).isEqualTo("CLIENT_ERROR");
+    }
+
+    @Test
+    void configuredStatusForTheCodeWinsOverTheKeptStatus() {
+        ProblemWriter writer = new ProblemWriter(new RestErrorStatuses(Map.of("CLIENT_ERROR", 400), Map.of()),
+                new ErrorMessages(messages), new ProblemTitles(messages), new SynapseErrorProperties(false, null),
+                MAPPER, "X-Correlation-Id");
+        JsonNode body = write(writer, new KeptStatusException(RestErrors.CLIENT_ERROR, 422, Map.of(), null, null));
+
+        assertThat(response.getStatus()).isEqualTo(400);
+        assertThat(body.get("status").asInt()).isEqualTo(400);
+    }
+
+    @Test
+    void keptHeadersAreSet() {
+        write(writer(false, null),
+                new KeptStatusException(SynapseErrors.UNAVAILABLE, null, Map.of("Retry-After", "5"), null, null));
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getHeader("Retry-After")).isEqualTo("5");
+    }
+
+    @Test
+    void keptReasonIsTheDetailOnlyWithIncludeDetail() {
+        KeptStatusException quota = new KeptStatusException(SynapseErrors.RATE_LIMITED, null, Map.of(), "quota",
+                null);
+
+        JsonNode body = write(writer(true, null), quota);
+        assertThat(body.get("detail").asString()).isEqualTo("quota");
+
+        MockHttpServletResponse second = new MockHttpServletResponse();
+        writer(false, null).write(request, second, quota);
+        assertThat(MAPPER.readTree(second.getContentAsByteArray()).toString()).doesNotContain("quota");
+
+        // Without a reason, the detail is the code's message.
+        MockHttpServletResponse third = new MockHttpServletResponse();
+        writer(true, null)
+                .write(request, third, new KeptStatusException(RestErrors.CLIENT_ERROR, 422, Map.of(), null, null));
+        assertThat(MAPPER.readTree(third.getContentAsByteArray()).get("detail").asString())
+                .isEqualTo("The request was rejected");
     }
 
     @Test

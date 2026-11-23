@@ -15,9 +15,10 @@
 // The gRPC API of the ${serviceName} service. Each method is bound to the same operation as the REST route of the same
 // name, so the two APIs take the same requests and give the same answers and error codes; the comments name each
 // method's route and each field's REST counterpart. Synapse maps each message field to the record component with the
-// same name. A nullable component needs a field with presence, hence the wrapper type of description. A version travels
-// as REST's entity tag token, "0" with its double quotes, in a string field named etag, so a client can copy it between
-// the two protocols.
+// same name. A nullable component needs a field with presence, hence the wrapper type of description, and so does a
+// required scalar of a request, hence optional on name and id: unsent, it is "must not be null", as a missing REST
+// property is, not "". A version travels as REST's entity tag token, "0" with its double quotes, in a string field
+// named etag, so a client can copy it between the two protocols.
 syntax = "proto3";
 
 package ${package}.v1;
@@ -58,12 +59,12 @@ message Item {
 
 message CreateItemRequest {
   // name: not blank, at most 255 characters.
-  string name = 1;
+  optional string name = 1;
   // description: at most 1000 characters; unset for none, as REST's null or a missing property.
   google.protobuf.StringValue description = 2;
 }
 
 message GetItemRequest {
   // The path's {id}: a UUID.
-  string id = 1;
+  optional string id = 1;
 }

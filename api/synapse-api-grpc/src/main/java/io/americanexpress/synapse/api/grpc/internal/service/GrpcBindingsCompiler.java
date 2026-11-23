@@ -14,8 +14,12 @@
 package io.americanexpress.synapse.api.grpc.internal.service;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 
@@ -38,12 +42,16 @@ import io.americanexpress.synapse.core.operation.ServiceOperation;
  * {@link GrpcBindingsAccess#compiled}, so bindings that fail a check are never served. A binding problem fails startup
  * with the method named. The operation beans are looked up only for bindings that declare {@code .bindAllByName()}.
  * Each compiled method's {@code .notFound}, {@code .etag} and {@code .sortable} declarations are registered with core's
- * {@link BindingDeclarations}, which compares them with the other protocols' bindings once every singleton exists.
+ * {@link BindingDeclarations}, with the major version of its proto package, which compares them with the other
+ * protocols' bindings of that version once every singleton exists.
  */
 public final class GrpcBindingsCompiler implements BeanPostProcessor {
 
     /** The protocol a method's binding is registered under, as the parity failure names it. */
     private static final String PROTOCOL = "gRPC";
+
+    /** A proto package's version segment (AIP-185, AIP-191); the group is the major version. */
+    private static final Pattern PACKAGE_VERSION = Pattern.compile("^v(\\d+)(p\\d+)?((alpha|beta)\\d*)?$");
 
     private final ObjectProvider<ServiceCompiler> compiler;
 
@@ -101,8 +109,36 @@ public final class GrpcBindingsCompiler implements BeanPostProcessor {
         ErrorDetails notFound = method.notFound();
         ResolvedComponent etag = method.etag();
         SortKeys sortKeys = method.sortKeys();
+        // A compiled method belongs to its bindings' service (BindingChecks), so it has a service name.
+        String service = Objects.requireNonNull(method.method().getServiceName());
         return new BindingDeclaration(PROTOCOL, method.operationName(), method.method().getFullMethodName(),
                 (notFound != null ? notFound : SynapseErrors.NOT_FOUND).code(), etag == null ? null : etag.name(),
-                sortKeys == null ? null : Set.copyOf(sortKeys.wireToProperty().values()));
+                sortKeys == null ? null : Set.copyOf(sortKeys.wireToProperty().values()), packageVersion(service));
+    }
+
+    /**
+     * Reads the major version of a service's proto package, as AIP-185 and AIP-191 name it: the last segment of the
+     * package, when it is {@code v<N>} with an optional {@code p<N>} and {@code alpha} or {@code beta} suffix
+     * ({@code v1}, {@code v2beta1}, {@code v1p1beta1}).
+     *
+     * @param fullServiceName the service's full name, such as {@code bookstore.v1.Bookstore}
+     * @return the major version, or {@code null} when the package has no version segment (or none at all), or its
+     *     number doesn't fit an {@code int}
+     */
+    static @Nullable Integer packageVersion(String fullServiceName) {
+        int service = fullServiceName.lastIndexOf('.');
+        if (service < 0) {
+            return null;
+        }
+        String protoPackage = fullServiceName.substring(0, service);
+        Matcher version = PACKAGE_VERSION.matcher(protoPackage.substring(protoPackage.lastIndexOf('.') + 1));
+        if (!version.matches()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(version.group(1));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 }

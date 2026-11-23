@@ -1,18 +1,26 @@
 # Note: Dependabot reads this file from the repository's default branch only.
 version: 2
+# Every entry waits 7 days after a release before proposing a version update (cooldown; Dependabot's default is 3).
+# A compromised release is usually pulled within days. Security updates ignore cooldown.
 updates:
   - package-ecosystem: "maven"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       maven-minor-and-patch:
         update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" covers .github/workflows and a root action.yml only; the composite actions under .github/actions pin
+    # actions too (directories accepts globs; directory does not).
+    directories: ["/", "/.github/actions/*"]
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]
@@ -21,6 +29,8 @@ updates:
     directory: "/docs"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       docs:
         patterns: ["*"]
@@ -30,6 +40,8 @@ updates:
     directory: "/.github/requirements"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
 
 # No entry for develop (0.4.x): security updates only ever target the default branch, so an entry there could only
 # open version-update PRs. See specs/v2/DESIGN.md 4.1.

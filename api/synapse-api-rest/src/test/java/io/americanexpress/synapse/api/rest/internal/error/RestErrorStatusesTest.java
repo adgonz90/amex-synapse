@@ -22,6 +22,7 @@ import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.error.ErrorCategory;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.core.error.SynapseException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -96,6 +97,53 @@ class RestErrorStatusesTest {
                     .as(category.name())
                     .isEqualTo(expected.get(category));
         }
+    }
+
+    private static KeptStatusException kept(RestErrors code, int status) {
+        return new KeptStatusException(code, status, Map.of(), null, null);
+    }
+
+    @Test
+    void configuredStatusForTheCodeWinsOverTheKeptStatus() {
+        RestErrorStatuses global = new RestErrorStatuses(Map.of("CLIENT_ERROR", 400), Map.of());
+
+        assertThat(global.statusFor(kept(RestErrors.CLIENT_ERROR, 422), null)).isEqualTo(400);
+        assertThat(global.statusFor(kept(RestErrors.CLIENT_ERROR, 422), "get-book")).isEqualTo(400);
+
+        RestErrorStatuses perOperation = new RestErrorStatuses(Map.of("CLIENT_ERROR", 400),
+                Map.of("get-book", Map.of("CLIENT_ERROR", 409)));
+        assertThat(perOperation.statusFor(kept(RestErrors.CLIENT_ERROR, 422), "get-book")).isEqualTo(409);
+        assertThat(perOperation.statusFor(kept(RestErrors.CLIENT_ERROR, 422), "list-books")).isEqualTo(400);
+        assertThat(perOperation.statusFor(kept(RestErrors.CLIENT_ERROR, 422), null)).isEqualTo(400);
+    }
+
+    @Test
+    void keptStatusWinsOverTheFixedStatus() {
+        RestErrorStatuses statuses = new RestErrorStatuses(Map.of("BOOK_NOT_FOUND", 410), Map.of());
+
+        assertThat(statuses.statusFor(kept(RestErrors.CLIENT_ERROR, 422), null)).isEqualTo(422);
+        assertThat(statuses.statusFor(kept(RestErrors.CLIENT_ERROR, 422), "get-book")).isEqualTo(422);
+        assertThat(statuses.statusFor(kept(RestErrors.SERVER_ERROR, 502), null)).isEqualTo(502);
+        // Without a kept status, the codes have their fixed status.
+        assertThat(statuses.statusFor(RestErrors.CLIENT_ERROR, null)).isEqualTo(400);
+        assertThat(statuses.statusFor(RestErrors.SERVER_ERROR, null)).isEqualTo(500);
+    }
+
+    @Test
+    void withoutAKeptStatusTheOldOrderHolds() {
+        RestErrorStatuses statuses = new RestErrorStatuses(Map.of("BOOK_NOT_FOUND", 423),
+                Map.of("get-book", Map.of("BOOK_NOT_FOUND", 410)));
+
+        assertThat(statuses.statusFor(new SynapseException(BookErrors.BOOK_NOT_FOUND, 42), "get-book")).isEqualTo(410);
+        assertThat(statuses.statusFor(new SynapseException(BookErrors.BOOK_NOT_FOUND, 42), "other")).isEqualTo(423);
+        assertThat(statuses.statusFor(new SynapseException(RestErrors.METHOD_NOT_ALLOWED), null)).isEqualTo(405);
+        assertThat(statuses.statusFor(new SynapseException(SynapseErrors.PRECONDITION_REQUIRED), null)).isEqualTo(428);
+        assertThat(statuses.statusFor(new SynapseException(of("X", ErrorCategory.TIMEOUT)), null)).isEqualTo(504);
+        // A Spring status inside the table carries its headers and reason but no status of its own.
+        assertThat(statuses
+                .statusFor(new KeptStatusException(SynapseErrors.UNAVAILABLE, null,
+                        Map.of("Retry-After", "5"), "busy", null), null))
+                .isEqualTo(503);
     }
 
     @Test

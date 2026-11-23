@@ -2,8 +2,8 @@ name: Workflow lint
 
 # Checks the GitHub Actions workflows and their scripts: actionlint for syntax, expressions and embedded shell
 # (shellcheck), zizmor for security problems (injection, credential persistence, dangerous triggers, unpinned
-# actions), and the tests of .github/scripts/central-publish.sh and snapshot-check.sh (paths .github/** include
-# .github/scripts/**).
+# actions), and the tests of .github/scripts/central-publish.sh, snapshot-check.sh, pit-modules-check.sh and
+# verify-groups.sh (paths .github/** include .github/scripts/**).
 # Findings fail the job; a deliberate exception gets an inline "# zizmor: ignore[<audit>]" with a reason.
 on:
   pull_request:
@@ -70,3 +70,11 @@ jobs:
       # Fake gh only; nothing reaches the GitHub API.
       - name: Test snapshot-check.sh
         run: bash .github/scripts/test-snapshot-check.sh
+
+      # Crafted effective POMs and a crafted repository; no Maven.
+      - name: Test pit-modules-check.sh
+        run: bash .github/scripts/test-pit-modules-check.sh
+
+      # Crafted groups files and a crafted repository; no Maven.
+      - name: Test verify-groups.sh
+        run: bash .github/scripts/test-verify-groups.sh

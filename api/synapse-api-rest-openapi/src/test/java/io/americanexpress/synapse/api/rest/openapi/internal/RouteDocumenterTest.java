@@ -119,6 +119,35 @@ class RouteDocumenterTest {
     }
 
     @Test
+    void collectionsAreRequiredOnlyWhenTheyMustHaveItems() throws JsonProcessingException {
+        DocumentContext doc = json(documenter(PAGING, NO_OVERRIDES).document(BookRoutes.collections()));
+
+        // An unsent list binds empty, so a client may leave it out, unless its constraints need items: then an absent
+        // one is rejected, so it is required, with minItems.
+        assertThat(parameter(doc, "/labels", "get", "tag"))
+                .containsEntry("required", true)
+                .containsEntry("schema", Map.of("type", "array", "items", Map.of("type", "string"), "minItems", 1));
+        assertThat(parameter(doc, "/labels", "get", "X-Tags"))
+                .containsEntry("required", true)
+                .containsEntry("schema", Map.of("type", "array", "items", Map.of("type", "string"), "minItems", 1));
+        assertThat(parameter(doc, "/labels", "get", "any")).containsEntry("required", false);
+        assertThat(parameter(doc, "/labels", "get", "tags"))
+                .containsEntry("in", "cookie")
+                .containsEntry("required",
+                        false);
+        assertThat(parameter(doc, "/labels", "get", "owner")).containsEntry("required", true);
+        // A body of collections only may be left out: it counts as {}, and every component binds empty.
+        assertThat(doc.read("$.paths['/labels'].post.requestBody.required", Boolean.class)).isFalse();
+        assertThat(map(doc, "$.components.schemas.LabelsInput"))
+                .containsKey("properties")
+                .doesNotContainKey("required");
+        // One with a @NotEmpty list may not.
+        assertThat(doc.read("$.paths['/labels'].put.requestBody.required", Boolean.class)).isTrue();
+        List<String> required = doc.read("$.components.schemas.TaggedLabelsInput.required");
+        assertThat(required).containsExactly("tags");
+    }
+
+    @Test
     void pagingParametersFollowTheSettings() throws JsonProcessingException {
         DocumentContext doc = books();
 

@@ -16,6 +16,7 @@ package io.americanexpress.synapse.api.grpc.internal.paging;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,6 +33,7 @@ import io.grpc.StatusRuntimeException;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.protobuf.StatusProto;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -58,6 +60,7 @@ import io.americanexpress.synapse.api.grpc.fixture.proto.PageWithoutTotalRespons
 import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBook;
 import io.americanexpress.synapse.api.grpc.fixture.proto.PagedBookServiceGrpc;
 import io.americanexpress.synapse.core.internal.paging.PageCursors;
+import io.americanexpress.synapse.core.operation.OperationNames;
 import io.americanexpress.synapse.core.operation.QueryOperation;
 import io.americanexpress.synapse.core.paging.PageQuery;
 import io.americanexpress.synapse.core.paging.PageResult;
@@ -88,15 +91,25 @@ class GrpcPagingIT {
     private static final String GENERATED_KEY = "synapse.paging.cursor.key is not set, so paging cursors are "
             + "encrypted with a key generated at startup";
 
+    /** The violation of a token past {@code synapse.paging.max-offset}, at its default of 1000. */
+    private static final String OFFSET_LIMIT = "has reached the offset limit (1000); narrow the query or use keyset "
+            + "paging";
+
+    private static final List<SortOrder> BY_TITLE = List.of(new SortOrder("TITLE", SortOrder.Direction.ASC));
+
     @Value("${spring.grpc.server.inprocess.name}")
     String server;
 
     @Autowired
     Calls calls;
 
+    @Autowired
+    PageCursors cursors;
+
     @BeforeEach
     void reset() {
         calls.count.set(0);
+        calls.offsetCount.set(0);
     }
 
     @Test
@@ -249,7 +262,67 @@ class GrpcPagingIT {
                 .containsExactly("b40", "b39");
     }
 
+    @Test
+    void restCappedTokenOverGrpcNamesPageToken() {
+        // The token an unversioned REST route writes for GET ?offset=990&size=20&sort=title of the same operation and
+        // filters (no extra entries, as a gRPC method), past max-offset 1000.
+        String token = Objects
+                .requireNonNull(cursors
+                        .next(OperationNames.nameOf(OffsetBooksOperation.class),
+                                new BookSearch(SHELF, new PageQuery(null, 990L, 20, BY_TITLE)), Map.of(),
+                                PageResult.of(List.of(), true), 1000));
+
+        assertInvalid(offsetFailure(request(token).setOrderBy("title").build()), "page_token", OFFSET_LIMIT);
+        assertThat(calls.offsetCount.get()).isZero();
+    }
+
+    /** The same methods with {@code synapse.paging.max-offset} at 30, so a page of the 45 books passes the cap. */
+    @Nested
+    @TestPropertySource(properties = {"spring.grpc.server.inprocess.name=synapse-grpc-paging-capped",
+            "synapse.paging.max-offset=30"})
+    class AtALowerCap {
+
+        @Value("${spring.grpc.server.inprocess.name}")
+        String cappedServer;
+
+        @Autowired
+        Calls cappedCalls;
+
+        @Test
+        void cappedPageHasANextPageToken() throws InterruptedException {
+            ListPagedBooksResponse page = byOffset(cappedServer,
+                    request("").setSkip(20).setPageSize(20).setOrderBy("title").build());
+
+            // 20 + 20 is past max-offset 30 while more books follow: a token, so the empty token still means the end.
+            assertThat(page.getBooksCount()).isEqualTo(20);
+            assertThat(page.getHasNext()).isTrue();
+            assertThat(page.getNextPageToken()).isNotEmpty();
+        }
+
+        @Test
+        void usingTheCappedTokenIsInvalidArgument() throws InterruptedException {
+            String token = byOffset(cappedServer, request("").setSkip(20).setPageSize(20).setOrderBy("title").build())
+                    .getNextPageToken();
+            int before = cappedCalls.offsetCount.get();
+            // The page that issued the token ran the operation, so the count below is a real check.
+            assertThat(before).isPositive();
+
+            StatusRuntimeException failure = catchThrowableOfType(StatusRuntimeException.class,
+                    () -> byOffset(cappedServer, request(token).setOrderBy("title").build()));
+
+            assertInvalid(failure, "page_token",
+                    "has reached the offset limit (30); narrow the query or use keyset paging");
+            // Rejected before the operation runs, as over REST.
+            assertThat(cappedCalls.offsetCount.get()).isEqualTo(before);
+        }
+    }
+
     private ListPagedBooksResponse byOffset(ListPagedBooksRequest request) throws InterruptedException {
+        return byOffset(server, request);
+    }
+
+    private static ListPagedBooksResponse byOffset(String server, ListPagedBooksRequest request)
+            throws InterruptedException {
         ManagedChannel channel = InProcessChannelBuilder.forName(server).directExecutor().build();
         try {
             return OffsetBookServiceGrpc
@@ -371,10 +444,15 @@ class GrpcPagingIT {
         }
     }
 
-    /** How often {@link ListBooksOperation} ran; a bean of its own, as the operation bean is the pipeline's proxy. */
+    /**
+     * How often {@link ListBooksOperation} and {@link OffsetBooksOperation} ran; a bean of its own, as the operation
+     * bean is the pipeline's proxy.
+     */
     static final class Calls {
 
         final AtomicInteger count = new AtomicInteger();
+
+        final AtomicInteger offsetCount = new AtomicInteger();
     }
 
     /** Lists a shelf's books, counting its calls. */
@@ -405,8 +483,15 @@ class GrpcPagingIT {
     /** Pages by offset only, with no cursor and no total: {@code PageResult.of(items, hasNext)}. */
     static class OffsetBooksOperation implements QueryOperation<BookSearch, PageResult<Book>> {
 
+        private final Calls calls;
+
+        OffsetBooksOperation(Calls calls) {
+            this.calls = calls;
+        }
+
         @Override
         public PageResult<Book> execute(BookSearch input) {
+            calls.offsetCount.incrementAndGet();
             PageQuery query = input.page();
             // Library.page reads the offset; its cursor and total are dropped.
             PageResult<Book> page = Library
@@ -478,8 +563,8 @@ class GrpcPagingIT {
         }
 
         @Bean
-        OffsetBooksOperation offsetBooksOperation() {
-            return new OffsetBooksOperation();
+        OffsetBooksOperation offsetBooksOperation(Calls calls) {
+            return new OffsetBooksOperation(calls);
         }
 
         @Bean

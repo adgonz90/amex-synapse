@@ -14,14 +14,21 @@
 package io.americanexpress.synapse.api.rest.internal.error;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import jakarta.servlet.DispatcherType;
+import jakarta.servlet.ServletException;
+import jakarta.validation.Validation;
+import jakarta.validation.ValidatorFactory;
+import jakarta.validation.constraints.Size;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.MDC;
@@ -32,7 +39,6 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.context.support.StaticMessageSource;
 import org.springframework.core.MethodParameter;
-import org.springframework.core.Ordered;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -41,14 +47,20 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.server.ServletServerHttpRequest;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.InsufficientAuthenticationException;
+import org.springframework.security.authorization.AuthorizationDeniedException;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.DataBinder;
 import org.springframework.validation.FieldError;
 import org.springframework.validation.ObjectError;
+import org.springframework.validation.beanvalidation.SpringValidatorAdapter;
 import org.springframework.validation.method.MethodValidationResult;
 import org.springframework.validation.method.ParameterErrors;
 import org.springframework.validation.method.ParameterValidationResult;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -61,22 +73,32 @@ import org.springframework.web.bind.MissingRequestCookieException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.ServletRequestBindingException;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.ModelAndView;
 import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.function.HandlerFunction;
+import org.springframework.web.servlet.function.RouterFunction;
+import org.springframework.web.servlet.function.ServerRequest;
+import org.springframework.web.servlet.function.ServerResponse;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.servlet.resource.ResourceHttpRequestHandler;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import io.americanexpress.synapse.api.rest.internal.edge.RequestTooLargeException;
 import io.americanexpress.synapse.api.rest.internal.edge.RestRequestAttributes;
+import io.americanexpress.synapse.api.rest.internal.route.MethodNotAllowedHandler;
 import io.americanexpress.synapse.core.autoconfigure.SynapseErrorProperties;
 import io.americanexpress.synapse.core.error.ErrorMessages;
+import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,10 +116,11 @@ class SynapseRestExceptionResolverTest {
 
     private final MockHttpServletResponse response = new MockHttpServletResponse();
 
-    private final SynapseRestExceptionResolver resolver = new SynapseRestExceptionResolver(
-            new ProblemWriter(new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages),
-                    new ProblemTitles(messages), new SynapseErrorProperties(false, null), MAPPER,
-                    "X-Correlation-Id"));
+    private final ProblemWriter writer = new ProblemWriter(new RestErrorStatuses(Map.of(), Map.of()),
+            new ErrorMessages(messages), new ProblemTitles(messages), new SynapseErrorProperties(false, null), MAPPER,
+            "X-Correlation-Id");
+
+    private final SynapseRestExceptionResolver resolver = new SynapseRestExceptionResolver(writer);
 
     private JsonNode resolve(Exception ex) {
         ModelAndView mav = resolver.resolveException(request, response, null, ex);
@@ -110,11 +133,6 @@ class SynapseRestExceptionResolverTest {
         ObjectNode copy = (ObjectNode) body.deepCopy();
         assertThat(copy.remove("correlationId")).isNotNull();
         return copy.toString();
-    }
-
-    @Test
-    void runsBeforeEveryOtherResolver() {
-        assertThat(resolver.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE);
     }
 
     @Test
@@ -149,6 +167,31 @@ class SynapseRestExceptionResolverTest {
             assertThat(MAPPER.readTree(each.getContentAsByteArray()).get("code").asString()).isEqualTo(c.code());
             assertThat(each.getContentType()).startsWith("application/problem+json");
         }
+    }
+
+    @Test
+    void springMediaTypeErrorsKeepTheirHeaders() {
+        List<MediaType> supported = List.of(MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML);
+
+        resolve(new HttpMediaTypeNotSupportedException(MediaType.TEXT_PLAIN, supported, HttpMethod.POST));
+        assertThat(response.getStatus()).isEqualTo(415);
+        assertThat(response.getHeader(HttpHeaders.ACCEPT)).isEqualTo("application/json, application/xml");
+        assertThat(response.getHeader("Accept-Patch")).isNull();
+
+        MockHttpServletResponse patch = new MockHttpServletResponse();
+        resolver
+                .resolveException(request, patch, null,
+                        new HttpMediaTypeNotSupportedException(MediaType.TEXT_PLAIN, supported, HttpMethod.PATCH));
+        assertThat(patch.getStatus()).isEqualTo(415);
+        assertThat(patch.getHeader(HttpHeaders.ACCEPT)).isEqualTo("application/json, application/xml");
+        assertThat(patch.getHeader("Accept-Patch")).isEqualTo("application/json, application/xml");
+
+        MockHttpServletResponse notAcceptable = new MockHttpServletResponse();
+        resolver
+                .resolveException(request, notAcceptable, null,
+                        new HttpMediaTypeNotAcceptableException(List.of(MediaType.APPLICATION_JSON)));
+        assertThat(notAcceptable.getStatus()).isEqualTo(406);
+        assertThat(notAcceptable.getHeader(HttpHeaders.ACCEPT)).isEqualTo("application/json");
     }
 
     @Test
@@ -246,11 +289,181 @@ class SynapseRestExceptionResolverTest {
     }
 
     @Test
-    void committedResponseIsLeftAlone() {
+    void committedResponseIsNotResolved() {
         response.setCommitted(true);
+        MockHttpServletRequest onASynapsePath = new MockHttpServletRequest("GET", "/books/7");
 
         assertThat(resolver.resolveException(request, response, null, new IllegalStateException("x"))).isNull();
+        assertThat(pathsResolver().resolveException(onASynapsePath, response, null, new IllegalStateException("x")))
+                .isNull();
         assertThat(response.getContentAsByteArray()).isEmpty();
+    }
+
+    /**
+     * Spring Security's two exceptions, and their subclasses, propagate to its {@code ExceptionTranslationFilter}:
+     * neither instance answers them. Only the exception's own class counts, not its causes.
+     */
+    @Test
+    void securityExceptionsAreNotResolved() {
+        MockHttpServletRequest onASynapsePath = new MockHttpServletRequest("GET", "/books/7");
+        List<Exception> security = List
+                .of(new AccessDeniedException("denied"), new AuthorizationDeniedException("denied"),
+                        new BadCredentialsException("bad"), new InsufficientAuthenticationException("none"));
+        for (Exception ex : security) {
+            assertThat(resolver.resolveException(request, response, null, ex)).as(ex.toString()).isNull();
+            assertThat(pathsResolver().resolveException(onASynapsePath, response, null, ex)).as(ex.toString()).isNull();
+            assertThat(SynapseRestExceptionResolver.isSecurityException(ex)).isTrue();
+        }
+        assertThat(response.getContentAsByteArray()).isEmpty();
+
+    }
+
+    @Test
+    void wrappedSecurityExceptionsAreNotResolved() {
+        // As Spring Security's ThrowableAnalyzer finds them: anywhere in the cause chain.
+        List<Exception> wrapped = List
+                .of(new RuntimeException(new AccessDeniedException("denied")),
+                        new IllegalStateException("outer",
+                                new UncheckedIOException(new IOException(new BadCredentialsException("bad")))),
+                        new ServletException("wrapped", new AuthorizationDeniedException("denied")));
+        for (Exception ex : wrapped) {
+            assertThat(SynapseRestExceptionResolver.isSecurityException(ex)).as(ex.toString()).isTrue();
+            assertThat(resolver.resolveException(request, response, null, ex)).as(ex.toString()).isNull();
+        }
+        assertThat(response.getContentAsByteArray()).isEmpty();
+    }
+
+    @Test
+    void securityExceptionInsideASynapseExceptionIsResolved() {
+        // The pipeline answers method security inside an operation as INTERNAL on every protocol (BUILD 11): the walk
+        // stops at Synapse's own answer, so REST doesn't differ from gRPC.
+        SynapseException internal = new SynapseException(SynapseErrors.INTERNAL, new AccessDeniedException("denied"));
+
+        assertThat(SynapseRestExceptionResolver.isSecurityException(internal)).isFalse();
+        assertThat(SynapseRestExceptionResolver.isSecurityException(new IllegalStateException(internal))).isFalse();
+        assertThat(resolve(internal).get("code").asString()).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    void causeCycleWithoutASecurityExceptionIsResolved() {
+        // Guard: passes before the walk existed (no walk); without the cycle check it would only stop at the bound.
+        IllegalStateException first = new IllegalStateException("first");
+        IllegalArgumentException second = new IllegalArgumentException("second", first);
+        first.initCause(second);
+
+        assertThat(SynapseRestExceptionResolver.isSecurityException(first)).isFalse();
+        assertThat(resolve(first).get("code").asString()).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    void securityExceptionPastTheBoundIsResolved() {
+        // The walk is bounded, as RequestTooLargeException's: a chain deeper than 32 causes is not searched further.
+        Exception withinTheBound = new AccessDeniedException("denied");
+        for (int depth = 0; depth < 31; depth++) {
+            withinTheBound = new RuntimeException(withinTheBound);
+        }
+        // The 32nd exception of the chain is the last one looked at.
+        Exception pastTheBound = new RuntimeException(withinTheBound);
+
+        assertThat(SynapseRestExceptionResolver.isSecurityException(withinTheBound)).isTrue();
+        assertThat(SynapseRestExceptionResolver.isSecurityException(pastTheBound)).isFalse();
+    }
+
+    @Test
+    void pathsInstanceIgnoresAControllerHandler() throws NoSuchMethodException {
+        HandlerMethod controller = new HandlerMethod(new Object(), Object.class.getMethod("toString"));
+        MockHttpServletRequest onASynapsePath = new MockHttpServletRequest("POST", "/books/7");
+
+        assertThat(pathsResolver()
+                .resolveException(onASynapsePath, response, controller, new IllegalStateException("x"))).isNull();
+        assertThat(response.getContentAsByteArray()).isEmpty();
+    }
+
+    /**
+     * On a Synapse path, the paths instance answers an exception raised before a handler was found, or by a Synapse
+     * handler: the route's own, or the 405 fallback's.
+     */
+    @Test
+    void pathsInstanceAnswersOnASynapsePath() {
+        RouterFunction<ServerResponse> routes = SynapsePathsTest.booksRoutes();
+        HandlerFunction<?> operation = routes
+                .route(ServerRequest.create(new MockHttpServletRequest("GET", "/books/7"), List.of()))
+                .orElseThrow();
+        List<@Nullable Object> handlers = Arrays.asList(null, operation, new MethodNotAllowedHandler(List.of()));
+        for (Object handler : handlers) {
+            MockHttpServletResponse each = new MockHttpServletResponse();
+            ModelAndView mav = SynapseRestExceptionResolver
+                    .forSynapsePaths(writer, SynapsePaths.of(routes))
+                    .resolveException(new MockHttpServletRequest("DELETE", "/books/7"), each, handler,
+                            new HttpMediaTypeNotSupportedException("text/plain"));
+            assertThat(mav).as(String.valueOf(handler)).isNotNull();
+            assertThat(each.getStatus()).isEqualTo(415);
+            assertThat(MAPPER.readTree(each.getContentAsByteArray()).get("code").asString())
+                    .isEqualTo("UNSUPPORTED_MEDIA_TYPE");
+        }
+    }
+
+    @Test
+    void pathsInstanceIgnoresOtherPaths() {
+        assertThat(pathsResolver()
+                .resolveException(new MockHttpServletRequest("GET", "/shelves/7"), response, null,
+                        new IllegalStateException("x")))
+                .isNull();
+        assertThat(SynapseRestExceptionResolver
+                .forSynapsePaths(writer, SynapsePaths.none())
+                .resolveException(new MockHttpServletRequest("GET", "/books/7"), response, null,
+                        new IllegalStateException("x")))
+                .isNull();
+        assertThat(response.getContentAsByteArray()).isEmpty();
+    }
+
+    /**
+     * A 404 for a path no handler serves, under a Synapse route's literal path prefix, is Synapse's
+     * {@code ROUTE_NOT_FOUND}: the resource handler's {@code NoResourceFoundException}, or {@code NoHandlerFoundException}
+     * when no handler was found at all.
+     */
+    @Test
+    void pathsInstanceAnswersAnUnknownPathUnderASynapsePrefix() {
+        assertRouteNotFound(new ResourceHttpRequestHandler(),
+                new NoResourceFoundException(HttpMethod.GET, "/books/7/reviews", "books/7/reviews"));
+        assertRouteNotFound(null, new NoHandlerFoundException("GET", "/books/7/reviews", new HttpHeaders()));
+    }
+
+    private void assertRouteNotFound(@Nullable Object handler, Exception notFound) {
+        MockHttpServletResponse answered = new MockHttpServletResponse();
+        ModelAndView mav = pathsResolver()
+                .resolveException(new MockHttpServletRequest("GET", "/books/7/reviews"), answered, handler, notFound);
+
+        assertThat(mav).isNotNull();
+        assertThat(answered.getStatus()).isEqualTo(404);
+        assertThat(MAPPER.readTree(answered.getContentAsByteArray()).get("code").asString())
+                .isEqualTo("ROUTE_NOT_FOUND");
+    }
+
+    /** Elsewhere, and for another exception or handler under a Synapse prefix, the normal order runs. */
+    @Test
+    void pathsInstanceLeavesOtherNotFoundsToTheNormalOrder() throws NoSuchMethodException {
+        HandlerMethod controller = new HandlerMethod(new Object(), Object.class.getMethod("toString"));
+
+        assertThat(pathsResolver()
+                .resolveException(new MockHttpServletRequest("GET", "/shelves/7"), response,
+                        new ResourceHttpRequestHandler(),
+                        new NoResourceFoundException(HttpMethod.GET, "/shelves/7", "shelves/7")))
+                .isNull();
+        assertThat(pathsResolver()
+                .resolveException(new MockHttpServletRequest("GET", "/books/7/reviews"), response,
+                        new ResourceHttpRequestHandler(), new IllegalStateException("x")))
+                .isNull();
+        assertThat(pathsResolver()
+                .resolveException(new MockHttpServletRequest("GET", "/books/7/reviews"), response, controller,
+                        new NoResourceFoundException(HttpMethod.GET, "/books/7/reviews", "books/7/reviews")))
+                .isNull();
+        assertThat(response.getContentAsByteArray()).isEmpty();
+    }
+
+    /** The Synapse-paths instance for the route {@code GET /books/{id}}. */
+    private SynapseRestExceptionResolver pathsResolver() {
+        return SynapseRestExceptionResolver.forSynapsePaths(writer, SynapsePaths.of(SynapsePathsTest.booksRoutes()));
     }
 
     private static MethodParameter parameter(String name) {
@@ -457,6 +670,94 @@ class SynapseRestExceptionResolverTest {
     void search(@RequestParam("max_results") int maxResults) {
     }
 
+    record Label(String shortName) {
+    }
+
+    record Edition(Integer publishedYear, Map<String, Label> labelsByLocale) {
+    }
+
+    @SuppressWarnings("unused")
+    void create(@RequestBody Edition edition) {
+    }
+
+    record Shelf(Map<String, @Size(max = 1) List<Label>> labelsByAisle) {
+    }
+
+    @SuppressWarnings("unused")
+    void stock(@RequestBody Shelf shelf) {
+    }
+
+    @Test
+    void constraintViolationIsNamedFromItsPathSoNoPartOfAKeyIsEchoed() throws Exception {
+        SynapseRestExceptionResolver snakeCase = new SynapseRestExceptionResolver(new ProblemWriter(
+                new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages), new ProblemTitles(messages),
+                new SynapseErrorProperties(false, null),
+                JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build(),
+                "X-Correlation-Id"));
+        // A crafted key that reads like an item index in Spring's field: labelsByAisle[k][7].
+        Shelf shelf = new Shelf(Map.of("k][7", List.of(new Label("a"), new Label("b"))));
+        BeanPropertyBindingResult result = new BeanPropertyBindingResult(shelf, "shelf");
+        try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+            new SpringValidatorAdapter(factory.getValidator()).validate(shelf, result);
+        }
+        assertThat(Objects.requireNonNull(result.getFieldError()).getField()).isEqualTo("labelsByAisle[k][7]");
+        MethodParameter body = new MethodParameter(
+                SynapseRestExceptionResolverTest.class.getDeclaredMethod("stock", Shelf.class), 0);
+
+        snakeCase.resolveException(request, response, null, new MethodArgumentNotValidException(body, result));
+        JsonNode problem = MAPPER.readTree(response.getContentAsByteArray());
+
+        assertThat(problem.get("violations")).hasSize(1);
+        assertThat(problem.get("violations").get(0).get("field").asString()).isEqualTo("labels_by_aisle");
+        assertThat(problem.get("violations").toString()).doesNotContain("7");
+    }
+
+    @SuppressWarnings("unused")
+    void filter(Edition edition) {
+    }
+
+    @Test
+    void requestBodyViolationUsesTheJsonNameWithoutMapKeys() throws Exception {
+        SynapseRestExceptionResolver snakeCase = new SynapseRestExceptionResolver(new ProblemWriter(
+                new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages), new ProblemTitles(messages),
+                new SynapseErrorProperties(false, null),
+                JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build(),
+                "X-Correlation-Id"));
+        BeanPropertyBindingResult result = new BeanPropertyBindingResult(new Edition(1, Map.of()), "edition");
+        result.addError(new FieldError("edition", "publishedYear", "must be at most 3 digits"));
+        result.addError(new FieldError("edition", "labelsByLocale[en.GB]].shortName", "must not be blank"));
+        result.addError(new ObjectError("edition", "edition is inconsistent"));
+        MethodParameter body = new MethodParameter(
+                SynapseRestExceptionResolverTest.class.getDeclaredMethod("create", Edition.class), 0);
+
+        snakeCase.resolveException(request, response, null, new MethodArgumentNotValidException(body, result));
+        JsonNode problem = MAPPER.readTree(response.getContentAsByteArray());
+
+        assertViolation(problem, 0, "published_year", "must be at most 3 digits");
+        assertViolation(problem, 1, "labels_by_locale", "must not be blank");
+        assertViolation(problem, 2, "edition", "edition is inconsistent");
+        assertThat(problem.toString()).doesNotContain("en.GB");
+    }
+
+    @Test
+    void boundObjectViolationKeepsTheParameterName() throws Exception {
+        SynapseRestExceptionResolver snakeCase = new SynapseRestExceptionResolver(new ProblemWriter(
+                new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages), new ProblemTitles(messages),
+                new SynapseErrorProperties(false, null),
+                JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build(),
+                "X-Correlation-Id"));
+        BeanPropertyBindingResult result = new BeanPropertyBindingResult(new Edition(1, Map.of()), "edition");
+        result.addError(new FieldError("edition", "publishedYear", "must be at most 3 digits"));
+        MethodParameter form = new MethodParameter(
+                SynapseRestExceptionResolverTest.class.getDeclaredMethod("filter", Edition.class), 0);
+
+        snakeCase.resolveException(request, response, null, new MethodArgumentNotValidException(form, result));
+
+        // A form or query object binds request parameters by their Java names, so its fields are already wire names.
+        assertViolation(MAPPER.readTree(response.getContentAsByteArray()), 0, "publishedYear",
+                "must be at most 3 digits");
+    }
+
     @Test
     void handlerMethodValidationUsesTheWireName() throws Exception {
         ParameterValidationResult result = mock(ParameterValidationResult.class);
@@ -500,12 +801,120 @@ class SynapseRestExceptionResolverTest {
     }
 
     @Test
-    void otherServerErrorResponseIsInternalAndLogged(CapturedOutput output) {
-        JsonNode body = resolve(new ResponseStatusException(HttpStatus.BAD_GATEWAY, "secret-text"));
+    void otherServerErrorResponseKeepsItsStatusAtWarn() {
+        List<ILoggingEvent> events = SynapseErrorControllerTest
+                .logged(() -> resolve(new ResponseStatusException(HttpStatus.BAD_GATEWAY, "secret-text")));
+        JsonNode body = MAPPER.readTree(response.getContentAsByteArray());
+
+        assertThat(response.getStatus()).isEqualTo(502);
+        assertThat(body.get("code").asString()).isEqualTo("SERVER_ERROR");
+        assertThat(body.toString()).doesNotContain("secret-text").doesNotContain("Exception");
+        assertThat(events).singleElement().satisfies(event -> {
+            assertThat(event.getLevel()).isEqualTo(Level.WARN);
+            assertThat(event.getThrowableProxy()).isNull();
+        });
+    }
+
+    @Test
+    void otherClientErrorResponseKeepsItsStatus(CapturedOutput output) {
+        assertClientError(new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT, "secret-text"), 422,
+                "CLIENT_ERROR", output);
+        // Any ErrorResponse, not only a ResponseStatusException.
+        MockHttpServletResponse other = new MockHttpServletResponse();
+        resolver.resolveException(request, other, null, new ErrorResponseException(HttpStatus.I_AM_A_TEAPOT));
+        assertThat(other.getStatus()).isEqualTo(418);
+    }
+
+    @Test
+    void internalServerErrorResponseIsInternalAndLogged() {
+        // Pin (R-11): a 500 was INTERNAL, logged at ERROR with its stack trace, before this change too.
+        List<ILoggingEvent> events = SynapseErrorControllerTest
+                .logged(() -> resolve(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "secret-text")));
+        JsonNode body = MAPPER.readTree(response.getContentAsByteArray());
 
         assertThat(response.getStatus()).isEqualTo(500);
         assertThat(body.get("code").asString()).isEqualTo("INTERNAL");
-        assertThat(body.toString()).doesNotContain("secret-text").doesNotContain("Exception");
+        assertThat(body.toString()).doesNotContain("secret-text");
+        assertThat(events).singleElement().satisfies(event -> {
+            assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+            assertThat(event.getThrowableProxy()).isNotNull();
+        });
+    }
+
+    @Test
+    void responseThatIsNoErrorIsInternal(CapturedOutput output) {
+        // Pin (R-11): a status outside 400-599 is the application's fault, as before.
+        JsonNode body = resolve(new ResponseStatusException(HttpStatus.FOUND, "secret-text"));
+
+        assertThat(response.getStatus()).isEqualTo(500);
+        assertThat(body.get("code").asString()).isEqualTo("INTERNAL");
         assertThat(errorLines(output)).isEqualTo(1);
+    }
+
+    @Test
+    void responseStatusExceptionAlongTheCauseChainIsFound() {
+        JsonNode body = resolve(new IllegalStateException("secret-text",
+                new IllegalArgumentException(new ResponseStatusException(HttpStatus.GONE, "secret-text"))));
+
+        assertThat(response.getStatus()).isEqualTo(410);
+        assertThat(body.get("code").asString()).isEqualTo("CLIENT_ERROR");
+    }
+
+    @Test
+    void headerWithSeveralValuesIsJoinedWithCommas() {
+        ErrorResponseException busy = new ErrorResponseException(HttpStatus.SERVICE_UNAVAILABLE);
+        busy.getHeaders().add(HttpHeaders.LINK, "</status>; rel=\"status\"");
+        busy.getHeaders().add(HttpHeaders.LINK, "</help>; rel=\"help\"");
+        busy.getHeaders().set(HttpHeaders.RETRY_AFTER, "5");
+
+        resolve(busy);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getHeaders(HttpHeaders.LINK))
+                .containsExactly("</status>; rel=\"status\", </help>; rel=\"help\"");
+        assertThat(response.getHeader(HttpHeaders.RETRY_AFTER)).isEqualTo("5");
+    }
+
+    @Test
+    void otherErrorResponseOnACauseIsIgnored(CapturedOutput output) {
+        // Pin (R-11): as Spring's ResponseStatusExceptionResolver, the walk looks for a ResponseStatusException or
+        // @ResponseStatus only; a wrapped ErrorResponseException is the application's failure, as before this change.
+        JsonNode body = resolve(new IllegalStateException("secret-text", new ErrorResponseException(HttpStatus.GONE)));
+
+        assertThat(response.getStatus()).isEqualTo(500);
+        assertThat(body.get("code").asString()).isEqualTo("INTERNAL");
+        assertThat(errorLines(output)).isEqualTo(1);
+    }
+
+    @Test
+    void causeCycleEndsTheWalk(CapturedOutput output) {
+        // Guard (R-11): passes before the @ResponseStatus walk existed (INTERNAL by fall-through); without the bound the
+        // walk would loop on this cycle.
+        IllegalStateException first = new IllegalStateException("first");
+        IllegalArgumentException second = new IllegalArgumentException("second", first);
+        first.initCause(second);
+
+        JsonNode body = resolve(first);
+
+        assertThat(response.getStatus()).isEqualTo(500);
+        assertThat(body.get("code").asString()).isEqualTo("INTERNAL");
+        assertThat(errorLines(output)).isEqualTo(1);
+    }
+
+    @Test
+    void reasonIsTheDetailOnlyWithIncludeDetail() {
+        SynapseRestExceptionResolver detailed = new SynapseRestExceptionResolver(new ProblemWriter(
+                new RestErrorStatuses(Map.of(), Map.of()), new ErrorMessages(messages), new ProblemTitles(messages),
+                new SynapseErrorProperties(true, null), MAPPER, "X-Correlation-Id"));
+        ErrorResponseException withDetail = new ErrorResponseException(HttpStatus.UNPROCESSABLE_CONTENT);
+        withDetail.setDetail("the body's detail");
+
+        detailed.resolveException(request, response, null, withDetail);
+        assertThat(MAPPER.readTree(response.getContentAsByteArray()).get("detail").asString())
+                .isEqualTo("the body's detail");
+
+        MockHttpServletResponse plain = new MockHttpServletResponse();
+        resolver.resolveException(request, plain, null, withDetail);
+        assertThat(MAPPER.readTree(plain.getContentAsByteArray()).has("detail")).isFalse();
     }
 }

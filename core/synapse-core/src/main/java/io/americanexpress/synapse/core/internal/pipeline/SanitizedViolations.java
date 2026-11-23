@@ -44,6 +44,9 @@ final class SanitizedViolations extends RuntimeException {
 
     private final String violations;
 
+    /** The token of the call whose pipeline raised this rejection; set once, and never serialized. */
+    private transient @Nullable Object call;
+
     private SanitizedViolations(String message, String violations, boolean stackTrace) {
         super(message, null, false, stackTrace);
         this.violations = violations;
@@ -136,6 +139,29 @@ final class SanitizedViolations extends RuntimeException {
      */
     String violations() {
         return violations;
+    }
+
+    /**
+     * Returns the token of the call whose pipeline raised this rejection (see {@link #markCall(Object)}).
+     *
+     * @return the token, or {@code null} for a stand-in that isn't a pipeline rejection
+     */
+    @Nullable
+    Object call() {
+        return call;
+    }
+
+    /**
+     * Records the call whose pipeline raised this rejection: an opaque token, compared by identity.
+     *
+     * @param call the call's token
+     * @throws IllegalStateException if a call is already recorded
+     */
+    void markCall(Object call) {
+        if (this.call != null) {
+            throw new IllegalStateException("The rejection's call is already recorded");
+        }
+        this.call = call;
     }
 
     private static List<String> templates(Collection<? extends ConstraintViolation<?>> constraints) {

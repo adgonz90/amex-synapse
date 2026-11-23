@@ -61,6 +61,10 @@ class PageCursorsTest {
     /** {@code synapse.paging.max-offset}'s default. */
     private static final long CAP = 1000;
 
+    /** The violation of an offset token past {@link #CAP}. */
+    private static final String OFFSET_LIMIT = "has reached the offset limit (1000); narrow the query or use keyset "
+            + "paging";
+
     private static final List<SortOrder> BY_TITLE = List.of(new SortOrder("TITLE", Direction.ASC));
 
     private final InputDigest digest = new InputDigest();
@@ -358,9 +362,23 @@ class PageCursorsTest {
                 .isEqualTo("raw-1");
         // A cursor page that returns no cursor can't continue by offset.
         assertThat(cursors.next(SEARCH, byCursor, NONE, PageResult.of(List.of("c"), true), 1000)).isNull();
-        // The next offset is capped by synapse.paging.max-offset, inclusive.
-        assertThat(cursors.next(SEARCH, first, NONE, PageResult.of(List.of("a"), true), 2)).isNotNull();
-        assertThat(cursors.next(SEARCH, first, NONE, PageResult.of(List.of("a"), true), 1)).isNull();
+        // The next offset is 2. At max-offset 2 (inclusive) its token reads back to offset 2; at max-offset 1 the page
+        // still gets a token, which fails with the offset limit.
+        String atTheCap = Objects
+                .requireNonNull(cursors.next(SEARCH, first, NONE, PageResult.of(List.of("a"), true), 2));
+        assertThat(cursors
+                .unwrap(SEARCH, new SearchRequest("guin", new PageQuery(atTheCap, null, 2, BY_TITLE)), NONE, FIELD,
+                        2))
+                .isEqualTo(new SearchRequest("guin", new PageQuery(null, 2L, 2, BY_TITLE)));
+        String pastTheCap = Objects
+                .requireNonNull(cursors.next(SEARCH, first, NONE, PageResult.of(List.of("a"), true), 1));
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> cursors
+                        .unwrap(SEARCH, new SearchRequest("guin", new PageQuery(pastTheCap, null, 2, BY_TITLE)), NONE,
+                                FIELD, 1))
+                .satisfies(e -> assertThat(e.violations())
+                        .containsExactly(new Violation(FIELD,
+                                "has reached the offset limit (1); narrow the query or use keyset paging")));
         // Without a PageQuery there is no size to add.
         assertThat(cursors.next(SEARCH, new Plain("x"), NONE, PageResult.of(List.of("a"), true), 1000)).isNull();
     }
@@ -394,24 +412,138 @@ class PageCursorsTest {
     }
 
     @Test
-    void offsetTokenOverTheCurrentCapIsRejected() {
+    void nextPastTheCapIsAToken() {
+        SearchRequest capped = new SearchRequest("guin", new PageQuery(null, 990L, 20, BY_TITLE));
+
+        // 990 + 20 is past max-offset 1000 and the page has a next page: a token, so a client that follows tokens
+        // learns why it stops.
+        assertThat(cursors.next(SEARCH, capped, NONE, PageResult.of(List.of("a"), true), CAP))
+                .isNotNull()
+                .matches("[A-Za-z0-9_-]+");
+    }
+
+    @Test
+    void capTokenFailsWithTheOffsetLimitMessage() {
+        SearchRequest capped = new SearchRequest("guin", new PageQuery(null, 990L, 20, BY_TITLE));
+        String token = Objects
+                .requireNonNull(cursors.next(SEARCH, capped, NONE, PageResult.of(List.of("a"), true), CAP));
+        SearchRequest next = new SearchRequest("guin", new PageQuery(token, null, 20, BY_TITLE));
+
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> cursors.unwrap(SEARCH, next, NONE, "page_token", CAP))
+                .satisfies(e -> {
+                    assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
+                    assertThat(e.violations()).containsExactly(new Violation("page_token", OFFSET_LIMIT));
+                });
+        // The same for a whole PageQuery input, on REST's cursor parameter.
+        String whole = Objects
+                .requireNonNull(cursors
+                        .next(ALL, new PageQuery(null, 990L, 20, List.of()), NONE, PageResult.of(List.of("a"), true),
+                                CAP));
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> cursors.unwrap(ALL, new PageQuery(whole, null, 20, List.of()), NONE, FIELD, CAP))
+                .satisfies(e -> assertThat(e.violations()).containsExactly(new Violation(FIELD, OFFSET_LIMIT)));
+    }
+
+    @Test
+    void capTokenWithAnotherQueryIsNotValid() {
+        SearchRequest capped = new SearchRequest("guin", new PageQuery(null, 990L, 20, BY_TITLE));
+        String token = Objects
+                .requireNonNull(cursors.next(SEARCH, capped, NONE, PageResult.of(List.of("a"), true), CAP));
+
+        // Pin (R-11): the scope is checked first: with other filters, another sort or another operation, the capped
+        // token is the one cursor violation, never the offset limit, so it says nothing about the query it was issued
+        // for.
+        List<SearchRequest> others = List
+                .of(new SearchRequest("herbert", new PageQuery(token, null, 20, BY_TITLE)),
+                        new SearchRequest("guin", new PageQuery(token, null, 20, List.of())));
+        for (SearchRequest other : others) {
+            assertThatExceptionOfType(SynapseException.class)
+                    .isThrownBy(() -> cursors.unwrap(SEARCH, other, NONE, FIELD, CAP))
+                    .satisfies(e -> assertThat(e.violations())
+                            .containsExactly(new Violation(FIELD, "is not valid for this request")));
+        }
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> cursors
+                        .unwrap(ALL, new SearchRequest("guin", new PageQuery(token, null, 20, BY_TITLE)), NONE, FIELD,
+                                CAP))
+                .satisfies(e -> assertThat(e.violations())
+                        .containsExactly(new Violation(FIELD, "is not valid for this request")));
+    }
+
+    @Test
+    void tokenFromAHigherCapGetsTheSameMessage() {
         SearchRequest first = new SearchRequest("guin", new PageQuery(null, null, 20, BY_TITLE));
         String token = Objects
-                .requireNonNull(cursors.next(SEARCH, first, NONE, PageResult.of(List.of("a"), true), 1000));
+                .requireNonNull(cursors.next(SEARCH, first, NONE, PageResult.of(List.of("a"), true), CAP));
         SearchRequest next = new SearchRequest("guin", new PageQuery(token, null, 20, BY_TITLE));
 
         // Issued for offset 20 under a cap of 1000; read back after the cap was lowered to 10.
         assertThatExceptionOfType(SynapseException.class)
                 .isThrownBy(() -> cursors.unwrap(SEARCH, next, NONE, FIELD, 10))
                 .satisfies(e -> {
-                    // REST's offset=N over the cap, on the token's field.
                     assertThat(e.details()).isEqualTo(SynapseErrors.VALIDATION_FAILED);
                     assertThat(e.violations())
-                            .containsExactly(new Violation(FIELD, "must be less than or equal to 10"));
+                            .containsExactly(new Violation(FIELD,
+                                    "has reached the offset limit (10); narrow the query or use keyset paging"));
                 });
         // At the cap, inclusive, it still reads.
         assertThat(cursors.unwrap(SEARCH, next, NONE, FIELD, 20))
                 .isEqualTo(new SearchRequest("guin", new PageQuery(null, 20L, 20, BY_TITLE)));
+    }
+
+    @Test
+    void noTokenAtTheRealEnd() {
+        // Pin (R-11): the token is empty only at the real end of the collection, past the cap too.
+        SearchRequest capped = new SearchRequest("guin", new PageQuery(null, 990L, 20, BY_TITLE));
+
+        assertThat(cursors.next(SEARCH, capped, NONE, PageResult.of(List.of("a"), false), CAP)).isNull();
+        assertThat(cursors.next(SEARCH, capped, NONE, new PageResult<>(List.of("a"), "raw-1", false, null), CAP))
+                .isNull();
+    }
+
+    @Test
+    void cursorPageWithoutACursorStillHasNoToken() {
+        // Pin (R-11): a page read by cursor can't continue by offset, whatever the cap.
+        SearchRequest byCursor = new SearchRequest("guin", new PageQuery("raw-2", null, 20, BY_TITLE));
+
+        assertThat(cursors.next(SEARCH, byCursor, NONE, PageResult.of(List.of("c"), true), CAP)).isNull();
+        assertThat(cursors.next(SEARCH, byCursor, NONE, PageResult.of(List.of("c"), true), 0)).isNull();
+    }
+
+    @Test
+    void nextWithinTheCapIsUnchanged() {
+        // Pin (R-11): within the cap, inclusive, the token carries the next offset and reads back to it.
+        for (long offset : new long[]{960, 980}) {
+            SearchRequest page = new SearchRequest("guin", new PageQuery(null, offset, 20, BY_TITLE));
+            String token = Objects
+                    .requireNonNull(cursors.next(SEARCH, page, NONE, PageResult.of(List.of("a"), true), CAP));
+
+            assertThat(cursors
+                    .unwrap(SEARCH, new SearchRequest("guin", new PageQuery(token, null, 20, BY_TITLE)), NONE, FIELD,
+                            CAP))
+                    .isEqualTo(new SearchRequest("guin", new PageQuery(null, offset + 20, 20, BY_TITLE)));
+        }
+    }
+
+    @Test
+    void pastCapIsTheOffsetPageWhoseNextOffsetPassesTheCap() {
+        PageResult<String> more = PageResult.of(List.of("a"), true);
+        SearchRequest capped = new SearchRequest("guin", new PageQuery(null, 990L, 20, BY_TITLE));
+
+        assertThat(PageCursors.pastCap(capped, more, CAP)).isTrue();
+        // The first page, without an offset, under a cap below its size.
+        assertThat(PageCursors.pastCap(new PageQuery(null, null, 20, List.of()), more, 19)).isTrue();
+        // Within the cap, inclusive.
+        assertThat(PageCursors.pastCap(new SearchRequest("guin", new PageQuery(null, 980L, 20, BY_TITLE)), more, CAP))
+                .isFalse();
+        // No next page, a next cursor, a request by cursor, or no PageQuery: never past the cap.
+        assertThat(PageCursors.pastCap(capped, PageResult.of(List.of("a"), false), CAP)).isFalse();
+        assertThat(PageCursors.pastCap(capped, PageResult.ofCursor(List.of("a"), "raw-1"), CAP)).isFalse();
+        assertThat(PageCursors.pastCap(new SearchRequest("guin", new PageQuery("raw-2", null, 20, BY_TITLE)), more, 0))
+                .isFalse();
+        assertThat(PageCursors.pastCap(new Plain("x"), more, 0)).isFalse();
+        assertThat(PageCursors.pastCap(null, more, 0)).isFalse();
     }
 
     @Test

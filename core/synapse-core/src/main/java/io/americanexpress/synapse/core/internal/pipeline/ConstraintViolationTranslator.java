@@ -50,7 +50,7 @@ public final class ConstraintViolationTranslator implements ExceptionTranslator 
         Set<ConstraintViolation<?>> found = constraintViolations.getConstraintViolations();
         if (found != null) {
             for (ConstraintViolation<?> violation : found) {
-                violations.add(new Violation(String.valueOf(violation.getPropertyPath()), violation.getMessage()));
+                violations.add(new Violation(ViolationPaths.of(violation.getPropertyPath()), violation.getMessage()));
             }
         }
         violations.sort(Comparator.comparing(Violation::field).thenComparing(Violation::message));

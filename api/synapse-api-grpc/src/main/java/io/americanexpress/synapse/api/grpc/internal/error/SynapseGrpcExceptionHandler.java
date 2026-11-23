@@ -16,6 +16,8 @@ package io.americanexpress.synapse.api.grpc.internal.error;
 import java.util.Map;
 import java.util.UUID;
 
+import io.grpc.Metadata;
+import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import org.jspecify.annotations.Nullable;
@@ -36,8 +38,10 @@ import io.americanexpress.synapse.core.internal.context.ContextBinder;
  * uses the first answer; this one is ordered last, so user and Spring Security handlers answer first, and it always
  * answers:
  * <ul>
- * <li>a {@link StatusException} or {@link StatusRuntimeException} passes through unchanged: it is an escape hatch's
- * explicit choice;</li>
+ * <li>a {@link StatusException} or {@link StatusRuntimeException}, a hand-written service's own status and typically
+ * a downstream call's failure, keeps only its code unless {@code synapse.errors.include-detail} is {@code true}, and
+ * always gets Synapse's {@code ErrorInfo} ({@link GrpcStatusWriter#writeForeign}, decision 24); one whose status is
+ * OK is no error a caller can get, so it is treated as anything else below;</li>
  * <li>a {@link SynapseException} is written by the {@link GrpcStatusWriter}, and not logged here (the operation
  * pipeline logged it);</li>
  * <li>anything else is {@code INTERNAL}, logged once at ERROR with its stack trace on
@@ -68,13 +72,19 @@ public final class SynapseGrpcExceptionHandler implements GrpcExceptionHandler, 
      */
     @Override
     public StatusException handleException(Throwable failure) {
-        if (failure instanceof StatusException status) {
-            return status;
-        }
-        if (failure instanceof StatusRuntimeException status) {
-            return new StatusException(status.getStatus(), status.getTrailers());
-        }
         GrpcCallState state = GrpcCallState.current();
+        Status status = null;
+        Metadata trailers = null;
+        if (failure instanceof StatusException checked) {
+            status = checked.getStatus();
+            trailers = checked.getTrailers();
+        } else if (failure instanceof StatusRuntimeException runtime) {
+            status = runtime.getStatus();
+            trailers = runtime.getTrailers();
+        }
+        if (status != null && !status.isOk()) {
+            return writer.writeForeign(status, trailers == null ? new Metadata() : trailers, state);
+        }
         if (failure instanceof SynapseException synapse) {
             return writer.write(synapse, state);
         }

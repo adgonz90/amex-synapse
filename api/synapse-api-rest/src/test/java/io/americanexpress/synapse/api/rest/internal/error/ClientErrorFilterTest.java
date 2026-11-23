@@ -173,6 +173,26 @@ class ClientErrorFilterTest {
     }
 
     @Test
+    void keptClientStatusIsWrittenAndKeptServerStatusRethrown() throws Exception {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter
+                .doFilter(request(), response,
+                        throwing(new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT, "secret-text")));
+
+        assertThat(response.getStatus()).isEqualTo(422);
+        JsonNode body = MAPPER.readTree(response.getContentAsByteArray());
+        assertThat(body.get("code").asString()).isEqualTo("CLIENT_ERROR");
+        assertThat(body.toString()).doesNotContain("secret-text");
+
+        // A kept 5xx is the error dispatch's, as every server error.
+        ResponseStatusException badGateway = new ResponseStatusException(HttpStatus.BAD_GATEWAY, "secret-text");
+        MockHttpServletResponse second = new MockHttpServletResponse();
+        assertThatThrownBy(() -> filter.doFilter(request(), second, throwing(badGateway))).isSameAs(badGateway);
+        assertThat(second.getStatus()).isEqualTo(200);
+    }
+
+    @Test
     void servletExceptionIsClassifiedByItsRootCauseAsTheContainerDoes() throws Exception {
         MockHttpServletResponse response = new MockHttpServletResponse();
 

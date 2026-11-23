@@ -15,10 +15,12 @@ package io.americanexpress.synapse.api.grpc.internal.mapping;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import com.google.protobuf.Descriptors.OneofDescriptor;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.Int32Value;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -26,15 +28,25 @@ import org.springframework.core.ResolvableType;
 
 import io.americanexpress.synapse.api.grpc.fixture.proto.Choice;
 import io.americanexpress.synapse.api.grpc.fixture.proto.CreateItemRequest;
+import io.americanexpress.synapse.api.grpc.fixture.proto.DeleteDocRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Item;
 import io.americanexpress.synapse.api.grpc.fixture.proto.ListTagsResponse;
 import io.americanexpress.synapse.api.grpc.fixture.proto.NoteChoice;
+import io.americanexpress.synapse.api.grpc.fixture.proto.PageOnlyRequest;
 import io.americanexpress.synapse.api.grpc.fixture.proto.PlainNumbers;
+import io.americanexpress.synapse.api.grpc.fixture.proto.Presence;
 import io.americanexpress.synapse.api.grpc.fixture.proto.Scalars;
+import io.americanexpress.synapse.api.grpc.fixture.proto.Titled;
+import io.americanexpress.synapse.api.grpc.internal.binding.ContextSource;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.AuthorRec;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.Genre;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.ItemRec;
 import io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.Shelf;
+import io.americanexpress.synapse.core.conditional.VersionCondition;
+import io.americanexpress.synapse.core.error.SynapseException;
+import io.americanexpress.synapse.core.error.Violation;
+import io.americanexpress.synapse.core.internal.binding.ComponentRefs;
+import io.americanexpress.synapse.core.paging.PageQuery;
 
 import static io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.dynamic;
 import static io.americanexpress.synapse.api.grpc.internal.mapping.MappingFixtures.item;
@@ -49,6 +61,11 @@ class MessageMappingTest {
 
     private static final String UNMAPPABLE = "Change the component type, or map another field with .map(...).";
 
+    private static final String PRESENCE = "synapse.fixture.v1.Presence";
+
+    private static final String PRESENCE_ACTION = "Declare these fields optional (proto3 optional), use a wrapper "
+            + "type, or make the components @Nullable.";
+
     @Test
     void nullableComponentNeedsPresence() {
         assertFails(() -> MessageMapping.reader(PlainNumbers.getDescriptor(), Year.class, List.of(), List.of()),
@@ -59,6 +76,28 @@ class MessageMappingTest {
                         .writer(PlainNumbers.getDescriptor(), ResolvableType.forClass(Year.class), List.of()),
                 "Year.year is @Nullable but synapse.fixture.v1.PlainNumbers.year has no presence",
                 "Use a wrapper type or proto3 optional for the field, or make the component non-null.");
+    }
+
+    @Test
+    void nullableItemsFailBecauseRepeatedAndMapFieldsHaveNoMissingElement() {
+        String action = "Make the item type non-null (a repeated or map field never holds a missing element), or bind "
+                + "the operation over REST only.";
+
+        // REST passes a null item of a @Nullable item type through; gRPC can't carry one, so it fails, both ways.
+        assertFails(() -> MessageMapping.reader(Scalars.getDescriptor(), GappedAuthors.class, List.of(), List.of()),
+                "the elements of GappedAuthors.authors are @Nullable but synapse.fixture.v1.Scalars.authors has no "
+                        + "presence for them",
+                action);
+        assertFails(
+                () -> MessageMapping
+                        .writer(Scalars.getDescriptor(), ResolvableType.forClass(GappedAuthors.class), List.of()),
+                "the elements of GappedAuthors.authors are @Nullable but synapse.fixture.v1.Scalars.authors has no "
+                        + "presence for them",
+                action);
+        assertFails(() -> MessageMapping.reader(Scalars.getDescriptor(), GappedRanks.class, List.of(), List.of()),
+                "the values of GappedRanks.authorsByRank are @Nullable but synapse.fixture.v1.Scalars.authors_by_rank "
+                        + "has no presence for them",
+                action);
     }
 
     @Test
@@ -205,8 +244,8 @@ class MessageMappingTest {
 
     @Test
     void nullableEnumNeedsPresenceOrAnUnspecifiedZero() {
-        assertFails(() -> MessageMapping.reader(Scalars.getDescriptor(), ShelfRec.class, List.of(), List.of()),
-                "ShelfRec.shelf is @Nullable but synapse.fixture.v1.Scalars.shelf has no presence",
+        assertFails(() -> MessageMapping.reader(Presence.getDescriptor(), ShelfRec.class, List.of(), List.of()),
+                "ShelfRec.shelf is @Nullable but synapse.fixture.v1.Presence.shelf has no presence",
                 "Use a wrapper type or proto3 optional for the field, or make the component non-null.");
         RecordReader reader = MessageMapping.reader(Item.getDescriptor(), NullableGenre.class, List.of(), List.of());
 
@@ -365,6 +404,135 @@ class MessageMappingTest {
                 .doesNotThrowAnyException();
     }
 
+    @Test
+    void requiredScalarWithoutPresenceFailsNamingTheField() {
+        assertPresenceFails(() -> MessageMapping.reader(Presence.getDescriptor(), Title.class, List.of(), List.of()),
+                "Title.title is required, but " + PRESENCE + ".title has no presence, so an unsent field would bind "
+                        + "its default");
+    }
+
+    @Test
+    void everyRequiredScalarIsListedInOneFailure() {
+        assertPresenceFails(() -> MessageMapping.reader(Presence.getDescriptor(), Book.class, List.of(), List.of()),
+                "Book.title is required, but " + PRESENCE + ".title has no presence, so an unsent field would bind "
+                        + "its default\n"
+                        + "Book.author is required, but " + PRESENCE + ".author has no presence, so an unsent field "
+                        + "would bind its default\n"
+                        + "Book.pages is required, but " + PRESENCE + ".pages has no presence, so an unsent field "
+                        + "would bind its default");
+    }
+
+    @Test
+    void requiredPrimitiveWithoutPresenceFails() {
+        assertPresenceFails(() -> MessageMapping.reader(Presence.getDescriptor(), Pages.class, List.of(), List.of()),
+                "Pages.pages is required, but " + PRESENCE + ".pages has no presence, so an unsent field would bind "
+                        + "its default");
+    }
+
+    @Test
+    void requiredScalarWithOptionalBinds() {
+        // Pin (R-11): proto3 optional has presence, as the rule asks.
+        RecordReader reader = MessageMapping.reader(Titled.getDescriptor(), Title.class, List.of(), List.of());
+
+        assertThat(reader.read(dynamic(Titled.newBuilder().setTitle("Dune").build()))).isEqualTo(new Title("Dune"));
+    }
+
+    @Test
+    void requiredWrapperBinds() {
+        // Pin (R-11): a wrapper is a message, which has presence.
+        RecordReader reader = MessageMapping.reader(Presence.getDescriptor(), Count.class, List.of(), List.of());
+
+        assertThat(reader.read(dynamic(Presence.newBuilder().setCount(Int32Value.of(0)).build())))
+                .isEqualTo(new Count(0));
+    }
+
+    @Test
+    void requiredEnumWithUnspecifiedZeroBinds() {
+        // Pin (R-11): the unspecified zero reads as null, so an unsent enum is missing.
+        RecordReader reader = MessageMapping.reader(Presence.getDescriptor(), Genred.class, List.of(), List.of());
+
+        assertThat(reader
+                .read(dynamic(Presence
+                        .newBuilder()
+                        .setGenre(io.americanexpress.synapse.api.grpc.fixture.proto.Genre.GENRE_SCIENCE)
+                        .build())))
+                .isEqualTo(new Genred(Genre.SCIENCE));
+        // Unsent, or sent as GENRE_UNSPECIFIED: missing, as an unsent optional field is.
+        assertThatExceptionOfType(SynapseException.class)
+                .isThrownBy(() -> reader.read(dynamic(Presence.getDefaultInstance())))
+                .satisfies(e -> assertThat(e.violations()).containsExactly(new Violation("genre", "must not be null")));
+    }
+
+    @Test
+    void requiredEnumWithoutUnspecifiedZeroFails() {
+        assertPresenceFails(
+                () -> MessageMapping.reader(Presence.getDescriptor(), Shelved.class, List.of(), List.of()),
+                "Shelved.shelf is required, but " + PRESENCE + ".shelf has no presence, so an unsent field would "
+                        + "bind its default");
+    }
+
+    @Test
+    void nestedRequiredScalarWithoutPresenceFails() {
+        assertPresenceFails(
+                () -> MessageMapping.reader(Presence.getDescriptor(), Written.class, List.of(), List.of()),
+                "Writer.name is required, but synapse.fixture.v1.PlainAuthor.name has no presence, so an unsent "
+                        + "field would bind its default");
+    }
+
+    @Test
+    void mappedOverrideIsChecked() {
+        assertPresenceFails(() -> MessageMapping
+                .reader(Presence.getDescriptor(), Coded.class, List.of(override("meta.code", Coded::code)),
+                        List.of()),
+                "Coded.code is required, but " + PRESENCE + ".meta.code has no presence, so an unsent field would "
+                        + "bind its default");
+    }
+
+    @Test
+    void tokenAndPageFieldsAreExempt() {
+        // Pin (R-11): the token and page fields, and a .context component, have their own empty semantics.
+        assertThatCode(() -> MessageMapping
+                .reader(DeleteDocRequest.getDescriptor(), Conditioned.class, List.of(), List.of()))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> MessageMapping.reader(PageOnlyRequest.getDescriptor(), Paged.class, List.of(), List.of()))
+                .doesNotThrowAnyException();
+        assertThatCode(
+                () -> MessageMapping.reader(PageOnlyRequest.getDescriptor(), PageQuery.class, List.of(), List.of()))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> MessageMapping
+                .reader(Presence.getDescriptor(), Title.class, List.of(),
+                        List.of(new ContextSource(ComponentRefs.resolve(Title::title), context -> "web"))))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void repeatedFieldIsNotAScalar() {
+        // Pin (R-11): an unsent repeated field is an empty list, not a default value.
+        RecordReader reader = MessageMapping.reader(Presence.getDescriptor(), Tags.class, List.of(), List.of());
+
+        assertThat(reader.read(dynamic(Presence.getDefaultInstance()))).isEqualTo(new Tags(List.of()));
+    }
+
+    @Test
+    void responseScalarsAreNotChecked() {
+        // Pin (R-11): a response writes every value; only a request can leave a field unsent.
+        RecordWriter writer = MessageMapping
+                .writer(Presence.getDescriptor(), ResolvableType.forClass(Book.class), List.of());
+
+        assertThat(writer.write(new Book("Dune", "Frank Herbert", 412)).getAllFields()).hasSize(3);
+    }
+
+    private static void assertPresenceFails(ThrowingCallable mapping, String problem) {
+        assertThatExceptionOfType(MappingException.class)
+                .isThrownBy(mapping)
+                .satisfies(e -> {
+                    assertThat(e.problem()).isEqualTo(problem);
+                    assertThat(e.action()).isEqualTo(PRESENCE_ACTION);
+                    assertThat(e.presenceOnly()).isTrue();
+                    assertThat(e.lines()).containsExactly(problem.split("\n"));
+                });
+    }
+
     private static ResolvableType list(Class<?> element) {
         return ResolvableType.forClassWithGenerics(List.class, element);
     }
@@ -381,6 +549,8 @@ class MessageMappingTest {
                     assertThat(e.problem()).isEqualTo(problem);
                     assertThat(e.action()).isEqualTo(action);
                     assertThat(e).hasMessage(problem);
+                    assertThat(e.presenceOnly()).isFalse();
+                    assertThat(e.lines()).containsExactly(problem);
                 });
     }
 
@@ -390,6 +560,12 @@ class MessageMappingTest {
     }
 
     record Year(@Nullable Integer year) {
+    }
+
+    record GappedAuthors(List<@Nullable AuthorRec> authors) {
+    }
+
+    record GappedRanks(Map<Integer, @Nullable AuthorRec> authorsByRank) {
     }
 
     record Published(String name, @Nullable Instant publishedOn) {
@@ -480,5 +656,41 @@ class MessageMappingTest {
     }
 
     record Unspecified(WithUnspecified genre) {
+    }
+
+    record Title(String title) {
+    }
+
+    record Book(String title, String author, int pages) {
+    }
+
+    record Pages(int pages) {
+    }
+
+    record Count(Integer count) {
+    }
+
+    record Genred(Genre genre) {
+    }
+
+    record Shelved(Shelf shelf) {
+    }
+
+    record Writer(String name) {
+    }
+
+    record Written(Writer writer) {
+    }
+
+    record Coded(String code) {
+    }
+
+    record Conditioned(VersionCondition<Long> version) {
+    }
+
+    record Paged(PageQuery page) {
+    }
+
+    record Tags(List<String> tags) {
     }
 }

@@ -17,8 +17,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 
@@ -33,6 +38,12 @@ class BindingParityCheckTest {
     private static final String REST_GET = "GET /books/{id}";
 
     private static final String GRPC_GET = "bookstore.v1.Bookstore/GetBook";
+
+    private static final String GRPC_V2_GET = "bookstore.v2.Bookstore/GetBook";
+
+    private static final String REST_V1_GET = "GET /v1/books/{id}";
+
+    private static final String REST_V2_GET = "GET /v2/books/{id}";
 
     private static final Set<String> SORT_KEYS = Set.of("TITLE", "PUBLISHED_YEAR");
 
@@ -107,18 +118,105 @@ class BindingParityCheckTest {
     }
 
     @Test
-    void eachRestRouteIsComparedWithTheGrpcMethod() {
-        declarations.add(rest(GET_BOOK, "GET /v1/books/{id}", "BOOK_NOT_FOUND", "version", null));
-        declarations.add(rest(GET_BOOK, "GET /v2/books/{id}", "NOT_FOUND", "version", null));
-        declarations.add(grpc(GET_BOOK, GRPC_GET, "BOOK_NOT_FOUND", "version", null));
+    void restV2MayDifferFromGrpcV1() {
+        declarations.add(versionedRest(GET_BOOK, REST_V2_GET, "BOOK_NOT_FOUND", 2));
+        declarations.add(versionedGrpc(GET_BOOK, GRPC_GET, "NOT_FOUND", 1));
 
-        SynapseConfigurationException failure = failure();
+        assertThatCode(this::check).doesNotThrowAnyException();
+    }
 
-        assertThat(failure.description())
-                .isEqualTo("Operation 'get-book' is bound differently over REST (GET /v2/books/{id}) and gRPC "
-                        + "(bookstore.v1.Bookstore/GetBook): notFound is NOT_FOUND over REST and BOOK_NOT_FOUND over "
-                        + "gRPC.")
-                .doesNotContain("/v1/");
+    @Test
+    void restV1IsComparedWithGrpcV1() {
+        // REST v2 differs from gRPC v1 too, but isn't compared with it.
+        declarations.add(versionedRest(GET_BOOK, REST_V1_GET, "BOOK_NOT_FOUND", 1));
+        declarations.add(versionedRest(GET_BOOK, REST_V2_GET, "BOOK_NOT_FOUND", 2));
+        declarations.add(versionedGrpc(GET_BOOK, GRPC_GET, "NOT_FOUND", 1));
+
+        assertThat(failure().description())
+                .isEqualTo("Operation 'get-book' is bound differently over REST (GET /v1/books/{id}) and gRPC "
+                        + "(bookstore.v1.Bookstore/GetBook): notFound is BOOK_NOT_FOUND over REST and NOT_FOUND over "
+                        + "gRPC.");
+    }
+
+    @Test
+    void unversionedRestIsComparedWithEveryGrpcMethod() {
+        declarations.add(versionedRest(GET_BOOK, REST_GET, "BOOK_NOT_FOUND", null));
+        declarations.add(versionedGrpc(GET_BOOK, GRPC_V2_GET, "NOT_FOUND", 2));
+        declarations.add(versionedGrpc(GET_BOOK, GRPC_GET, "NOT_FOUND", 1));
+
+        assertThat(failure().description())
+                .isEqualTo("Operation 'get-book' is bound differently over REST (GET /books/{id}) and gRPC "
+                        + "(bookstore.v1.Bookstore/GetBook): notFound is BOOK_NOT_FOUND over REST and NOT_FOUND over "
+                        + "gRPC. "
+                        + "Operation 'get-book' is bound differently over REST (GET /books/{id}) and gRPC "
+                        + "(bookstore.v2.Bookstore/GetBook): notFound is BOOK_NOT_FOUND over REST and NOT_FOUND over "
+                        + "gRPC.");
+    }
+
+    @Test
+    void unversionedGrpcIsComparedWithEveryRestVersion() {
+        declarations.add(versionedRest(GET_BOOK, REST_V2_GET, "BOOK_NOT_FOUND", 2));
+        declarations.add(versionedRest(GET_BOOK, REST_V1_GET, "BOOK_NOT_FOUND", 1));
+        declarations.add(versionedGrpc(GET_BOOK, "bookstore.Bookstore/GetBook", "NOT_FOUND", null));
+
+        assertThat(failure().description())
+                .isEqualTo("Operation 'get-book' is bound differently over REST (GET /v1/books/{id}) and gRPC "
+                        + "(bookstore.Bookstore/GetBook): notFound is BOOK_NOT_FOUND over REST and NOT_FOUND over "
+                        + "gRPC. "
+                        + "Operation 'get-book' is bound differently over REST (GET /v2/books/{id}) and gRPC "
+                        + "(bookstore.Bookstore/GetBook): notFound is BOOK_NOT_FOUND over REST and NOT_FOUND over "
+                        + "gRPC.");
+    }
+
+    @Test
+    void minorRestVersionsPairWithTheMajor() {
+        // .version("1.2") has major version 1.
+        declarations.add(versionedRest(GET_BOOK, "GET /v1.2/books/{id}", "BOOK_NOT_FOUND", 1));
+        declarations.add(versionedGrpc(GET_BOOK, GRPC_GET, "NOT_FOUND", 1));
+
+        assertThat(failure().description())
+                .isEqualTo("Operation 'get-book' is bound differently over REST (GET /v1.2/books/{id}) and gRPC "
+                        + "(bookstore.v1.Bookstore/GetBook): notFound is BOOK_NOT_FOUND over REST and NOT_FOUND over "
+                        + "gRPC.");
+    }
+
+    @Test
+    void unpairedBindingsAreOneWarn() {
+        // gRPC v1 with only REST v2 routes, for two operations; their declarations differ, but aren't compared.
+        declarations.add(versionedGrpc("search-books", "bookstore.v1.Bookstore/SearchBooks", "NOT_FOUND", 1));
+        declarations.add(versionedRest("search-books", "GET /v2/books", "NOT_FOUND", 2));
+        declarations.add(versionedRest(GET_BOOK, REST_V2_GET, "BOOK_NOT_FOUND", 2));
+        declarations.add(versionedGrpc(GET_BOOK, GRPC_GET, "NOT_FOUND", 1));
+        // REST v1 pairs with gRPC v1, so only REST v2 is listed.
+        declarations.add(versionedRest("delete-book", "DELETE /v1/books/{id}", "NOT_FOUND", 1));
+        declarations.add(versionedRest("delete-book", "DELETE /v2/books/{id}", "NOT_FOUND", 2));
+        declarations.add(versionedGrpc("delete-book", "bookstore.v1.Bookstore/DeleteBook", "NOT_FOUND", 1));
+        // Every binding pairs: not listed.
+        declarations.add(versionedRest("list-books", "GET /books", "NOT_FOUND", null));
+        declarations.add(versionedGrpc("list-books", "bookstore.v2.Bookstore/ListBooks", "NOT_FOUND", 2));
+
+        List<ILoggingEvent> logged = captured(() -> assertThatCode(this::check).doesNotThrowAnyException());
+
+        assertThat(logged)
+                .singleElement()
+                .satisfies(event -> {
+                    assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                    assertThat(event.getFormattedMessage())
+                            .isEqualTo("These bindings have no binding of the same major version over the other "
+                                    + "protocol, so their contract is not compared: [delete-book: DELETE "
+                                    + "/v2/books/{id}, get-book: GET /v2/books/{id}, get-book: "
+                                    + "bookstore.v1.Bookstore/GetBook, search-books: GET /v2/books, search-books: "
+                                    + "bookstore.v1.Bookstore/SearchBooks]. Bind the same version over both "
+                                    + "protocols, or ignore this if the version is meant for one protocol only.");
+                });
+    }
+
+    @Test
+    void singleProtocolOperationIsNotListed() {
+        declarations.add(versionedRest(GET_BOOK, REST_V1_GET, "BOOK_NOT_FOUND", 1));
+        declarations.add(versionedRest(GET_BOOK, REST_V2_GET, "NOT_FOUND", 2));
+
+        assertThat(captured(() -> assertThatCode(this::check).doesNotThrowAnyException())).isEmpty();
     }
 
     @Test
@@ -187,13 +285,42 @@ class BindingParityCheckTest {
         return failure;
     }
 
-    private static BindingDeclaration rest(String operation, String binding, String notFound,
-            @Nullable String etag, @Nullable Set<String> sortKeys) {
-        return new BindingDeclaration("REST", operation, binding, notFound, etag, sortKeys);
+    /** Runs the action and returns what it logged on the core logger, at DEBUG and above. */
+    private static List<ILoggingEvent> captured(Runnable action) {
+        Logger logger = (Logger) LoggerFactory.getLogger("io.americanexpress.synapse.core");
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        Level level = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        try {
+            action.run();
+        } finally {
+            logger.setLevel(level);
+            logger.detachAppender(appender);
+        }
+        return List.copyOf(appender.list);
     }
 
+    /** An unversioned REST route. */
+    private static BindingDeclaration rest(String operation, String binding, String notFound,
+            @Nullable String etag, @Nullable Set<String> sortKeys) {
+        return new BindingDeclaration("REST", operation, binding, notFound, etag, sortKeys, null);
+    }
+
+    /** An unversioned gRPC method. */
     private static BindingDeclaration grpc(String operation, String binding, String notFound,
             @Nullable String etag, @Nullable Set<String> sortKeys) {
-        return new BindingDeclaration("gRPC", operation, binding, notFound, etag, sortKeys);
+        return new BindingDeclaration("gRPC", operation, binding, notFound, etag, sortKeys, null);
+    }
+
+    private static BindingDeclaration versionedRest(String operation, String binding, String notFound,
+            @Nullable Integer majorVersion) {
+        return new BindingDeclaration("REST", operation, binding, notFound, null, null, majorVersion);
+    }
+
+    private static BindingDeclaration versionedGrpc(String operation, String binding, String notFound,
+            @Nullable Integer majorVersion) {
+        return new BindingDeclaration("gRPC", operation, binding, notFound, null, null, majorVersion);
     }
 }

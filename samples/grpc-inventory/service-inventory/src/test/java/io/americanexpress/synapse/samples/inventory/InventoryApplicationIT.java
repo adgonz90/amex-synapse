@@ -140,6 +140,7 @@ class InventoryApplicationIT {
                     .newBuilder()
                     .setSkuCode("LATE-001")
                     .setLocation(Location.newBuilder().setWarehouse("east").setAisle("A1").setBin(1))
+                    .setQuantity(0)
                     .build();
             Metadata expired = new Metadata();
             expired.put(EXPIRE, "1");

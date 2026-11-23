@@ -13,43 +13,167 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # Parallel reactor build (-T): the runner's 4 vCPUs are 2 cores with SMT, and a serial build already keeps them about
+  # 73% busy. Two module threads measured faster than one and about as fast as three, with less contention (ci-measure
+  # dry run, 2026-11-22). Local builds stay serial unless -T is given.
+  MAVEN_THREADS: '2'
+
+# Each Maven step has a timeout-minutes, and a job's steps together stay below its own: a step over its limit is killed
+# and fails, so the job's if: failure() report upload still runs. A job over its own limit is cancelled, and then no
+# failure() step runs.
+
 jobs:
-  verify:
-    # Synapse is compiled with JDK 25 (--release 21); this job builds and tests on it, with all quality gates.
-    name: Verify (JDK 25)
+  # Pull requests run Verify (JDK 25) split across runners: one job per module group (.github/verify-groups.txt), then
+  # Verify (JDK 25), the required check, which passes only when every group passed and runs the changed-lines gate on
+  # all their coverage reports. Each group runs the full verify (every test and gate) of its own modules after
+  # installing what they depend on without tests, so each module's tests and JaCoCo gate stay in one job. A push to
+  # main runs the same gates unsplit (verify-main below), which is the Maven cache's only writer.
+  verify-plan:
+    name: Verify plan
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      groups: ${{ steps.groups.outputs.groups }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Full history so the changed-lines coverage gate can diff against the base branch.
-          fetch-depth: 0
+
+      # Fails when a module is in no group, in two, or a group names a path that isn't a module.
+      - name: Check the module groups
+        id: groups
+        run: echo "groups=$(bash .github/scripts/verify-groups.sh .github/verify-groups.txt)" >> "$GITHUB_OUTPUT"
+
+  verify-group:
+    # Synapse is compiled with JDK 25 (--release 21); each group builds and tests its modules on it, with all gates.
+    name: Verify (JDK 25, ${{ matrix.group }})
+    needs: verify-plan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.verify-plan.outputs.groups) }}
+    env:
+      MODULES: ${{ matrix.modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
 
-      # CI=true (set by GitHub Actions) switches formatting from apply to check.
+      - name: Restore the Maven cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
+
+      # Into this runner's local repository, which this job never saves. Their tests run in their own groups' jobs,
+      # and the group's own in the next step. -DskipTests alone skips only Surefire: Failsafe 3.6 reads skipITs, and the
+      # invoker and archetype ITs have their own switches.
+      - name: Install what the group depends on, without tests
+        timeout-minutes: 10
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" install -pl "$MODULES" -am
+          -DskipTests -DskipITs=true -Dinvoker.skip=true -Darchetype.test.skip=true
+
+      # CI=true (set by GitHub Actions) switches formatting from apply to check. Test output goes to
+      # target/*-reports/*-output.txt (uploaded below when the job fails); failures are still summarised in the log.
       - name: Build, test and run quality gates
-        run: ./mvnw --batch-mode --no-transfer-progress verify javadoc:javadoc
+        timeout-minutes: 20
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          verify javadoc:javadoc -pl "$MODULES"
 
-      # Pull requests from forks can't publish snapshots (no secrets), so their jars are attached to the run instead.
-      - name: Attach jars (fork pull requests)
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name != github.repository
+      - name: Upload test reports (failure)
+        if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: synapse-pr${{ github.event.pull_request.number }}-jars
+          name: test-reports-verify-${{ matrix.group }}
           path: |
-            **/target/*.jar
-            !**/target/*-tests.jar
-            !samples/**
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+            **/target/it/**/build.log
+            **/target/inv/**/build.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # For the changed-lines gate in Verify (JDK 25). Only the group's own modules ran their tests in this job.
+      - name: Upload the coverage reports
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.group }}
+          # The modules' reports, not those of the projects that invoker and archetype ITs build under target.
+          path: |
+            **/target/site/jacoco/jacoco.xml
+            !**/target/it/**
+            !**/target/inv/**
+          retention-days: 1
+          if-no-files-found: ignore
+
+      # Pull requests from forks can't publish snapshots (no secrets), so their jars are attached to the run instead:
+      # each group attaches the jars of its own modules, the samples' aside.
+      - name: List the group's jars (fork pull requests)
+        id: jars
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          {
+            echo 'paths<<PATHS'
+            tr ',' '\n' <<< "$MODULES" | grep -v -e '^samples/' -e '^\.$' | sed 's|$|/target/*.jar|'
+            echo '!**/target/*-tests.jar'
+            echo 'PATHS'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attach jars (fork pull requests)
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: synapse-pr${{ github.event.pull_request.number }}-jars-${{ matrix.group }}
+          path: ${{ steps.jars.outputs.paths }}
           retention-days: 14
           if-no-files-found: error
+
+  verify:
+    # The required check, the only job with this name, on both events. On a pull request it passes only when the plan
+    # and every group passed (a skipped or cancelled one fails it), then gates the changed lines on all the groups'
+    # coverage reports; on a push, only when verify-main passed. It reports only once those jobs are done.
+    name: Verify (JDK 25)
+    needs: [verify-plan, verify-group, verify-main]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check that every job passed
+        env:
+          EVENT: ${{ github.event_name }}
+          PLAN: ${{ needs.verify-plan.result }}
+          GROUPS: ${{ needs.verify-group.result }}
+          MAIN: ${{ needs.verify-main.result }}
+        run: |
+          echo "Event: $EVENT; Verify plan: $PLAN; groups: $GROUPS; Verify (JDK 25, main): $MAIN"
+          if [ "$EVENT" = pull_request ]; then
+            [ "$PLAN" = success ] && [ "$GROUPS" = success ]
+          else
+            [ "$MAIN" = success ]
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          # Full history so the changed-lines coverage gate can diff against the base branch.
+          fetch-depth: 0
+
+      - name: Download the coverage reports
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          path: ${{ runner.temp }}/coverage
 
       # Python 3.12 matches the interpreter the diff-cover lock was compiled for (pip-compile output is version-specific).
       - name: Set up Python (changed-lines coverage)
@@ -63,20 +187,24 @@ jobs:
         if: github.event_name == 'pull_request'
         run: python -m pip install --require-hashes --no-deps -r .github/requirements/diff-cover.txt
 
-      # At least 90% of the lines changed by a pull request must be covered by tests (unit + integration).
+      # At least 90% of the lines changed by a pull request must be covered by tests (unit + integration). Every module
+      # with main sources (samples and archetypes aside) must have sent its report: a missing one fails the gate.
       - name: Changed-lines coverage (>= 90%)
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
+          COVERAGE: ${{ runner.temp }}/coverage
         run: |
-          mapfile -t reports < <(find . -path '*/target/site/jacoco/jacoco.xml' -not -path './.git/*')
+          mapfile -t reports < <(find "$COVERAGE" -name jacoco.xml | sort)
           mapfile -t roots < <(find . -type d -path '*/src/main/java' -not -path '*/target/*' -not -path './samples/*' -not -path './archetypes/*')
           if [ "${#roots[@]}" -eq 0 ]; then
             echo "No modules with main sources; nothing to check."
             exit 0
           fi
-          if [ "${#reports[@]}" -eq 0 ]; then
-            echo "::error::No JaCoCo reports found for modules with main sources."
+          # One report per module with main sources: the roots minus the invoker projects' (under src/it).
+          modules="$(printf '%s\n' "${roots[@]}" | grep -c -v '/src/.*/src/main/java$' || true)"
+          if [ "${#reports[@]}" -ne "$modules" ]; then
+            echo "::error::${#reports[@]} JaCoCo reports for $modules modules with main sources."
             exit 1
           fi
           diff-cover "${reports[@]}" \
@@ -84,10 +212,159 @@ jobs:
             --fail-under=90 \
             --src-roots "${roots[@]}"
 
-  smoke:
+  verify-main:
+    # A push to main runs Verify unsplit: it resolves everything every job needs, so it is the Maven cache's only
+    # writer. Synapse is compiled with JDK 25 (--release 21); this job builds and tests on it, with all gates. Its own
+    # name: on a pull request it is skipped, and a skipped job reports Success, so it must never carry a required name.
+    name: Verify (JDK 25, main)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Restore the Maven cache
+        id: maven-cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
+
+      # install, not verify: it runs every verify gate, and it also resolves maven-install-plugin, which the pull
+      # requests' group jobs need for their install step. With verify alone the cache lacked it, every group job
+      # downloaded it, and Maven Central answered one of them 429 (ci/dry-run-3, run 45002354472).
+      - name: Build, test and run quality gates
+        timeout-minutes: 25
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          install javadoc:javadoc
+
+      - name: Upload test reports (failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-verify
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+            **/target/it/**/build.log
+            **/target/inv/**/build.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # The cache's only writer, after a complete and successful build, so pull requests (which can read main's cache)
+      # restore everything the full build resolves. Reactor artifacts are never cached: the ones install put there, and
+      # the local archetype catalog that installing the archetypes writes.
+      - name: Remove Synapse's own artifacts from the Maven cache
+        if: github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true'
+        run: rm -rf ~/.m2/repository/io/americanexpress/synapse ~/.m2/repository/archetype-catalog.xml
+
+      - name: Save the Maven cache (push to main)
+        if: github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper/dists
+          key: ${{ steps.maven-cache.outputs.key }}
+
+  # Pull requests also run Smoke split across runners, by the same module groups as Verify: each group's job installs
+  # what its modules depend on without tests (built with JDK 25), then runs its modules' unit tests and smoke-tagged
+  # integration tests on JDK 21. Smoke (tests on JDK 21), the required check, passes only when every group passed. A
+  # push to main runs Smoke unsplit (smoke-main below).
+  smoke-group:
     # Builds with JDK 25 and runs the unit tests plus the integration tests tagged "smoke" on JDK 21.
-    # The full JDK 21 run is nightly. Coverage is measured and gated in the JDK 25 job, so it is skipped here.
+    # The full JDK 21 run is nightly. Coverage is measured and gated in the JDK 25 jobs, so it is skipped here.
+    name: Smoke (tests on JDK 21, ${{ matrix.group }})
+    needs: verify-plan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.verify-plan.outputs.groups) }}
+    env:
+      MODULES: ${{ matrix.modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          # The last entry becomes JAVA_HOME (runs Maven/javac); both are exported as JAVA_HOME_<n>_X64.
+          java-version: |
+            21
+            25
+
+      - name: Restore the Maven cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
+
+      # As in Verify's groups: into this runner's local repository, which this job never saves.
+      - name: Install what the group depends on, without tests
+        timeout-minutes: 10
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" install -pl "$MODULES" -am
+          -DskipTests -DskipITs=true -Dinvoker.skip=true -Darchetype.test.skip=true
+
+      - name: Build and run unit and smoke tests on JDK 21
+        timeout-minutes: 20
+        # The samples that inherit synapse-parent don't read synapse.it.groups, so their ITs are excluded here
+        # (.config/jdk21-pr-excluded-its.txt says why); they run on the JDK 25 leg and nightly on JDK 21.
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          verify -pl "$MODULES"
+          -Djvm="$JAVA_HOME_21_X64/bin/java" -Dsynapse.it.groups=smoke -Djacoco.skip=true
+          -Dfailsafe.excludesFile="$GITHUB_WORKSPACE/.config/jdk21-pr-excluded-its.txt"
+
+      - name: Upload test reports (failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-smoke-${{ matrix.group }}
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+            **/target/it/**/build.log
+            **/target/inv/**/build.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  smoke:
+    # The required check, the only job with this name, on both events: on a pull request it passes only when the plan
+    # and every group passed (a skipped or cancelled one fails it), on a push only when smoke-main passed.
     name: Smoke (tests on JDK 21)
+    needs: [verify-plan, smoke-group, smoke-main]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check that every job passed
+        env:
+          EVENT: ${{ github.event_name }}
+          PLAN: ${{ needs.verify-plan.result }}
+          GROUPS: ${{ needs.smoke-group.result }}
+          MAIN: ${{ needs.smoke-main.result }}
+        run: |
+          echo "Event: $EVENT; Verify plan: $PLAN; groups: $GROUPS; Smoke (tests on JDK 21, main): $MAIN"
+          if [ "$EVENT" = pull_request ]; then
+            [ "$PLAN" = success ] && [ "$GROUPS" = success ]
+          else
+            [ "$MAIN" = success ]
+          fi
+
+  smoke-main:
+    # A push to main runs Smoke unsplit. Builds with JDK 25 and runs the unit tests plus the integration tests tagged
+    # "smoke" on JDK 21. The full JDK 21 run is nightly. Coverage is measured and gated in the JDK 25 job. Its own name,
+    # for the reason verify-main gives.
+    name: Smoke (tests on JDK 21, main)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -102,15 +379,32 @@ jobs:
           java-version: |
             21
             25
-          cache: maven
+
+      - name: Restore the Maven cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
 
       - name: Build and run unit and smoke tests on JDK 21
+        timeout-minutes: 25
         # The samples that inherit synapse-parent don't read synapse.it.groups, so their ITs are excluded here
         # (.config/jdk21-pr-excluded-its.txt says why); they run on the JDK 25 leg and nightly on JDK 21.
         run: >-
-          ./mvnw --batch-mode --no-transfer-progress verify
+          ./mvnw --batch-mode --no-transfer-progress -T "$MAVEN_THREADS" -Dmaven.test.redirectTestOutputToFile=true
+          verify
           -Djvm="$JAVA_HOME_21_X64/bin/java" -Dsynapse.it.groups=smoke -Djacoco.skip=true
           -Dfailsafe.excludesFile="$GITHUB_WORKSPACE/.config/jdk21-pr-excluded-its.txt"
+
+      - name: Upload test reports (failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-smoke
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+            **/target/it/**/build.log
+            **/target/inv/**/build.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   dependency-graph:
     # Feeds GitHub's dependency graph (and so Dependabot alerts and dependency review) with the full Maven tree.
@@ -129,6 +423,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
+
+      - name: Restore the Maven cache
+        uses: ./.github/actions/restore-maven-cache # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ form
 
       - uses: advanced-security/maven-dependency-submission-action@a64327a7329c9939cf675e458452febe1894a70c # v6.0.1

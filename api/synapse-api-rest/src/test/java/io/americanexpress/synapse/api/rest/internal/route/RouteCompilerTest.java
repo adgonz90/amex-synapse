@@ -35,6 +35,7 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.CookieDuplicates;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
@@ -55,6 +56,7 @@ import io.americanexpress.synapse.core.paging.PageResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.tuple;
 
 class RouteCompilerTest {
 
@@ -226,14 +228,34 @@ class RouteCompilerTest {
         // The implicit HEAD routes are not registered: each is its GET route's.
         assertThat(declarations.forOperation("find-book"))
                 .containsExactlyInAnyOrder(
-                        new BindingDeclaration("REST", "find-book", "GET /books/{id}", "ROUTE_NOT_FOUND", null, null),
-                        new BindingDeclaration("REST", "find-book", "GET /v2/books/{id}", "NOT_FOUND", null, null));
+                        new BindingDeclaration("REST", "find-book", "GET /books/{id}", "ROUTE_NOT_FOUND", null, null,
+                                null),
+                        new BindingDeclaration("REST", "find-book", "GET /v2/books/{id}", "NOT_FOUND", null, null,
+                                2));
         assertThat(declarations.forOperation("get-versioned-book"))
                 .containsExactly(new BindingDeclaration("REST", "get-versioned-book", "GET /versioned/{id}",
-                        "NOT_FOUND", "version", null));
+                        "NOT_FOUND", "version", null, null));
         assertThat(declarations.forOperation("paged-books"))
                 .containsExactly(new BindingDeclaration("REST", "paged-books", "GET /books", "NOT_FOUND", null,
-                        Set.of("title", "year")));
+                        Set.of("title", "year"), null));
+    }
+
+    @Test
+    void declarationCarriesTheRoutesMajorVersion() {
+        BindingDeclarations declarations = new BindingDeclarations();
+        compiler(RouteFixtures.cursors(), declarations)
+                .compile(List
+                        .of(RestBindings
+                                .builder()
+                                .get("/books/{id}", new FindBookOperation())
+                                .version("2.1")
+                                .get("/books/{id}", new FindBookOperation())
+                                .build()),
+                        List.of());
+
+        assertThat(declarations.forOperation("find-book"))
+                .extracting(BindingDeclaration::binding, BindingDeclaration::majorVersion)
+                .containsExactlyInAnyOrder(tuple("GET /v2.1/books/{id}", 2), tuple("GET /books/{id}", null));
     }
 
     @Test
@@ -292,7 +314,8 @@ class RouteCompilerTest {
     /** A compiler whose writer and handlers use the page cursors, registering its routes with the declarations. */
     private static RouteCompiler compiler(PageCursors cursors, @Nullable BindingDeclarations declarations) {
         return new RouteCompiler(new BindingValidator(PagingSettings.defaults()),
-                new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults()),
+                new RequestBinder(MAPPER, new DefaultFormattingConversionService(), PagingSettings.defaults(),
+                        CookieDuplicates.none()),
                 new ResponseWriter(MAPPER, new DefaultFormattingConversionService(), cursors, PagingSettings.defaults(),
                         RouteFixtures.etags()),
                 cursors, PagingSettings.defaults(), declarations);

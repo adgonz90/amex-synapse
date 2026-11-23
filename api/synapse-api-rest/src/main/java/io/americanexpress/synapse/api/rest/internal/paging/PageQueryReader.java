@@ -75,7 +75,7 @@ public final class PageQueryReader {
             List<Violation> violations) {
         String cursor = single(query, settings.cursor(), violations);
         if (cursor != null && query.containsKey(settings.offset())) {
-            violations.add(new Violation(settings.cursor(), PagingViolations.notCombinedWith("offset")));
+            violations.add(new Violation(settings.cursor(), PagingViolations.notCombinedWith(settings.offset())));
         }
         Long offset = number(query, settings.offset(), 0, settings.maxOffset(), violations);
         Long size = number(query, settings.size(), 1, settings.maxSize(), violations);

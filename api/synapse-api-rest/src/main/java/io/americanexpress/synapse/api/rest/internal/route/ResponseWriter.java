@@ -74,9 +74,11 @@ import io.americanexpress.synapse.core.paging.PageResult;
  * removed from the body unless {@code .alsoInBody()}. A {@code null} or empty {@code Optional} component writes no
  * header; a {@code List} writes one value per element. {@code .body(component)} makes that component the whole body,
  * and a {@code null} body component is 204 with no body.</li>
- * <li>A {@code PageResult} is written as a page object ({@link PageBody}): its items, its next cursor wrapped in a
- * token bound to the request ({@link PageCursors}), {@code hasNext}, and its total. The {@code PageResult} itself is
- * never written, so the operation's raw cursor never reaches the client.</li>
+ * <li>A {@code PageResult} is written as a page object ({@link PageBody}): its items, the token of its next page bound
+ * to the request ({@link PageCursors#next}), {@code hasNext}, and its total. The {@code PageResult} itself is never
+ * written, so the operation's raw cursor never reaches the client. On {@code GET} and {@code HEAD}, {@link PageLinks}
+ * adds the {@code Link: next}; past {@code synapse.paging.max-offset} it carries the body's token, which fails with
+ * the offset limit when used.</li>
  * <li>The body is written by a copy of the application's mapper that refuses a {@code PageResult} anywhere, so a page
  * hidden where the startup checks can't see it (in a {@code Map<String, Object>}, say) is an
  * {@link IllegalStateException}, never a raw cursor on the wire.</li>
@@ -169,12 +171,15 @@ public final class ResponseWriter {
         if (output instanceof PageResult<?> page) {
             // The PageResult itself is never written: its next cursor is the operation's raw cursor. The body's
             // token is the one gRPC writes to next_page_token (PageCursors.next, REST's Link: next rule): none without
-            // a next page, the wrapped cursor, or the next offset of an offset page, also on POST, which has no Link.
+            // a next page, the wrapped cursor, or the next offset of an offset page, past the cap too (a token that
+            // fails when used), also on POST, which has no Link.
             String token = cursors
                     .next(route.operationName(), input, cursorExtras, page, paging.maxOffset());
             bodyValue = new PageBody(page.items(), token, page.hasNext(), page.total());
-            // The Link is unchanged: it carries the cursor token, or for an offset page offset=N.
-            addNextLink(headers, request, input, page, page.nextCursor() == null ? null : token);
+            // The Link carries the cursor token, the token past the cap as the cursor parameter (no offset parameter
+            // past the cap is valid), or for an offset page within the cap offset=N.
+            boolean linksToken = page.nextCursor() != null || PageCursors.pastCap(input, page, paging.maxOffset());
+            addNextLink(headers, request, input, page, linksToken ? token : null);
         } else {
             bodyValue = bodyComponent != null
                     ? componentValue(bodyComponent, output)

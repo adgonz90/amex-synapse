@@ -17,6 +17,7 @@ import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,10 +47,10 @@ import tools.jackson.databind.node.NullNode;
 import tools.jackson.databind.util.IgnorePropertiesUtil;
 
 /**
- * The JSON property names of a record's components, as the mapper reads them ({@link #of}) or writes them
- * ({@link #serialized}): its naming strategy applies, {@code @JsonProperty} wins, and a component Jackson never reads
- * from JSON ({@code @JsonIgnore}, {@code @JsonIgnoreProperties}, a configured ignoral or {@code READ_ONLY} access), or
- * never writes, is left out.
+ * The JSON property names of a record's components or a bean's properties, as the mapper reads them ({@link #read}, and
+ * {@link #of} for a record) or writes them ({@link #serialized}): its naming strategy applies, {@code @JsonProperty}
+ * wins, and a property Jackson never reads from JSON ({@code @JsonIgnore}, {@code @JsonIgnoreProperties}, a
+ * configured ignoral or {@code READ_ONLY} access), or never writes, is left out.
  */
 public final class JsonNames {
 
@@ -165,28 +166,69 @@ public final class JsonNames {
      *         property by property (for example it has its own deserializer)
      */
     public static Map<String, String> of(JsonMapper mapper, Class<?> recordType) {
-        Map<String, SettableBeanProperty> properties = creatorProperties(mapper, recordType);
-        if (properties == null) {
-            return Map.of();
-        }
-        Map<String, String> names = new LinkedHashMap<>();
-        properties.forEach((component, property) -> names.put(component, property.getName()));
-        return Collections.unmodifiableMap(names);
+        return read(mapper, recordType);
     }
 
     /**
-     * Tells whether the mapper reads a record from a JSON object property by property, even when it reads none of its
-     * components (they are all read-only, for example). It doesn't for a record with its own deserializer, one it reads
-     * through a delegating creator ({@code @JsonValue}, or {@code @JsonCreator(mode = DELEGATING)} on a constructor or
-     * a factory, even next to a properties creator), or one it reads with a builder
+     * Maps each property the mapper reads from JSON for a type to the JSON name it reads it under: its primary name,
+     * aliases excluded. For a record it is {@link #of}: the components the mapper reads, in component order. For any
+     * other type it is the properties Jackson's deserializer sets (a creator parameter, a setter or a field), in the
+     * mapper's property order, keyed by internal name.
+     *
+     * @param mapper the mapper
+     * @param type the type
+     * @return an unmodifiable map from internal property name to JSON property name; empty when the type isn't read
+     *         property by property (for example it has its own deserializer)
+     */
+    public static Map<String, String> read(JsonMapper mapper, Class<?> type) {
+        Map<String, String> names = new LinkedHashMap<>();
+        if (type.isRecord()) {
+            Map<String, SettableBeanProperty> properties = creatorProperties(mapper, type);
+            if (properties == null) {
+                return Map.of();
+            }
+            properties.forEach((component, property) -> names.put(component, property.getName()));
+            return Collections.unmodifiableMap(names);
+        }
+        JavaType javaType = mapper.constructType(type);
+        BeanDeserializerBase bean = beanDeserializer(mapper, javaType);
+        if (bean == null) {
+            return Map.of();
+        }
+        // Aliases are lookup keys only: each property is listed once, under its primary name.
+        Set<String> settable = new HashSet<>();
+        bean.creatorProperties().forEachRemaining(property -> settable.add(property.getName()));
+        bean.properties().forEachRemaining(property -> settable.add(property.getName()));
+        for (BeanPropertyDefinition property : deserializationProperties(mapper, javaType)) {
+            if (settable.contains(property.getName())) {
+                names.put(property.getInternalName(), property.getName());
+            }
+        }
+        return Collections.unmodifiableMap(names);
+    }
+
+    /** The properties Jackson's introspection finds for reading a type, with their internal and JSON names. */
+    static List<BeanPropertyDefinition> deserializationProperties(JsonMapper mapper, JavaType type) {
+        DeserializationConfig config = mapper.deserializationConfig();
+        ClassIntrospector introspector = config.classIntrospectorInstance();
+        return introspector
+                .introspectForDeserialization(type, introspector.introspectClassAnnotations(type))
+                .findProperties();
+    }
+
+    /**
+     * Tells whether the mapper reads a record or a bean from a JSON object property by property, even when it reads
+     * none of its properties (they are all read-only, for example). It doesn't for a type with its own deserializer,
+     * one it reads through a delegating creator ({@code @JsonValue}, or {@code @JsonCreator(mode = DELEGATING)} on a
+     * constructor or a factory, even next to a properties creator), or one it reads with a builder
      * ({@code @JsonDeserialize(builder = ...)}).
      *
      * @param mapper the mapper
-     * @param recordType the record type
-     * @return {@code true} when {@link #of} names the components the mapper reads from an object
+     * @param type the record or bean type
+     * @return {@code true} when {@link #read} names the properties the mapper reads from an object
      */
-    public static boolean readsByProperty(JsonMapper mapper, Class<?> recordType) {
-        BeanDeserializerBase bean = beanDeserializer(mapper, mapper.constructType(recordType));
+    public static boolean readsByProperty(JsonMapper mapper, Class<?> type) {
+        BeanDeserializerBase bean = beanDeserializer(mapper, mapper.constructType(type));
         if (bean == null || bean instanceof BuilderBasedDeserializer) {
             return false;
         }
@@ -232,13 +274,8 @@ public final class JsonNames {
         // Aliases make the same property appear more than once; its primary name identifies it.
         Map<String, SettableBeanProperty> byName = new HashMap<>();
         bean.creatorProperties().forEachRemaining(property -> byName.put(property.getName(), property));
-        DeserializationConfig config = mapper.deserializationConfig();
-        ClassIntrospector introspector = config.classIntrospectorInstance();
-        BeanDescription description = introspector
-                .introspectForDeserialization(type,
-                        introspector.introspectClassAnnotations(type));
         Map<String, String> jsonNameByComponent = new HashMap<>();
-        for (BeanPropertyDefinition property : description.findProperties()) {
+        for (BeanPropertyDefinition property : deserializationProperties(mapper, type)) {
             jsonNameByComponent.put(property.getInternalName(), property.getName());
         }
         Map<String, SettableBeanProperty> properties = new LinkedHashMap<>();

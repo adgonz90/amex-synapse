@@ -77,7 +77,7 @@ public final class ClientErrorFilter extends OncePerRequestFilter implements Ord
             if (response.isCommitted() || request.isAsyncStarted()) {
                 throw failure;
             }
-            SynapseException error = RestExceptionClassifier.errorFor(reported(failure));
+            SynapseException error = RestExceptionClassifier.errorFor(reported(failure), writer.mapper());
             int status = writer.statusOf(request, error);
             if (status < 400 || status > 499) {
                 throw failure;

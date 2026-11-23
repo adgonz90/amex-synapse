@@ -132,6 +132,9 @@ final class OperationInterceptor implements MethodInterceptor {
         int[] depth = DEPTH.get();
         int previousDepth = depth[0];
         boolean outermost = previousDepth == 0;
+        // This call's identity: its pipeline's rejections record it, so a rejection it receives from another call,
+        // on any thread, is told apart from its own.
+        Object call = new Object();
 
         OperationObservationContext observationContext = new OperationObservationContext(name,
                 Objects.requireNonNull(descriptor.kind(), "kind"));
@@ -175,8 +178,8 @@ final class OperationInterceptor implements MethodInterceptor {
             }
 
             try {
-                pipeline.validate(input);
-                pipeline.requirePreconditions(input);
+                pipeline.validate(input, call);
+                pipeline.requirePreconditions(input, call);
             } catch (SynapseException rejected) {
                 // Only the outermost call's input is the caller's own. A nested call's input is built by the service,
                 // so rejecting it is the service's bug: INTERNAL, with the rejection kept as the logged cause.
@@ -199,7 +202,7 @@ final class OperationInterceptor implements MethodInterceptor {
             observation.error(error);
             throw error;
         } catch (Throwable thrown) {
-            SynapseException failure = translate(thrown, outermost ? input : null);
+            SynapseException failure = translate(thrown, outermost ? input : null, call);
             observation.error(failure);
             if (outermost) {
                 logFailure(name, correlationId, failure);
@@ -256,26 +259,34 @@ final class OperationInterceptor implements MethodInterceptor {
     }
 
     /**
-     * Translates a failure. A {@link ConstraintViolationException} reaches the translators only when it is the
-     * failure itself and every violation is of the caller's own input, by identity, such as an operation validating
-     * its input by hand. Any other one, thrown or in the cause chain (a collaborator's method validation, an entity
-     * at flush or at commit, a nested call's input, or one without violations), is the service's bug and becomes
-     * {@code INTERNAL} before any translator runs, with no violations. Its cause is a {@link SanitizedViolations}
-     * that names each violation by its path and message template, not by the interpolated message; a template that a
-     * custom validator built with the value, or a map or iterable key in a path, can still hold a value (see
-     * core.adoc, <em>Masking</em>).
+     * Translates a failure. First, a pipeline rejection that another call raised (see
+     * {@link OperationPipeline#raisedByAnotherCall}) becomes {@code INTERNAL}, with the rejection as its cause: on any
+     * thread, only a call's own rejection is the caller's. A {@link ConstraintViolationException} reaches the
+     * translators only when it is the failure itself and every violation is of the caller's own input, by identity,
+     * such as an operation validating its input by hand. Its translation is a rejection of this call's input too, so,
+     * unless the translator gave it a cause, it gets a {@link SanitizedViolations} cause that records this call: a call
+     * that receives it from this one makes it {@code INTERNAL}. Any other one, thrown or in the cause chain (a
+     * collaborator's method validation, an entity at flush or at commit, a nested call's input, or one without
+     * violations), is the service's bug and becomes {@code INTERNAL} before any translator runs, with no violations.
+     * Its cause is a {@link SanitizedViolations} that names each violation by its path and message template, not by
+     * the interpolated message; a template that a custom validator built with the value, or a map or iterable key in a
+     * path, can still hold a value (see core.adoc, <em>Masking</em>).
      * <p>
      * The search covers the failure and its causes, {@value SanitizedViolations#MAX_DEPTH} exceptions in all, and no
-     * suppressed exception: one deeper or suppressed isn't found, so the failure goes to the translators as it is. A
-     * {@code SynapseException} is returned as it is, so a {@code ConstraintViolationException} it holds as its cause is
-     * kept, and logged, as it is.
+     * suppressed exception: one deeper or suppressed isn't found, so the failure goes to the translators as it is. Any
+     * other {@code SynapseException} is returned as it is, so a {@code ConstraintViolationException} it holds as its
+     * cause is kept, and logged, as it is.
      *
      * @param thrown the failure
      * @param input the caller's own input: the outermost call's input, or {@code null} in a nested call
+     * @param call this call's token
      */
-    private SynapseException translate(Throwable thrown, @Nullable Object input) {
+    private SynapseException translate(Throwable thrown, @Nullable Object input, Object call) {
         if (thrown instanceof SynapseException synapse) {
-            return synapse;
+            // A rejection raised by another call (on another thread, unwrapped and rethrown) is the service's bug.
+            return OperationPipeline.raisedByAnotherCall(synapse, call)
+                    ? new SynapseException(SynapseErrors.INTERNAL, synapse)
+                    : synapse;
         }
         ConstraintViolationException violations = SanitizedViolations.find(thrown);
         @SuppressWarnings("ReferenceEquality") // Only the thrown exception itself can be the caller's rejection.
@@ -287,7 +298,7 @@ final class OperationInterceptor implements MethodInterceptor {
             try {
                 SynapseException translated = translator.translate(thrown);
                 if (translated != null) {
-                    return translated;
+                    return violations == null ? translated : markedRejection(translated, violations, call);
                 }
             } catch (RuntimeException broken) {
                 LOGGER
@@ -297,6 +308,28 @@ final class OperationInterceptor implements MethodInterceptor {
             }
         }
         return new SynapseException(SynapseErrors.INTERNAL, thrown);
+    }
+
+    /**
+     * Records this call on the translation of a rejection of its own input: a {@link SanitizedViolations} cause that
+     * names each violation by its path and message template, never by its interpolated message. A translation that
+     * already has a cause, set by its translator (even to {@code null}), is returned as it is.
+     */
+    private static SynapseException markedRejection(SynapseException translated,
+            ConstraintViolationException rejection, Object call) {
+        if (translated.getCause() != null) {
+            return translated;
+        }
+        SanitizedViolations cause = SanitizedViolations
+                .ofRejection(Objects.requireNonNullElse(rejection.getConstraintViolations(), Set.of()), List.of());
+        cause.markCall(call);
+        try {
+            translated.initCause(cause);
+        } catch (IllegalStateException causeAlreadySet) {
+            // The translator built it with a null cause; it stays unmarked, as any SynapseException code builds.
+            return translated;
+        }
+        return translated;
     }
 
     /** Tells whether the exception has violations and every one is of the input itself. */

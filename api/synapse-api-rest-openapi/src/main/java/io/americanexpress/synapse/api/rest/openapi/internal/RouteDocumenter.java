@@ -54,6 +54,7 @@ import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.api.rest.internal.binding.ConditionalRules;
 import io.americanexpress.synapse.api.rest.internal.binding.InputSource;
 import io.americanexpress.synapse.api.rest.internal.binding.PagingRules;
+import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules;
 import io.americanexpress.synapse.api.rest.internal.binding.ResponseRules.OutputHeader;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
@@ -409,8 +410,18 @@ public final class RouteDocumenter {
         return new Parameter().in(in).name(name).required(required).schema(schema);
     }
 
-    /** Whether a component must be sent: a value that isn't nullable, unless it is an {@code Optional}. */
-    private static boolean required(ResolvedComponent component) {
+    /**
+     * Whether a component must be sent: a value that isn't nullable, unless it is an {@code Optional}. A collection or
+     * map, which the binder binds empty when it isn't sent, is required only when its constraints need items
+     * ({@code @NotEmpty}, {@code @Size(min = 1)}), as an absent one is then rejected; its schema says how many.
+     */
+    private boolean required(ResolvedComponent component) {
+        return nonNull(component)
+                && (!RequestBinder.bindsEmptyWhenUnsent(component.type()) || schemas.needsItems(component));
+    }
+
+    /** Whether a component's value can't be {@code null}: it isn't nullable, and it isn't an {@code Optional}. */
+    private static boolean nonNull(ResolvedComponent component) {
         return !component.nullable() && component.type() != Optional.class;
     }
 
@@ -421,7 +432,8 @@ public final class RouteDocumenter {
         for (InputSource source : route.sources()) {
             if (source instanceof InputSource.BodyComponent body) {
                 schema = schemas.input(ResolvableType.forType(body.component().genericType()));
-                required = required(body.component());
+                // A body left out counts as {}, which a whole-body list isn't, so only null reads empty: required.
+                required = nonNull(body.component());
             } else if (source instanceof InputSource.Body body) {
                 components.add(body.component().name());
                 required |= required(body.component());

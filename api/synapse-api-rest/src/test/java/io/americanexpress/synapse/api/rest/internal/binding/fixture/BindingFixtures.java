@@ -15,12 +15,18 @@ package io.americanexpress.synapse.api.rest.internal.binding.fixture;
 
 import java.io.Serializable;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.NavigableSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.SortedSet;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -30,6 +36,8 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.annotation.Nulls;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.core.JsonParser;
 import tools.jackson.databind.DeserializationContext;
@@ -1109,6 +1117,353 @@ public final class BindingFixtures {
         @Override
         public List<BookResult> execute(RepeatedRequest input) {
             return List.of(BOOK);
+        }
+    }
+
+    /** Read with a SNAKE_CASE mapper: the JSON names differ from the component names. */
+    public record EditionRequest(@JsonAlias("year") Integer publishedYear, @JsonProperty("yr") Integer printYear) {
+    }
+
+    public static class EditionOperation implements CommandOperation<EditionRequest, BookResult> {
+        @Override
+        public BookResult execute(EditionRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Components whose declared source names differ from their names. */
+    public record SourcedRequest(Long id, @Nullable Integer sort, @Nullable Long requestId, @Nullable Integer session,
+            @Nullable String title) {
+    }
+
+    public static class SourcedOperation implements CommandOperation<SourcedRequest, BookResult> {
+        @Override
+        public BookResult execute(SourcedRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A list component, for the rule that an unsent collection binds empty, as a gRPC {@code repeated} field does. */
+    public record LabelsRequest(List<String> tags) {
+    }
+
+    public static class LabelsOperation implements QueryOperation<LabelsRequest, BookResult> {
+        @Override
+        public BookResult execute(LabelsRequest input) {
+            return BOOK;
+        }
+    }
+
+    public static class LabelsCommandOperation implements CommandOperation<LabelsRequest, BookResult> {
+        @Override
+        public BookResult execute(LabelsRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A query record with a list component. */
+    public record LabelFilter(@Nullable String owner, List<String> tag) {
+    }
+
+    public record LabelFilterRequest(LabelFilter filter) {
+    }
+
+    public static class LabelFilterOperation implements QueryOperation<LabelFilterRequest, BookResult> {
+        @Override
+        public BookResult execute(LabelFilterRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Every collection and map type the empty rule names, as top-level components. */
+    public record ContainersRequest(Collection<String> all, Set<String> labels, SortedSet<String> sorted,
+            NavigableSet<String> navigable, Map<String, Integer> counts, SortedMap<String, Integer> sortedCounts,
+            NavigableMap<String, Integer> navigableCounts) {
+    }
+
+    public static class ContainersOperation implements CommandOperation<ContainersRequest, BookResult> {
+        @Override
+        public BookResult execute(ContainersRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A nested record with collection and map components, a {@code @Nullable} one included. */
+    public record Writer(String name, List<String> aliases, @Nullable List<String> notes, Set<String> genres,
+            Map<String, Integer> ranks, SortedSet<String> sorted, NavigableMap<String, Integer> shelves) {
+    }
+
+    public record WriterRequest(Writer writer) {
+    }
+
+    public static class WriterOperation implements CommandOperation<WriterRequest, BookResult> {
+        @Override
+        public BookResult execute(WriterRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A nested record whose list component is declared with a concrete type. */
+    @SuppressWarnings("NonApiType") // The concrete type is the case under test.
+    public record Pen(String name, ArrayList<String> aliases) {
+    }
+
+    public record PenRequest(Pen pen) {
+    }
+
+    public static class PenOperation implements CommandOperation<PenRequest, BookResult> {
+        @Override
+        public BookResult execute(PenRequest input) {
+            return BOOK;
+        }
+    }
+
+    public record NullableLabelsRequest(@Nullable List<String> tags) {
+    }
+
+    public static class NullableLabelsOperation implements CommandOperation<NullableLabelsRequest, BookResult> {
+        @Override
+        public BookResult execute(NullableLabelsRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** An array component, which keeps {@code must not be null}. */
+    public record CodesRequest(String[] codes) {
+    }
+
+    public static class CodesOperation implements CommandOperation<CodesRequest, BookResult> {
+        @Override
+        public BookResult execute(CodesRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A list component whose own null handling rejects null. */
+    public record StrictLabelsRequest(@JsonSetter(nulls = Nulls.FAIL) List<String> tags) {
+    }
+
+    public static class StrictLabelsOperation implements CommandOperation<StrictLabelsRequest, BookResult> {
+        @Override
+        public BookResult execute(StrictLabelsRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Holds a record whose component rejects null. */
+    public record StrictShelfRequest(StrictLabelsRequest shelf) {
+    }
+
+    public static class StrictShelfOperation implements CommandOperation<StrictShelfRequest, BookResult> {
+        @Override
+        public BookResult execute(StrictShelfRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A nested record with a non-null string, a primitive, a {@code @Nullable} component and a collection. */
+    public record Dock(String warehouseCode, int bin, @Nullable String note, List<String> labels) {
+    }
+
+    /** Nested records at every depth: a component, list items, map values, set items and a nullable one. */
+    public record ShipmentRequest(String sku, Dock origin, List<Dock> stops, Map<String, Dock> docksByName,
+            Set<Dock> spares, @Nullable Dock backup) {
+    }
+
+    public static class ShipmentOperation implements CommandOperation<ShipmentRequest, BookResult> {
+        @Override
+        public BookResult execute(ShipmentRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A record bound to the whole body ({@code .body(...)}) next to a path variable. */
+    public record MoveDockRequest(UUID id, Dock dock) {
+    }
+
+    public static class MoveDockOperation implements CommandOperation<MoveDockRequest, BookResult> {
+        @Override
+        public BookResult execute(MoveDockRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Reads a dock from its warehouse code alone. */
+    public static class LenientDockDeserializer extends ValueDeserializer<Dock> {
+        @Override
+        public Dock deserialize(JsonParser parser, DeserializationContext context) {
+            JsonNode tree = context.readTree(parser);
+            return new Dock(tree.path("warehouseCode").asString(), 0, null, List.of());
+        }
+    }
+
+    /** Nested values Jackson doesn't read property by property, so their own deserializers decide what is needed. */
+    public record OwnReadersRequest(CustomBookRequest custom, DelegatedBookRequest delegated,
+            @JsonDeserialize(using = LenientDockDeserializer.class) Dock lenient,
+            @JsonDeserialize(contentUsing = LenientDockDeserializer.class) List<Dock> lenientItems) {
+    }
+
+    public static class OwnReadersOperation implements CommandOperation<OwnReadersRequest, BookResult> {
+        @Override
+        public BookResult execute(OwnReadersRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Holds the values with their own readers one level down. */
+    public record ReadersHolderRequest(OwnReadersRequest readers) {
+    }
+
+    public static class ReadersHolderOperation implements CommandOperation<ReadersHolderRequest, BookResult> {
+        @Override
+        public BookResult execute(ReadersHolderRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A whole-body list of nested records. */
+    public record DocksRequest(List<Dock> docks) {
+    }
+
+    public static class DocksOperation implements CommandOperation<DocksRequest, BookResult> {
+        @Override
+        public BookResult execute(DocksRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Nested records inside an {@code Optional} and an array. */
+    @SuppressWarnings("ArrayRecordComponent")
+    public record YardRequest(String sku, Optional<Dock> spare, Dock[] berths) {
+    }
+
+    public static class YardOperation implements CommandOperation<YardRequest, BookResult> {
+        @Override
+        public BookResult execute(YardRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Two components under one JSON name: Jackson can't describe the record. */
+    public record ClashingDock(@JsonProperty("code") String warehouseCode, @JsonProperty("code") String bin) {
+    }
+
+    /** A whole-body list of records Jackson can't describe, which no startup check reads. */
+    public record ClashingDocksRequest(List<ClashingDock> docks) {
+    }
+
+    public static class ClashingDocksOperation implements CommandOperation<ClashingDocksRequest, BookResult> {
+        @Override
+        public BookResult execute(ClashingDocksRequest input) {
+            return BOOK;
+        }
+    }
+
+    /**
+     * Items of every kind: non-null scalars, primitives and records, @Nullable ones (JSpecify's syntax), and
+     * collections, which bind empty.
+     */
+    @SuppressWarnings("ArrayRecordComponent")
+    public record ItemsRequest(List<String> tags, Map<String, String> labels, int[] counts, List<@Nullable Dock> gaps,
+            Map<String, @Nullable String> notes, @Nullable Dock[] holes, List<List<Dock>> rows) {
+    }
+
+    public static class ItemsOperation implements CommandOperation<ItemsRequest, BookResult> {
+        @Override
+        public BookResult execute(ItemsRequest input) {
+            return BOOK;
+        }
+    }
+
+    /**
+     * Free-form items: {@code JsonNode} and {@code Optional} item types are non-null like any other, and the
+     * {@code @Nullable} ones keep a JSON null (as {@code NullNode}).
+     */
+    public record FreeFormRequest(Map<String, JsonNode> attrs, List<Optional<String>> opts,
+            Map<String, @Nullable JsonNode> loose, List<@Nullable JsonNode> nodes) {
+    }
+
+    public static class FreeFormOperation implements CommandOperation<FreeFormRequest, BookResult> {
+        @Override
+        public BookResult execute(FreeFormRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A whole-body set of nested records ({@code .body(...)}): its items have no index. */
+    public record SpareDocksRequest(Set<Dock> spares) {
+    }
+
+    public static class SpareDocksOperation implements CommandOperation<SpareDocksRequest, BookResult> {
+        @Override
+        public BookResult execute(SpareDocksRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A whole-body map of nested records ({@code .body(...)}): its values are named without the key. */
+    public record DocksByNameRequest(Map<String, Dock> byName) {
+    }
+
+    public static class DocksByNameOperation implements CommandOperation<DocksByNameRequest, BookResult> {
+        @Override
+        public BookResult execute(DocksByNameRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A nested record with a non-null component Jackson never reads. */
+    public record SealedDock(String warehouseCode, @JsonProperty(access = JsonProperty.Access.READ_ONLY) String seal) {
+    }
+
+    /** The sealed dock as a list item, a whole-body value and a map value's component. */
+    public record SealedRequest(String sku, List<SealedDock> docks) {
+    }
+
+    public static class SealedOperation implements CommandOperation<SealedRequest, BookResult> {
+        @Override
+        public BookResult execute(SealedRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** Two levels down, through a map value. */
+    public record SealedYard(Map<String, SealedRequest> shipments) {
+    }
+
+    public static class SealedYardOperation implements CommandOperation<SealedYard, BookResult> {
+        @Override
+        public BookResult execute(SealedYard input) {
+            return BOOK;
+        }
+    }
+
+    /** A nested record whose ignored components are exempt: a @Nullable one and a collection. */
+    public record LooseSealDock(String warehouseCode, @JsonIgnore @Nullable String seal,
+            @JsonIgnore List<String> tags) {
+    }
+
+    public record LooseSealRequest(LooseSealDock dock) {
+    }
+
+    public static class LooseSealOperation implements CommandOperation<LooseSealRequest, BookResult> {
+        @Override
+        public BookResult execute(LooseSealRequest input) {
+            return BOOK;
+        }
+    }
+
+    /** A record that holds itself: the check visits each type once. */
+    public record Branch(String name, List<Branch> children, @Nullable Branch parent) {
+    }
+
+    public record TreeRequest(Branch root) {
+    }
+
+    public static class TreeOperation implements CommandOperation<TreeRequest, BookResult> {
+        @Override
+        public BookResult execute(TreeRequest input) {
+            return BOOK;
         }
     }
 }

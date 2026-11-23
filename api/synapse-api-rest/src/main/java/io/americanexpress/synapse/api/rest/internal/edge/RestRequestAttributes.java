@@ -17,6 +17,8 @@ import jakarta.servlet.http.HttpServletRequest;
 
 import org.jspecify.annotations.Nullable;
 
+import io.americanexpress.synapse.api.rest.internal.binding.WireNames;
+
 /**
  * Names of the request attributes the REST edge sets, and typed readers for them.
  */
@@ -27,6 +29,12 @@ public final class RestRequestAttributes {
 
     /** Request attribute holding the name of the operation that handles the request. */
     public static final String OPERATION_NAME = RestRequestAttributes.class.getName() + ".operationName";
+
+    /**
+     * Request attribute holding the {@link WireNames} of the route that handles the request, set once its input is
+     * bound and checked, just before the operation runs: the problem renames the violations the operation raises.
+     */
+    public static final String WIRE_NAMES = RestRequestAttributes.class.getName() + ".wireNames";
 
     private RestRequestAttributes() {
     }
@@ -49,6 +57,16 @@ public final class RestRequestAttributes {
      */
     public static @Nullable String operationName(HttpServletRequest request) {
         return string(request.getAttribute(OPERATION_NAME));
+    }
+
+    /**
+     * Returns the wire names of the route whose operation handles the request.
+     *
+     * @param request the request
+     * @return the names, or {@code null} before the operation runs, or when no Synapse route handles the request
+     */
+    public static @Nullable WireNames wireNames(HttpServletRequest request) {
+        return request.getAttribute(WIRE_NAMES) instanceof WireNames names ? names : null;
     }
 
     private static @Nullable String string(@Nullable Object value) {

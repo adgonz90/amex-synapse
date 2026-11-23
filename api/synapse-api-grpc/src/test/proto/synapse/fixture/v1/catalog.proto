@@ -40,6 +40,12 @@ service WatchService {
   rpc WatchItems(WatchItemsRequest) returns (stream Item);
 }
 
+// A method whose request's top-level field is repeated, for the empty-collection parity test (RestRoutesIT binds the
+// same operation over REST).
+service LabelService {
+  rpc LabelItem(LabelItemRequest) returns (google.protobuf.Empty);
+}
+
 enum Genre {
   GENRE_UNSPECIFIED = 0;
   GENRE_FICTION = 1;
@@ -47,13 +53,13 @@ enum Genre {
 }
 
 message Author {
-  string name = 1;
-  string country_code = 2;
+  optional string name = 1;
+  optional string country_code = 2;
 }
 
 message Item {
-  string id = 1;
-  string name = 2;
+  optional string id = 1;
+  optional string name = 2;
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Duration ttl = 4;
   google.protobuf.Int32Value rating = 5;
@@ -66,11 +72,11 @@ message Item {
     string sku = 20;
     string barcode = 21;
   }
-  int64 version = 22;
+  optional int64 version = 22;
 }
 
 message GetItemRequest {
-  string id = 1;
+  optional string id = 1;
 }
 
 message CreateItemRequest {
@@ -78,19 +84,23 @@ message CreateItemRequest {
 }
 
 message DeleteItemRequest {
-  string id = 1;
+  optional string id = 1;
 }
 
 message ListTagsRequest {
-  string id = 1;
+  optional string id = 1;
 }
 
 message ListTagsResponse {
   repeated string tags = 1;
 }
 
+message LabelItemRequest {
+  repeated string tags = 1;
+}
+
 message FailRequest {
-  string code = 1;
+  optional string code = 1;
 }
 
 message FailResponse {
@@ -98,7 +108,7 @@ message FailResponse {
 }
 
 message WatchItemsRequest {
-  string id = 1;
+  optional string id = 1;
 }
 
 // A message whose field has no presence, for the nullable-component check.
@@ -106,22 +116,54 @@ message PlainNumbers {
   int32 year = 1;
 }
 
+// Two methods whose requests bind required scalars, for the startup rule that lists every one in one failure.
+service PlainService {
+  rpc First(Presence) returns (google.protobuf.Empty);
+  rpc Second(Presence) returns (google.protobuf.Empty);
+}
+
+// Fields with and without presence, for the rule that a required scalar needs a field with presence.
+message Presence {
+  string title = 1;
+  string author = 2;
+  int32 pages = 3;
+  google.protobuf.Int32Value count = 4;
+  Genre genre = 5;
+  Shelf shelf = 6;
+  PlainAuthor writer = 7;
+  Meta meta = 8;
+  repeated string tags = 9;
+}
+
+// A required scalar with presence.
+message Titled {
+  optional string title = 1;
+}
+
+message PlainAuthor {
+  string name = 1;
+}
+
+message Meta {
+  string code = 1;
+}
+
 // Every scalar type, wrapper and container shape, for the mapping tests.
 message Scalars {
-  int32 int32_value = 1;
-  sint32 sint32_value = 2;
-  sfixed32 sfixed32_value = 3;
-  uint32 uint32_value = 4;
-  fixed32 fixed32_value = 5;
-  int64 int64_value = 6;
-  sint64 sint64_value = 7;
-  sfixed64 sfixed64_value = 8;
-  uint64 uint64_value = 9;
-  fixed64 fixed64_value = 10;
-  bool bool_value = 11;
-  double double_value = 12;
-  float float_value = 13;
-  bytes bytes_value = 14;
+  optional int32 int32_value = 1;
+  optional sint32 sint32_value = 2;
+  optional sfixed32 sfixed32_value = 3;
+  optional uint32 uint32_value = 4;
+  optional fixed32 fixed32_value = 5;
+  optional int64 int64_value = 6;
+  optional sint64 sint64_value = 7;
+  optional sfixed64 sfixed64_value = 8;
+  optional uint64 uint64_value = 9;
+  optional fixed64 fixed64_value = 10;
+  optional bool bool_value = 11;
+  optional double double_value = 12;
+  optional float float_value = 13;
+  optional bytes bytes_value = 14;
   google.protobuf.DoubleValue double_wrapper = 20;
   google.protobuf.FloatValue float_wrapper = 21;
   google.protobuf.Int64Value int64_wrapper = 22;
@@ -136,7 +178,7 @@ message Scalars {
   repeated google.protobuf.Timestamp times = 32;
   repeated Genre genres = 33;
   optional Genre optional_genre = 34;
-  Shelf shelf = 35;
+  optional Shelf shelf = 35;
 }
 
 // An enum whose values are named like the Java constants and whose zero value is a real value.
@@ -147,7 +189,7 @@ enum Shelf {
 
 // A message that contains itself, for recursive records.
 message Node {
-  string name = 1;
+  optional string name = 1;
   Node next = 2;
 }
 

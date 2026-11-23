@@ -567,7 +567,7 @@ A request that breaks `CreateItemRequest`'s constraints (`@NotBlank` on the SKU)
 `BadRequest` whose violation names the proto field, `sku_code`, not the component:
 
 ```bash
-grpcurl -plaintext -d '{"sku_code": " ", "location": {"warehouse": "west", "aisle": "D1", "bin": 2}}' \
+grpcurl -plaintext -d '{"sku_code": " ", "location": {"warehouse": "west", "aisle": "D1", "bin": 2}, "quantity": 1}' \
   host.docker.internal:9090 synapse.samples.inventory.v1.InventoryService/CreateItem
 ```
 
@@ -580,7 +580,7 @@ ERROR:
     	  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
     	  "domain": "inventory",
     	  "metadata": {
-    	    "correlationId": "e579bde8-c1c8-4ad9-a8f3-db67e9046868"
+    	    "correlationId": "10b20651-c965-40b0-814d-d12b6a208c9a"
     	  },
     	  "reason": "VALIDATION_FAILED"
     	}
@@ -590,6 +590,39 @@ ERROR:
     	    {
     	      "field": "sku_code",
     	      "description": "must not be blank"
+    	    }
+    	  ]
+    	}
+```
+
+A required field the request doesn't send is `must not be null`, as a missing REST property is. The contract declares
+the request's required scalars `optional`, so the edge sees that `sku_code` wasn't sent instead of reading `""`, and
+the operation never runs. `quantity` is required too, so an item with no stock sends `"quantity": 0`:
+
+```bash
+grpcurl -plaintext -d '{"location": {"warehouse": "west", "aisle": "D1", "bin": 2}, "quantity": 1}' \
+  host.docker.internal:9090 synapse.samples.inventory.v1.InventoryService/CreateItem
+```
+
+```
+ERROR:
+  Code: InvalidArgument
+  Message: The request is invalid
+  Details:
+  1)	{
+    	  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+    	  "domain": "inventory",
+    	  "metadata": {
+    	    "correlationId": "caadbe8d-6b99-4106-8c4f-f81a74e4c937"
+    	  },
+    	  "reason": "VALIDATION_FAILED"
+    	}
+  2)	{
+    	  "@type": "type.googleapis.com/google.rpc.BadRequest",
+    	  "field_violations": [
+    	    {
+    	      "field": "sku_code",
+    	      "description": "must not be null"
     	    }
     	  ]
     	}

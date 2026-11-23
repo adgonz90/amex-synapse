@@ -45,17 +45,20 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Article;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Author;
+import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Bag;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Book;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Built;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Chain1;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Clash;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Constrained;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Converted;
+import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Crate;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Customer;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Deep;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.DelFactory;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Entry;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Envelope;
+import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Gaps;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Grow;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Journal;
 import io.americanexpress.synapse.api.rest.openapi.internal.SchemaFixtures.Ledger;
@@ -489,6 +492,28 @@ class SchemaGeneratorTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked") // swagger types getAnyOf() as a List of the raw Schema
+    void nullableItemsAdmitNull() {
+        generator.output(ResolvableType.forClass(Gaps.class));
+
+        // A @Nullable item type: the mapper writes, and the binder passes through, a null item, so the items admit
+        // null, as a nullable component does; the other items stay non-null.
+        Schema<?> gaps = component("Gaps");
+        assertThat(property(gaps, "gaps").getItems().getTypes()).containsExactly("string", "null");
+        Schema<?> note = (Schema<?>) property(gaps, "notes").getAdditionalProperties();
+        assertThat(note.getAnyOf()).hasSize(2);
+        assertThat(note.getAnyOf().get(0).get$ref()).isEqualTo(REF + "Address");
+        assertThat(note.getAnyOf().get(1).getTypes()).containsExactly("null");
+        assertThat(property(gaps, "holes").getItems().getTypes()).containsExactly("integer", "null");
+        Schema<?> rows = property(gaps, "rows");
+        assertThat(rows.getItems().getTypes()).containsExactly("array");
+        assertThat(rows.getItems().getItems().getTypes()).containsExactly("string", "null");
+        assertThat(property(gaps, "plain").getItems().getTypes()).containsExactly("string");
+        assertThat(((Schema<?>) property(gaps, "addresses").getAdditionalProperties()).get$ref())
+                .isEqualTo(REF + "Address");
+    }
+
+    @Test
     void enumsListTheirWireValues() {
         Schema<?> sort = generator.output(ResolvableType.forClass(Sort.class));
 
@@ -549,7 +574,8 @@ class SchemaGeneratorTest {
     void constraintsBecomeKeywords() {
         generator.input(ResolvableType.forClass(Constrained.class));
 
-        Schema<?> constrained = component("Constrained");
+        // Its collections and maps aren't required in the input, which so differs from its output.
+        Schema<?> constrained = component("ConstrainedInput");
         assertThat(property(constrained, "name").getMinLength()).isEqualTo(1);
         assertThat(property(constrained, "code").getMinLength()).isEqualTo(1);
         assertThat(property(constrained, "tags").getMinItems()).isEqualTo(1);
@@ -585,9 +611,31 @@ class SchemaGeneratorTest {
         assertThat(property(constrained, "floor").getMinimum()).isEqualByComparingTo("2");
         assertThat(property(constrained, "shortCode").getMinLength()).isEqualTo(1);
         assertThat(property(constrained, "shortCode").getMaxLength()).isEqualTo(5);
+        // An input collection or map binds empty, so it is required only when its constraints need items.
         assertThat(constrained.getRequired())
-                .contains("name", "code", "tags", "mandatory", "labels", "shortCode")
-                .doesNotContain("nickname", "unchecked");
+                .contains("name", "code", "mandatory", "shortCode", "tags", "attributes", "few")
+                .doesNotContain("nickname", "unchecked", "some", "labels", "notes");
+    }
+
+    @Test
+    void anInputCollectionOrMapIsRequiredOnlyWhenItMustHaveItems() {
+        Schema<?> input = generator.input(ResolvableType.forClass(Bag.class));
+        Schema<?> output = generator.output(ResolvableType.forClass(Bag.class));
+        Schema<?> crate = generator.input(ResolvableType.forClass(Crate.class));
+
+        // The binder binds an absent or null collection or map empty, as gRPC does a repeated or map field, so the
+        // input differs from the output, which always writes them.
+        assertThat(input.get$ref()).isEqualTo(REF + "BagInput");
+        assertThat(output.get$ref()).isEqualTo(REF + "Bag");
+        // An absent @NotEmpty or @Size(min >= 1) collection or map is rejected, so it is required, with its minimum.
+        assertThat(component("BagInput").getRequired()).containsExactly("codes", "name", "notes", "tags");
+        assertThat(property(component("BagInput"), "notes").getMinProperties()).isEqualTo(1);
+        assertThat(property(component("BagInput"), "tags").getMinItems()).isEqualTo(1);
+        assertThat(component("Bag").getRequired())
+                .containsExactly("codes", "counts", "few", "labels", "name", "notes", "tags");
+        // A record that holds one is documented apart too, and refers to the input.
+        assertThat(crate.get$ref()).isEqualTo(REF + "CrateInput");
+        assertThat(property(component("CrateInput"), "bag").get$ref()).isEqualTo(REF + "BagInput");
     }
 
     @Test
@@ -602,16 +650,23 @@ class SchemaGeneratorTest {
         assertThat(property(shelf, "first").get$ref()).isEqualTo(REF + "Book");
         assertThat(property(shelf, "second").get$ref()).isEqualTo(REF + "Book");
         assertThat(property(shelf, "others").getItems().get$ref()).isEqualTo(REF + "Book");
+        // One walk per type: Node's reference to itself and Shelf's three references to Book reuse the component.
+        assertThat(generator.walkCount()).isEqualTo(3);
 
         // Without a budget the walk would never end: every level doubles the parameterizations, and none repeats.
         SchemaGenerator growing = new SchemaGenerator(JsonMapper.builder().build(), VALIDATOR);
-        Schema<?> grow = assertTimeoutPreemptively(Duration.ofSeconds(1),
+        // The counts below are the check; the timeout is only a backstop (about 30 times the usual second) so that
+        // a runaway walk fails here instead of hanging the build.
+        Schema<?> grow = assertTimeoutPreemptively(Duration.ofSeconds(30),
                 () -> growing.output(ResolvableType.forClassWithGenerics(Grow.class, String.class)));
 
         assertThat(grow.get$ref()).isEqualTo(REF + "GrowOfString");
         assertThat(growing.components())
                 .hasSizeLessThanOrEqualTo(SchemaGenerator.TYPE_BUDGET)
                 .containsKeys("GrowOfString", "GrowOfListOfString", "GrowOfSetOfString");
+        // The budget bounds the work, not only the result: each type within it is walked once, and no more.
+        assertThat(growing.walkCount()).isEqualTo(growing.components().size());
+        assertThat(growing.schemaCount()).isLessThanOrEqualTo(DEFAULTS.schemas());
         assertThat(growing.undescribed())
                 .hasSize(1)
                 .allSatisfy(type -> assertThat(type).startsWith(Grow.class.getCanonicalName() + "<"));

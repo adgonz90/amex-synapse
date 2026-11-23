@@ -475,7 +475,7 @@ class SynapseGrpcAutoConfigurationTest {
 
     private static BindingDeclarations restBinding(@Nullable String etag) {
         BindingDeclarations declarations = new BindingDeclarations();
-        declarations.add(new BindingDeclaration("REST", "get-doc", "GET /docs/{id}", "NOT_FOUND", etag, null));
+        declarations.add(new BindingDeclaration("REST", "get-doc", "GET /docs/{id}", "NOT_FOUND", etag, null, null));
         return declarations;
     }
 

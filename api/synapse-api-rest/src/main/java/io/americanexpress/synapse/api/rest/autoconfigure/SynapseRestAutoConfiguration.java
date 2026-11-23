@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Set;
 import jakarta.servlet.DispatcherType;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.LazyInitializationExcludeFilter;
@@ -48,6 +49,7 @@ import tools.jackson.databind.json.JsonMapper;
 import io.americanexpress.synapse.api.rest.RestBindings;
 import io.americanexpress.synapse.api.rest.RestConventions;
 import io.americanexpress.synapse.api.rest.internal.binding.BindingValidator;
+import io.americanexpress.synapse.api.rest.internal.binding.CookieDuplicates;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.conditional.ETagValues;
 import io.americanexpress.synapse.api.rest.internal.cors.SynapseCorsConfigurationSource;
@@ -397,20 +399,37 @@ public final class SynapseRestAutoConfiguration {
     }
 
     /**
+     * Records a cookie sent more than once for a single-valued component, whose first copy is bound: a DEBUG line
+     * and the counter {@value CookieDuplicates#METER}, registered for each such binding at startup. Without a
+     * {@code MeterRegistry} nothing is counted.
+     *
+     * @param meterRegistry the application's meter registry, if there is one
+     * @return the recorder
+     */
+    @Bean
+    @ConditionalOnBean(RestBindings.class)
+    @ConditionalOnMissingBean(name = "synapseRestCookieDuplicates")
+    CookieDuplicates synapseRestCookieDuplicates(ObjectProvider<MeterRegistry> meterRegistry) {
+        return new CookieDuplicates(meterRegistry.getIfUnique());
+    }
+
+    /**
      * Binds requests to operation inputs.
      *
      * @param jsonMapper Boot's mapper, if there is one; otherwise a default mapper is used
      * @param conversionService Spring MVC's conversion service
      * @param paging the paging settings, for the paging parameter names and caps
+     * @param duplicates records a repeated single-valued cookie
      * @return the binder
      */
     @Bean
     @ConditionalOnBean(RestBindings.class)
     @ConditionalOnMissingBean
     RequestBinder requestBinder(ObjectProvider<JsonMapper> jsonMapper,
-            @Qualifier("mvcConversionService") ConversionService conversionService, PagingSettings paging) {
+            @Qualifier("mvcConversionService") ConversionService conversionService, PagingSettings paging,
+            @Qualifier("synapseRestCookieDuplicates") CookieDuplicates duplicates) {
         return new RequestBinder(jsonMapper.getIfAvailable(() -> JsonMapper.builder().build()), conversionService,
-                paging);
+                paging, duplicates);
     }
 
     /**

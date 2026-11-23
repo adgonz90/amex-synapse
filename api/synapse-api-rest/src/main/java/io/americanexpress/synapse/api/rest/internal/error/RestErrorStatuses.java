@@ -22,10 +22,12 @@ import io.americanexpress.synapse.api.rest.RestErrors;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
+import io.americanexpress.synapse.core.error.SynapseException;
 
 /**
  * Decides the HTTP status of an error. In order, the first that applies wins: the status configured for the
- * operation, the status configured for every operation, the fixed status of a {@link RestErrors} code, 428 for
+ * operation, the status configured for every operation, the status a {@link KeptStatusException} keeps (see
+ * {@link #statusFor(SynapseException, String)}), the fixed status of a {@link RestErrors} code, 428 for
  * {@link SynapseErrors#PRECONDITION_REQUIRED}, and the status of the error's category.
  */
 public final class RestErrorStatuses {
@@ -57,14 +59,39 @@ public final class RestErrorStatuses {
     }
 
     /**
-     * Returns the status for an error.
+     * Returns the status an error is written with: the one seam for a REST status. In order: the status configured
+     * for its code (for the operation, then for every operation), the status a {@link KeptStatusException} keeps, and
+     * {@link #statusFor(ErrorDetails, String)}'s fixed and category statuses. So a configured
+     * {@code [CLIENT_ERROR]} applies to every kept 4xx.
+     *
+     * @param error the error
+     * @param operationName the operation that failed, or {@code null} when none did
+     * @return the HTTP status
+     */
+    public int statusFor(SynapseException error, @Nullable String operationName) {
+        ErrorDetails details = error.details();
+        Integer configured = configured(details.code(), operationName);
+        if (configured != null) {
+            return configured;
+        }
+        Integer kept = error instanceof KeptStatusException keptStatus ? keptStatus.status() : null;
+        return kept != null ? kept : builtIn(details);
+    }
+
+    /**
+     * Returns the status for an error code.
      *
      * @param details the error
      * @param operationName the operation that failed, or {@code null} when none did
      * @return the HTTP status
      */
     public int statusFor(ErrorDetails details, @Nullable String operationName) {
-        String code = details.code();
+        Integer configured = configured(details.code(), operationName);
+        return configured != null ? configured : builtIn(details);
+    }
+
+    /** The status configured for the code: for the operation first, then for every operation; {@code null} if none. */
+    private @Nullable Integer configured(String code, @Nullable String operationName) {
         if (operationName != null) {
             Map<String, Integer> own = perOperation.get(operationName);
             Integer status = own == null ? null : own.get(code);
@@ -72,10 +99,11 @@ public final class RestErrorStatuses {
                 return status;
             }
         }
-        Integer configured = global.get(code);
-        if (configured != null) {
-            return configured;
-        }
+        return global.get(code);
+    }
+
+    /** The fixed status of a code, or its category's. */
+    private static int builtIn(ErrorDetails details) {
         if (details instanceof RestErrors restError) {
             return restError.status();
         }

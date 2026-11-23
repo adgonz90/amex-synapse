@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Lets the integration-test builds resolve everything from the local repository the main build already filled. -->
 <settings>
+    <!-- Every repository, Maven Central included, is mirrored to the main build's local repository, so these builds never
+         download: an artifact they need that the main build didn't resolve fails them, naming it. Add it to the
+         invoker:install extraArtifacts of the module's pom.xml, which resolves it into the main build's repository. -->
+    <mirrors>
+        <mirror>
+            <id>local.central</id>
+            <mirrorOf>*</mirrorOf>
+            <url>@localRepositoryUrl@</url>
+        </mirror>
+    </mirrors>
     <profiles>
         <profile>
             <id>it-repo</id>

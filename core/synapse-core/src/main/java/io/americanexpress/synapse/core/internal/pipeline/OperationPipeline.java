@@ -228,11 +228,13 @@ public final class OperationPipeline {
      * Validates the input: Jakarta constraints (only for constrained types), then the paging rules of a
      * {@link PageQuery} input or of the input record's {@code PageQuery} components.
      *
+     * @param input the input
+     * @param call the token of the call that validates it, recorded on the rejection
      * @throws SynapseException {@code VALIDATION_FAILED} with every violation found; its cause is a
      *         {@link SanitizedViolations} with each violation's path and message template, for the log of a
-     *         rejection that isn't the caller's (a business or nested input)
+     *         rejection that isn't the caller's (a business or nested input), and the call's token
      */
-    void validate(@Nullable Object input) {
+    void validate(@Nullable Object input, Object call) {
         if (input == null) {
             return;
         }
@@ -243,7 +245,7 @@ public final class OperationPipeline {
             found = validator.validate(input);
             List<Violation> constraints = new ArrayList<>();
             for (ConstraintViolation<Object> violation : found) {
-                constraints.add(new Violation(violation.getPropertyPath().toString(), violation.getMessage()));
+                constraints.add(new Violation(ViolationPaths.of(violation.getPropertyPath()), violation.getMessage()));
             }
             constraints.sort(Comparator.comparing(Violation::field).thenComparing(Violation::message));
             violations.addAll(constraints);
@@ -262,22 +264,43 @@ public final class OperationPipeline {
         }
         violations.addAll(paging);
         if (!violations.isEmpty()) {
-            throw rejected(SynapseErrors.VALIDATION_FAILED, violations, found, paging);
+            throw rejected(SynapseErrors.VALIDATION_FAILED, violations, found, paging, call);
         }
     }
 
-    /** The pipeline's rejection, caused by its sanitized form: paging texts never repeat a value. */
+    /**
+     * The pipeline's rejection, caused by its sanitized form (paging texts never repeat a value), which records the
+     * call that raised it.
+     */
     private static SynapseException rejected(SynapseErrors error, List<Violation> violations,
-            Set<? extends ConstraintViolation<?>> constraints, List<Violation> fixed) {
+            Set<? extends ConstraintViolation<?>> constraints, List<Violation> fixed, Object call) {
         SynapseException rejection = SynapseException.ofViolations(error, violations);
-        rejection
-                .initCause(SanitizedViolations
-                        .ofRejection(constraints,
-                                fixed
-                                        .stream()
-                                        .map(violation -> violation.field() + ": " + violation.message())
-                                        .toList()));
+        SanitizedViolations cause = SanitizedViolations
+                .ofRejection(constraints,
+                        fixed.stream().map(violation -> violation.field() + ": " + violation.message()).toList());
+        cause.markCall(call);
+        rejection.initCause(cause);
         return rejection;
+    }
+
+    /**
+     * Tells whether a failure is a pipeline rejection raised by another call than this one: its cause is a
+     * {@link SanitizedViolations} that recorded a call other than this one, by identity. The pipeline records the call
+     * on its own rejections ({@code rejected}) and on the translation of a call's hand validation of its own input
+     * (the operation interceptor). A {@code SynapseException} that code builds itself, or one that wraps a rejection,
+     * is not one.
+     *
+     * @param failure the failure the call received
+     * @param call the receiving call's token
+     * @return {@code true} if another call's pipeline raised it
+     */
+    @SuppressWarnings("ReferenceEquality") // The token is an identity: only the same call's token is the same call.
+    static boolean raisedByAnotherCall(SynapseException failure, Object call) {
+        if (!(failure.getCause() instanceof SanitizedViolations sanitized)) {
+            return false;
+        }
+        Object raisedBy = sanitized.call();
+        return raisedBy != null && raisedBy != call;
     }
 
     private boolean isConstrained(Class<?> type) {
@@ -303,13 +326,15 @@ public final class OperationPipeline {
     /**
      * Checks that a {@link ServiceOperation} input record carries every {@link VersionCondition} it requires: a
      * component typed {@code VersionCondition} that isn't {@code @Nullable}, the rule the API plugins apply. It runs
-     * after {@link #validate(Object)}, so the operation never sees a request without a required condition, whoever
-     * calls it. {@link VersionCondition#any()} counts as a condition.
+     * after {@link #validate(Object, Object)}, so the operation never sees a request without a required condition,
+     * whoever calls it. {@link VersionCondition#any()} counts as a condition.
      *
+     * @param input the input
+     * @param call the token of the call that checks it, recorded on the rejection
      * @throws SynapseException {@code PRECONDITION_REQUIRED} with one violation per required component that is
      *     {@code null}
      */
-    void requirePreconditions(@Nullable Object input) {
+    void requirePreconditions(@Nullable Object input, Object call) {
         if (input == null) {
             return;
         }
@@ -324,7 +349,7 @@ public final class OperationPipeline {
             }
         }
         if (!missing.isEmpty()) {
-            throw rejected(SynapseErrors.PRECONDITION_REQUIRED, missing, Set.of(), missing);
+            throw rejected(SynapseErrors.PRECONDITION_REQUIRED, missing, Set.of(), missing, call);
         }
     }
 

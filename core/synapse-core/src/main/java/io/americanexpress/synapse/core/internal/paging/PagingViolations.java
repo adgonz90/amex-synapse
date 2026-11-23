@@ -70,6 +70,17 @@ public final class PagingViolations {
     }
 
     /**
+     * Returns the text of a page token that carries an offset past the cap: the token of a page whose next offset
+     * passes it, or one issued under a higher cap.
+     *
+     * @param maxOffset {@code synapse.paging.max-offset}
+     * @return the text
+     */
+    public static String offsetLimitReached(long maxOffset) {
+        return "has reached the offset limit (" + maxOffset + "); narrow the query or use keyset paging";
+    }
+
+    /**
      * Checks the keys of one sort against an allow-list, in the order the caller sent them. Each distinct problem is
      * kept once, in the order first found; the sort is empty when there is a problem.
      */

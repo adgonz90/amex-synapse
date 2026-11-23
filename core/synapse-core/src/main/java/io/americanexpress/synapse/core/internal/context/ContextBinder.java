@@ -156,7 +156,7 @@ public final class ContextBinder {
         }
         long size = 0;
         for (Map.Entry<String, String> candidate : safe.entrySet()) {
-            long entrySize = utf8Length(candidate.getKey()) + utf8Length(candidate.getValue());
+            long entrySize = entrySize(utf8Length(candidate.getKey()), utf8Length(candidate.getValue()));
             if (kept.size() >= maxEntries || size + entrySize > maxSizeBytes) {
                 dropped
                         .log("Dropped {} inbound context attribute(s) over the limit of {} entries and {} bytes",
@@ -179,6 +179,17 @@ public final class ContextBinder {
 
     private static int utf8Length(String text) {
         return text.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    /**
+     * The bytes an attribute counts against the size limit.
+     *
+     * @param nameBytes the UTF-8 length of its name
+     * @param valueBytes the UTF-8 length of its value
+     * @return their sum, computed as a long so that it can't wrap to a negative size that passes the limit
+     */
+    static long entrySize(int nameBytes, int valueBytes) {
+        return (long) nameBytes + valueBytes;
     }
 
     /** Closes baggage in reverse order, then restores the previous value even if a close threw. */

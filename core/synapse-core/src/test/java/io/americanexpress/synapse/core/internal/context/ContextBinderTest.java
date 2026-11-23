@@ -248,6 +248,14 @@ class ContextBinderTest {
     }
 
     @Test
+    void entrySizeDoesNotOverflow() {
+        // A name and a value of about 1 GiB of UTF-8 each: summed as ints, the size wraps to a negative number, which
+        // passes the size check. Strings that long don't fit in a test JVM's heap, so the sum is checked directly.
+        assertThat(ContextBinder.entrySize(Integer.MAX_VALUE, Integer.MAX_VALUE)).isEqualTo(2L * Integer.MAX_VALUE);
+        assertThat(ContextBinder.entrySize(Integer.MAX_VALUE, 1)).isPositive();
+    }
+
+    @Test
     void worksWithNoopTracer() {
         ContextBinder noop = new ContextBinder(Tracer.NOOP, new CorrelationIdPolicy(128), true, 16, 4096);
         try (ContextScope scope = noop.open(new InboundContext("req-1", Map.of("tenant", "t1"), null, null, null))) {

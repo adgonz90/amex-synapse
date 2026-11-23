@@ -13,7 +13,9 @@
  */
 package io.americanexpress.synapse.core.internal.binding;
 
+import java.lang.reflect.AnnotatedType;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -22,8 +24,10 @@ import io.americanexpress.synapse.core.SynapseConfigurationException;
 import io.americanexpress.synapse.core.binding.ComponentRef;
 import io.americanexpress.synapse.core.internal.binding.marked.Counted;
 import io.americanexpress.synapse.core.internal.binding.marked.GetBookRequest;
+import io.americanexpress.synapse.core.internal.binding.marked.Shelf;
 import io.americanexpress.synapse.core.internal.binding.unmarked.Loose;
 import io.americanexpress.synapse.core.internal.binding.unmarked.LooseCounted;
+import io.americanexpress.synapse.core.internal.binding.unmarked.LooseShelf;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -78,6 +82,34 @@ class ComponentRefsTest {
     void primitiveComponentsAreNeverNullable() {
         assertThat(ComponentRefs.resolve(Counted::n).nullable()).isFalse();
         assertThat(ComponentRefs.resolve(LooseCounted::n).nullable()).isFalse();
+    }
+
+    @Test
+    void readsTheJSpecifyNullnessOfItems() {
+        // A collection's elements, an array's components and a map's values (and an Optional's value): @Nullable on the
+        // type argument or the component type (JSpecify's array syntax), otherwise the package's default.
+        assertThat(ComponentRefs.resolve(Shelf::titles).nullableItems()).isFalse();
+        assertThat(ComponentRefs.resolve(Shelf::gaps).nullableItems()).isTrue();
+        assertThat(ComponentRefs.resolve(Shelf::notes).nullableItems()).isTrue();
+        assertThat(ComponentRefs.resolve(Shelf::labels).nullableItems()).isFalse();
+        assertThat(ComponentRefs.resolve(Shelf::codes).nullableItems()).isFalse();
+        assertThat(ComponentRefs.resolve(Shelf::holes).nullableItems()).isTrue();
+        assertThat(ComponentRefs.resolve(Shelf::holes).nullable()).isFalse();
+        assertThat(ComponentRefs.resolve(Shelf::spare).nullableItems()).isFalse();
+        assertThat(ComponentRefs.resolve(Shelf::spare).nullable()).isTrue();
+        assertThat(ComponentRefs.resolve(Shelf::counts).nullableItems()).isFalse();
+        assertThat(ComponentRefs.resolve(Shelf::maybe).nullableItems()).isFalse();
+        assertThat(ComponentRefs.resolve(Shelf::plain).nullableItems()).isFalse();
+        // At every depth: the rows are non-null, their items nullable.
+        ResolvedComponent rows = ComponentRefs.resolve(Shelf::rows);
+        AnnotatedType row = Objects.requireNonNull(ResolvedComponent.items(rows.annotatedType()));
+        assertThat(rows.nullableItems()).isFalse();
+        assertThat(ResolvedComponent.nullable(ResolvedComponent.items(row), rows.nullMarked())).isTrue();
+        // Unmarked: unspecified, so nullable, except a primitive.
+        assertThat(ComponentRefs.resolve(Shelf::titles).nullMarked()).isTrue();
+        assertThat(ComponentRefs.resolve(LooseShelf::titles).nullMarked()).isFalse();
+        assertThat(ComponentRefs.resolve(LooseShelf::titles).nullableItems()).isTrue();
+        assertThat(ComponentRefs.resolve(LooseShelf::counts).nullableItems()).isFalse();
     }
 
     @Test

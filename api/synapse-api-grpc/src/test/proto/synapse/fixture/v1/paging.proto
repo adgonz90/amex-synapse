@@ -37,7 +37,7 @@ message PagedBook {
 }
 
 message ListPagedBooksRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
   string page_token = 3;
   int32 skip = 4;
@@ -54,7 +54,7 @@ message ListPagedBooksResponse {
 
 // A paged write with an If-Match etag, for the order of the precondition checks and the page token.
 message PagedUpdateRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
   string page_token = 3;
   string etag = 4;
@@ -129,36 +129,36 @@ service PlainTotalService {
 }
 
 message NoPageSizeRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   string page_token = 2;
 }
 
 message Int64PageSizeRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int64 page_size = 2;
   string page_token = 3;
 }
 
 message NoPageTokenRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
 }
 
 message Int64SkipRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
   string page_token = 3;
   int64 skip = 4;
 }
 
 message NoOrderByRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
   string page_token = 3;
 }
 
 message OneofPageTokenRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
   oneof position {
     string page_token = 3;
@@ -219,14 +219,14 @@ message NoHasNextResponse {
 }
 
 message Int32OrderByRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
   string page_token = 3;
   int32 order_by = 4;
 }
 
 message RepeatedOrderByRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   int32 page_size = 2;
   string page_token = 3;
   repeated string order_by = 4;
@@ -242,7 +242,7 @@ message Int64TotalResponse {
 
 // Page fields with presence: a value sent explicitly, 0 or empty included, follows REST's rules.
 message OptionalPagesRequest {
-  string shelf = 1;
+  optional string shelf = 1;
   optional int32 page_size = 2;
   optional string page_token = 3;
   optional int32 skip = 4;

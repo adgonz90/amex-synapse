@@ -64,16 +64,20 @@ Steps for a `ServiceOperation`, outermost first:
   `PageQuery`. Failure is `VALIDATION_FAILED` with violations, then a missing required `VersionCondition` is
   `PRECONDITION_REQUIRED` (see <<version-condition>>). Only the outermost call's input is the caller's own: in a
   nested call (an operation calling another on the same thread) either failure is `INTERNAL`, with it as the logged
-  cause. "Outermost" is per thread: an operation run on another thread (an executor, `@Async`) is outermost there, so
-  its rejection is `VALIDATION_FAILED` or `PRECONDITION_REQUIRED` with its own model's violations. That reaches the
-  caller as a 400 only if the calling operation unwraps it from the `Future` (or `CompletionException`) and rethrows
-  it; a wrapper it rethrows as is becomes `INTERNAL`.
+  cause. Each rejection records the call that raised it, so the rule holds on every thread: a call that receives a
+  pipeline rejection raised by another call (an operation run on another thread, its failure unwrapped from a
+  `Future` and rethrown) turns it into `INTERNAL`, with the rejection as the logged cause. A `SynapseException` that
+  code builds itself is not a pipeline rejection and passes as it is.
 . *Payload logging* (opt-in, DEBUG, masked).
 . *Execute.* A `@Transactional` boundary sits inside the Synapse advisor; Synapse never opens transactions.
-. *Translation.* A `SynapseException` passes through; other exceptions go through the `ExceptionTranslator` beans in
+. *Translation.* A `SynapseException` passes through, except a pipeline rejection raised by another call, which is
+  `INTERNAL` (above); other exceptions go through the `ExceptionTranslator` beans in
   order, and anything left becomes `INTERNAL`. A `ConstraintViolationException` reaches them only when it is thrown
-  itself and every violation is of the outermost call's input (see <<errors>>); any other one is `INTERNAL`. JVM
-  `Error`s are never translated.
+  itself and every violation is of the outermost call's input (see <<errors>>); any other one is `INTERNAL`. Its
+  translation is a rejection of that call's input too: unless its translator gave it a cause of its own, it records
+  the call, and its logged cause names each violation by its message template, so a call that receives it from
+  another thread makes it `INTERNAL` as above. A translator returns a new exception for each call, since Synapse may
+  set the cause of one that has none. JVM `Error`s are never translated.
 . *Failure logging* by the outermost call on the thread only.
 
 A `BusinessOperation` gets a reduced pipeline: validation and a `synapse.business` observation. It has no context,
@@ -170,8 +174,17 @@ tags]).
 
 Throw `ALREADY_EXISTS` when a resource with the same identity exists, such as when a create finds it already there.
 The data modules use it for unique-constraint violations (see xref:data.adoc#errors[Data error translation]). Over
-REST it is 409, like every `CONFLICT`; over gRPC it is `ALREADY_EXISTS` rather than `ABORTED` (see
-xref:grpc.adoc#errors[gRPC errors]).
+REST it is 409, like every `CONFLICT`; over gRPC it is `ALREADY_EXISTS` rather than `ABORTED`. A `CONFLICT` code of
+your own that means a duplicate create (such as `ISBN_TAKEN`) is `ABORTED` over gRPC; map it to `ALREADY_EXISTS`
+with a status override (see xref:grpc.adoc#errors[gRPC errors]).
+
+A violation's field is the path of the rejected value: property names joined with dots, and `[index]` for a list or
+array element, a scalar element included (`title`, `author.name`, `tags[0]`, `items[2].sku`). Jakarta's container
+element node names (`<list element>` and the like) are left out, a `Set` element has no index, and a map key, the
+caller's data, is never written: a constraint on a key or a whole value names the map (`labels`), and one inside a
+value continues with the value's property (`authorsByRank.countryCode`). Each protocol renames the path to its wire
+names: REST to the JSON, parameter, header, cookie and path variable names the client sent (see
+xref:rest.adoc#violation-names[Violation names]), gRPC to proto field names (see xref:grpc.adoc#mapping[Mapping]).
 
 Register `ExceptionTranslator` beans to map exceptions of libraries you use. Modules contribute their own; core has
 no data or security dependency.
@@ -239,7 +252,9 @@ Keys declared with REST's `.sortable(String...)` are passed as declared, so they
 property names.
 
 Defaults: `synapse.paging.default-size` 20, `synapse.paging.max-size` 100, `synapse.paging.max-offset` 1000 (the
-largest offset a caller may request; it must not be negative).
+largest offset a caller may request, also through a page token; it must not be negative, and startup fails when it
+is above the largest `long` minus `max-size`, so the next page's offset always fits. Past it, the next-page token
+fails with the offset limit: see <<paging-cursors>>).
 
 The REST plugin checks paging at the edge, before the pipeline runs: the page size against `synapse.paging.max-size`,
 the offset against `synapse.paging.max-offset`, a cursor combined with an offset, and the sort keys against
@@ -254,8 +269,12 @@ field names (`page_size`, `skip`, `page_token`, `order_by`). See xref:grpc.adoc#
 An operation's raw cursor never reaches a caller. Core turns it into an opaque token, and back, for every API plugin,
 so a token issued over one protocol is read by another for the same operation. A token carries the raw cursor, or, for
 a page that has a next page but no cursor, the next offset. REST's `nextCursor` and gRPC's `next_page_token` carry
-the same token, by REST's `Link: next` rule; it is read back as `PageQuery(null, offset, size, sort)`, and an offset
-above the current `synapse.paging.max-offset` is rejected as an `offset` over the cap is. A token is bound to a
+the same token, by REST's `Link: next` rule; it is read back as `PageQuery(null, offset, size, sort)`. A page whose
+next offset would pass `synapse.paging.max-offset` while `hasNext` is true still gets that token, so the token is
+empty only at the real end of the collection; a token whose offset is above the current cap (that one, or one issued
+under a higher cap) is `VALIDATION_FAILED` on the caller's token field, `has reached the offset limit (1000); narrow
+the query or use keyset paging`, on every protocol. An `offset` or `skip` over the cap keeps `must be less than or
+equal to 1000`. A token is bound to a
 `CursorScope`:
 the operation's name, the sort (each key as the enum constant's name for keys declared with `.sortable(Class)`, on
 every protocol, and as the declared name for REST's `.sortable(String...)`) and a digest of the other inputs. The
@@ -272,8 +291,9 @@ The default codec, `synapseCursorCodec`, encrypts tokens with AES-256-GCM. Its k
 `synapse.paging.cursor.max-age` for expiry (unset: tokens don't expire; when set, it must be positive). An invalid key
 fails startup, with or without a paged route. Without a key, core generates one at startup, and the first plugin with
 a paged route or method logs one WARN on `io.americanexpress.synapse.core`, in every environment. Define a
-`CursorCodec` bean (`io.americanexpress.synapse.core.paging`, incubating) to replace the default. Key rotation, the
-token rules and the replacement contract are in xref:rest.adoc#paging[REST paging].
+`CursorCodec` bean (`io.americanexpress.synapse.core.paging`, incubating) to replace the default. Key rotation (see
+xref:rest.adoc#cursor-keys[Cursor keys]), the token rules and the replacement contract are in
+xref:rest.adoc#paging[REST paging].
 
 [#version-condition]
 == Version conditions
@@ -343,7 +363,7 @@ message goes. What the pipeline guarantees is this: when it finds a `ConstraintV
 (`INTERNAL`: a business or nested input, a collaborator, an entity), the operation's ERROR line and its logged cause
 name each violation by its path and message template, not by the interpolated message (see <<errors>>). A rejection
 of the caller's own input is `VALIDATION_FAILED`, logged at WARN without its violations; its messages go back to the
-caller who sent the value.
+caller who sent the value. A map key is never in a violation's field, the path the caller gets (see <<errors>>).
 
 A raw value can still reach the operation's failure line:
 
@@ -529,9 +549,21 @@ bindings, startup fails when the REST and gRPC bindings of one operation declare
 * `.sortable`: the sort keys, as the operation receives them in `SortOrder.property()` (an enum's constant names, or
   REST's `sortable(String...)` keys as written), or none.
 
-Each REST route is compared with the gRPC method, so while gRPC binds the operation every REST version must declare
-these alike. Versions may differ only for an operation that gRPC doesn't bind, and an operation bound over one
-protocol only is not checked. REST's `.emptyAs(...)` has no gRPC counterpart and isn't compared.
+Bindings are compared per major version. As AIP-185 has it, the version in a gRPC method's proto package and the
+version in a REST route's path are one major version, and an older version keeps working while a newer one changes
+its contract. So a gRPC method whose package's last segment is `v<N>` (`bookstore.v1`, `bookstore.v2beta1`,
+`bookstore.v1p1beta1`) is compared with the REST routes of major version N (`.version("1")`, `.version("1.2")`), and
+a REST v2 route may differ from a gRPC v1 method. A binding without a version (an unversioned route, or a package
+without a version segment) is compared with every binding of the operation over the other protocol. Two versions over
+one protocol are not compared with each other, and an operation bound over one protocol only is not checked. REST's
+`.emptyAs(...)` has no gRPC counterpart and isn't compared.
+
+A binding that has no binding of its major version over the other protocol (a gRPC v1 method whose only REST routes
+are v2) isn't compared. Startup lists every such binding in one WARN on `io.americanexpress.synapse.core`:
+
+----
+These bindings have no binding of the same major version over the other protocol, so their contract is not compared: [get-book: GET /v2/books/{id}, get-book: bookstore.v1.Bookstore/GetBook]. Bind the same version over both protocols, or ignore this if the version is meant for one protocol only.
+----
 
 A mismatch fails startup with a `SynapseConfigurationException` with one sentence per mismatch, ordered by operation
 name, then declaration:
@@ -549,6 +581,14 @@ The check holds under `spring.main.lazy-initialization=true` too: each plugin ke
 compile while the singletons are created, and a binding mistake fails startup under lazy initialization as it does
 without it. The gRPC filter matches the `@Bean` method's declared type, so it keeps a binding eager only when the
 method declares `GrpcBindings` (see xref:grpc.adoc#_bindings[gRPC bindings]).
+
+Inputs bind alike too: an unsent collection or map is empty over both protocols, never missing, so `@NotEmpty`
+requires at least one item (see xref:rest.adoc#input[REST input binding] and xref:grpc.adoc#mapping[gRPC presence]).
+An unsent required scalar (a non-null string, number, boolean, enum or bytes component) is `must not be null` over
+both protocols, at every depth of the input: a component of a nested record, of a list item or of a map value too.
+Over REST a JSON property the body leaves out or sends as `null` is reported (see xref:rest.adoc#input[REST input
+binding]); over gRPC its field must have presence, or startup fails (see xref:grpc.adoc#mapping[gRPC presence]).
+Both stop reading a request at its 50th violation and answer with those 50, in component order.
 
 == Configuration
 

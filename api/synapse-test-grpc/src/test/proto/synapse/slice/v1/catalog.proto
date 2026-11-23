@@ -37,7 +37,7 @@ service InventoryService {
 }
 
 message GetItemRequest {
-  string id = 1;
+  optional string id = 1;
 }
 
 message Item {
@@ -55,7 +55,7 @@ message PingReply {
 }
 
 message GetStockRequest {
-  string sku = 1;
+  optional string sku = 1;
 }
 
 message Stock {
@@ -64,7 +64,7 @@ message Stock {
 }
 
 message CountItemsRequest {
-  string category = 1;
+  optional string category = 1;
 }
 
 message ItemCount {

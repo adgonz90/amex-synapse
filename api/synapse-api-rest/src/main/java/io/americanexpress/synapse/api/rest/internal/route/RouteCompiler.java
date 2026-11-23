@@ -23,6 +23,7 @@ import jakarta.servlet.DispatcherType;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpMethod;
+import org.springframework.web.accept.SemanticApiVersionParser;
 import org.springframework.web.servlet.function.RequestPredicate;
 import org.springframework.web.servlet.function.RequestPredicates;
 import org.springframework.web.servlet.function.RouterFunction;
@@ -38,6 +39,7 @@ import io.americanexpress.synapse.api.rest.internal.binding.PagingRules;
 import io.americanexpress.synapse.api.rest.internal.binding.RequestBinder;
 import io.americanexpress.synapse.api.rest.internal.binding.RestBindingsAccess;
 import io.americanexpress.synapse.api.rest.internal.binding.RouteDefinition;
+import io.americanexpress.synapse.api.rest.internal.binding.WireNames;
 import io.americanexpress.synapse.api.rest.internal.paging.PagingSettings;
 import io.americanexpress.synapse.api.rest.internal.paging.SortKeys;
 import io.americanexpress.synapse.core.SynapseConfigurationException;
@@ -60,7 +62,8 @@ import io.americanexpress.synapse.core.internal.paging.PageCursors;
  * is the {@link MethodNotAllowedMapping}, after the other handler mappings. Once the routes are checked, it reports a
  * cursor key generated at startup when a route returns {@code PageResult} ({@link PageCursors#reportGeneratedKey}),
  * and registers each declared route's {@code .notFound}, {@code .etag} and {@code .sortable} declarations with core's
- * {@link BindingDeclarations}, which compares them with the other protocols' bindings once every singleton exists.
+ * {@link BindingDeclarations}, with the major version of its {@code .version(...)}, which compares them with the other
+ * protocols' bindings of that version once every singleton exists.
  */
 public final class RouteCompiler {
 
@@ -71,6 +74,9 @@ public final class RouteCompiler {
 
     /** The protocol a route's binding is registered under, as the parity failure names it. */
     private static final String PROTOCOL = "REST";
+
+    /** Reads a route's major version, as the binding rules read its version. */
+    private static final SemanticApiVersionParser VERSION_PARSER = new SemanticApiVersionParser();
 
     private final BindingValidator validator;
 
@@ -123,7 +129,8 @@ public final class RouteCompiler {
         Map<RouteDefinition, OperationHandler> getRoutes = new LinkedHashMap<>();
         for (RouteDefinition route : routes) {
             binder.checkBindable(route);
-            OperationHandler handler = new OperationHandler(route, binder, writer, cursors, paging);
+            OperationHandler handler = new OperationHandler(route, binder, writer, cursors, paging,
+                    WireNames.of(route, binder.mapper(), paging));
             builder.route(predicate(route.method(), route), handler);
             if (HttpMethod.GET.equals(route.method())) {
                 getRoutes.put(route, handler);
@@ -149,9 +156,11 @@ public final class RouteCompiler {
         ResolvedComponent etag = route.conditional().etag();
         PagingRules paging = route.paging();
         SortKeys sortKeys = paging == null ? null : paging.sortKeys();
+        String version = route.version();
         return new BindingDeclaration(PROTOCOL, route.operationName(), route.method().name() + " " + route.path(),
                 (notFound != null ? notFound : SynapseErrors.NOT_FOUND).code(), etag == null ? null : etag.name(),
-                sortKeys == null ? null : Set.copyOf(sortKeys.wireToProperty().values()));
+                sortKeys == null ? null : Set.copyOf(sortKeys.wireToProperty().values()),
+                version == null ? null : VERSION_PARSER.parseVersion(version).getMajor());
     }
 
     /** Sorts the routes by template specificity; the sort is stable, so equally specific routes keep their order. */

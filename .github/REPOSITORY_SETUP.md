@@ -99,8 +99,11 @@ Both rulesets are proposals until the maintainers agree on them. *Rules → Rule
 - [ ] **Branch ruleset for `main`.** Target: the default branch (`main`). Rules:
   - Require a pull request before merging.
   - Require these status checks to pass:
-    - `Verify (JDK 25)`
-    - `Smoke (tests on JDK 21)`
+    - `Verify (JDK 25)` (the only job with this name: it passes only when every module group's job passed, or on a
+      push when `Verify (JDK 25, main)` passed. Don't require `Verify plan`, `Verify (JDK 25, main)` or the
+      `Verify (JDK 25, <group>)` jobs: each is skipped on one of the two events, and a skipped job reports Success)
+    - `Smoke (tests on JDK 21)` (likewise; don't require `Smoke (tests on JDK 21, main)` or the
+      `Smoke (tests on JDK 21, <group>)` jobs)
     - `Conventional Commits title`
     - `Dependency review`
     - `Analyze (java-kotlin)`

@@ -82,6 +82,39 @@
                     <postBuildHookScript>verify</postBuildHookScript>
                     <!-- invoker:install installs the dependencies above, which are test scope (default: runtime). -->
                     <scope>test</scope>
+                    <!-- What the integration-test builds need beyond what this module's own build resolves. invoker:install
+                         resolves each one, with its runtime dependencies, into the main local repository (so CI's cache
+                         holds it) and installs it into it-repo. src/it/settings.xml mirrors every repository to the main
+                         local repository, so a project that needs anything else fails and names it: add it here. The
+                         plugin versions are spring-boot-starter-parent's (what synapse-parent's projects build with). -->
+                    <extraArtifacts>
+                        <extraArtifact>org.springframework.boot:spring-boot-maven-plugin:${spring-boot.version}:maven-plugin</extraArtifact>
+                        <extraArtifact>org.apache.maven.plugins:maven-compiler-plugin:3.15.0:maven-plugin</extraArtifact>
+                        <extraArtifact>org.apache.maven.plugins:maven-surefire-plugin:3.5.6:maven-plugin</extraArtifact>
+                        <extraArtifact>org.apache.maven.plugins:maven-failsafe-plugin:3.5.6:maven-plugin</extraArtifact>
+                        <!-- Surefire's and Failsafe's JUnit provider, which they resolve only when tests run. -->
+                        <extraArtifact>org.apache.maven.surefire:surefire-junit-platform:3.5.6:jar</extraArtifact>
+                        <!-- And the JUnit Platform launcher it resolves, at Boot's JUnit version, outside dependency
+                             management (with jspecify 1.0.0). -->
+                        <extraArtifact>org.junit.platform:junit-platform-launcher:6.0.3:jar</extraArtifact>
+                        <extraArtifact>org.apache.maven.plugins:maven-install-plugin:3.1.4:maven-plugin</extraArtifact>
+                        <extraArtifact>org.apache.maven.plugins:maven-deploy-plugin:3.1.4:maven-plugin</extraArtifact>
+                        <extraArtifact>org.apache.maven.plugins:maven-site-plugin:3.12.1:maven-plugin</extraArtifact>
+                        <extraArtifact>org.apache.maven.plugins:maven-help-plugin:${maven-help-plugin.version}:maven-plugin</extraArtifact>
+                        <!-- banned-junit4-compile: the dependency the build rule must reject. -->
+                        <extraArtifact>junit:junit:4.13.2:jar</extraArtifact>
+                        <!-- The versions Spring Boot's dependency management gives junit's and Testcontainers' dependencies in
+                             those projects (the transitive ones resolved above are the unmanaged versions). -->
+                        <extraArtifact>org.hamcrest:hamcrest-core:3.0:jar</extraArtifact>
+                        <extraArtifact>commons-codec:commons-codec:1.21.0:jar</extraArtifact>
+                        <extraArtifact>org.testcontainers:testcontainers-postgresql:2.0.5:jar</extraArtifact>
+                        <extraArtifact>org.junit.jupiter:junit-jupiter:6.0.3:jar</extraArtifact>
+                        <!-- bom-guava-pin and parent-effective-pom: the guava BOM a consumer imports, grpc-api (which
+                             brings an older guava) and the guava version synapse-bom pins (its CVE pin). -->
+                        <extraArtifact>com.google.guava:guava-bom:33.6.0-jre:pom</extraArtifact>
+                        <extraArtifact>io.grpc:grpc-api:${grpc-java.version}:jar</extraArtifact>
+                        <extraArtifact>com.google.guava:guava:33.7.2-jre:jar</extraArtifact>
+                    </extraArtifacts>
                     <streamLogsOnFailures>true</streamLogsOnFailures>
                 </configuration>
                 <executions>

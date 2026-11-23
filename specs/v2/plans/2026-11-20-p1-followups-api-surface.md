@@ -497,6 +497,18 @@ Read the earlier follow-up plans' auto-configurations first: their beans are in 
 
 ---
 
+## Carried over from the contract follow-up (to decide)
+
+The contract follow-up's final review (2026-11-22) deferred two gRPC items here. This plan's author decides, for each,
+whether it becomes a task or moves to *Not in this plan*.
+
+| # | Item | Today | Cost |
+|---|---|---|---|
+| C1 | The startup check for a `@Nullable` item type (gRPC, and OpenAPI's nullable items) sees record components only. | An operation whose output is itself `List<@Nullable T>` or `PageResult<@Nullable T>` isn't caught at startup: its type is resolved through `ResolvableType`, which has no type-use annotations. A `null` item fails the call at runtime as `INTERNAL` (`holds a null element`), and OpenAPI documents the items non-null. | `List`: about 30 lines and a test, reading the operation class's annotated interfaces and generic superclasses up to `Operation`'s output argument (Spring has no helper). `PageResult<@Nullable T>` also needs the type argument's annotations carried through the type variable, which is read by its own annotations today. |
+| C2 | Allow `List<@Nullable SomeEnum>` over gRPC. | Startup fails for every `@Nullable` item type of a repeated or map field. An enum whose zero value is unspecified could carry the `null` per element, as it already does for a single `@Nullable` enum. | Small: exempt such enum items from the check and read or write the zero value as `null` per element, with tests. It widens what gRPC accepts, so it needs the maintainer's yes. |
+
+---
+
 ## Not in this plan
 
 | Item | Where |

@@ -32,6 +32,7 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.grpc.StatusException;
+import io.grpc.StatusRuntimeException;
 import io.micrometer.core.instrument.binder.grpc.GrpcServerObservationContext;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -70,7 +71,11 @@ import io.americanexpress.synapse.core.observability.SynapseObservations;
  * <li>closes the call inside the call's gRPC {@link Context} when it is closed on a thread where that context is not
  * attached. A hand-written service may complete its call from a thread of its own (a future's callback, a streaming
  * producer), and Spring gRPC's exception handlers, which run when the call is closed, find the call's
- * {@link GrpcCallState} (its correlation id and locale) only through that context.</li>
+ * {@link GrpcCallState} (its correlation id and locale) only through that context;</li>
+ * <li>rewrites a status that anything inside it closes the call with (the service, or a server interceptor ordered
+ * after this one), other than OK, so that it keeps only its code unless {@code synapse.errors.include-detail} is
+ * {@code true} and carries Synapse's {@code ErrorInfo} ({@link GrpcStatusWriter#writeForeign}). {@code UNKNOWN} with a
+ * cause that isn't a status ({@code onError} with an exception) is left to the exception handlers.</li>
  * </ol>
  * The permit is released once, when the call completes or is cancelled, or when starting the call throws. grpc-java
  * delivers {@code onCancel} only after the callback running the operation returns, so a cancelled or expired call
@@ -110,7 +115,7 @@ public final class SynapseGrpcContextInterceptor implements ServerInterceptor {
      *     read ({@code synapse.api.grpc.context.metadata})
      * @param deadlines the policy that turns the gRPC deadline into the context's deadline
      * @param limit the concurrency limit
-     * @param writer writes the status of a rejected call
+     * @param writer writes the status of a rejected call, and rewrites a status the service closes its call with
      * @param observations the registry whose current observation (the gRPC server observation) is tagged with the
      *     correlation id
      */
@@ -169,7 +174,8 @@ public final class SynapseGrpcContextInterceptor implements ServerInterceptor {
                 // The principal comes from the verified credential, which this edge does not read yet.
                 InboundContext resolved = new InboundContext(correlationId, context.attributes(), null, locale,
                         deadline);
-                ServerCall<ReqT, RespT> closedInContext = new ContextClosingCall<>(call, Context.current(), state);
+                ServerCall<ReqT, RespT> closedInContext = new ContextClosingCall<>(call, Context.current(), state,
+                        writer);
                 return new ContextListener<>(next.startCall(closedInContext, headers), binder, resolved, permit);
             } catch (RuntimeException | Error ex) {
                 if (permit != null) {
@@ -248,6 +254,21 @@ public final class SynapseGrpcContextInterceptor implements ServerInterceptor {
     /**
      * Closes the call inside the call's gRPC context when it is closed on a thread where that context is not attached.
      * On the call's own threads (every callback, and so every bound method) it closes the call directly.
+     * <p>
+     * Only what runs behind this interceptor closes the call through here: a hand-written service, with
+     * {@code onCompleted} or {@code onError}; a server interceptor ordered after this one ({@link #ORDER}), which
+     * includes any interceptor without an order; and grpc-java's own {@code ServerCalls} ({@code INTERNAL} for a
+     * protocol misuse such as a half-close without a request). Synapse's own statuses close the outer call (Spring
+     * gRPC's exception handling call answers a thrown failure, and the concurrency limit rejects a call before it
+     * starts; an unknown method never reaches the interceptors). So every non-OK status that reaches here is not
+     * Synapse's, typically a downstream call's failure a service forwards, and is rewritten by
+     * {@link GrpcStatusWriter#writeForeign} (decision 24): an inner interceptor's status keeps only its code too, while
+     * one ordered before this interceptor closes the outer call and keeps its description. The exception is
+     * {@code UNKNOWN} with a cause that isn't a status: that is {@code onError} with an exception, whose cause Spring
+     * gRPC's exception handling call hands to the exception handlers; its trailers are kept only under include-detail
+     * ({@link GrpcStatusWriter#foreignTrailers}), since Spring keeps those trailers next to the handler's. Spring would
+     * hand the exception handlers the cause of any {@code UNKNOWN}; rewriting one whose cause is a status here, with
+     * the code {@code UNKNOWN}, is Synapse's choice, so that Synapse's handler never unwraps the inner code.
      */
     private static final class ContextClosingCall<ReqT, RespT>
             extends
@@ -257,19 +278,48 @@ public final class SynapseGrpcContextInterceptor implements ServerInterceptor {
 
         private final GrpcCallState state;
 
-        ContextClosingCall(ServerCall<ReqT, RespT> delegate, Context context, GrpcCallState state) {
+        private final GrpcStatusWriter writer;
+
+        ContextClosingCall(ServerCall<ReqT, RespT> delegate, Context context, GrpcCallState state,
+                GrpcStatusWriter writer) {
             super(delegate);
             this.context = context;
             this.state = state;
+            this.writer = writer;
         }
 
         @Override
         public void close(Status status, Metadata trailers) {
             if (GrpcCallState.current() == state) {
-                super.close(status, trailers);
+                closeAsTheService(status, trailers);
             } else {
-                context.run(() -> super.close(status, trailers));
+                context.run(() -> closeAsTheService(status, trailers));
             }
+        }
+
+        private void closeAsTheService(Status status, Metadata trailers) {
+            if (status.isOk()) {
+                super.close(status, trailers);
+                return;
+            }
+            if (isForTheHandlers(status)) {
+                // Spring gRPC's exception handling call merges the handler's trailers into these and keeps them, so
+                // they follow the same include-detail rule as a rewritten status's.
+                super.close(status, writer.foreignTrailers(trailers));
+                return;
+            }
+            StatusException rewritten = writer.writeForeign(status, trailers, state);
+            Metadata written = rewritten.getTrailers();
+            // Never null: StatusProto.toStatusException(status, metadata) always carries the trailers it was given.
+            // StatusException declares them nullable, so the check is for NullAway only.
+            super.close(rewritten.getStatus(), written == null ? new Metadata() : written);
+        }
+
+        /** {@code UNKNOWN} with a cause that isn't a status, which Spring gRPC hands to the exception handlers. */
+        private static boolean isForTheHandlers(Status status) {
+            Throwable cause = status.getCause();
+            return status.getCode() == Status.Code.UNKNOWN && cause != null
+                    && !(cause instanceof StatusException) && !(cause instanceof StatusRuntimeException);
         }
     }
 

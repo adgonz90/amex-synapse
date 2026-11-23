@@ -15,7 +15,9 @@
 // The gRPC API of the inventory. Each method is bound to one operation in InventoryGrpcConfiguration. Synapse maps
 // each message field to the record component with the same name (lead_time to leadTime); the binding maps the rest
 // with .map(...): sku_code (the component is sku) and the members of oneof price. A nullable component needs a field
-// with presence: a message, a wrapper type, a oneof member or an enum whose zero value is unspecified.
+// with presence: a message, a wrapper type, a oneof member or an enum whose zero value is unspecified. So does a
+// required scalar of a request, at any depth, hence optional on those fields (in Location, Money and Discount too):
+// unsent, it is "must not be null", not "" or 0.
 syntax = "proto3";
 
 package synapse.samples.inventory.v1;
@@ -83,34 +85,34 @@ message Item {
 }
 
 message Location {
-  string warehouse = 1;
-  string aisle = 2;
-  int32 bin = 3;
+  optional string warehouse = 1;
+  optional string aisle = 2;
+  optional int32 bin = 3;
 }
 
 message Money {
   // An ISO 4217 code, such as USD.
-  string currency_code = 1;
+  optional string currency_code = 1;
   // A decimal number, such as "19.99".
-  string amount = 2;
+  optional string amount = 2;
 }
 
 message Discount {
   Money list_price = 1;
   // 1 to 99.
-  int32 percent_off = 2;
+  optional int32 percent_off = 2;
 }
 
 message GetItemRequest {
-  string id = 1;
+  optional string id = 1;
 }
 
 message CreateItemRequest {
-  string sku_code = 1;
+  optional string sku_code = 1;
   repeated string tags = 2;
   map<string, string> attributes = 3;
   Location location = 4;
-  int32 quantity = 5;
+  optional int32 quantity = 5;
   google.protobuf.Duration lead_time = 6;
   google.protobuf.Int32Value reorder_level = 7;
   oneof price {
@@ -141,11 +143,11 @@ message ListItemsResponse {
 }
 
 message AdjustStockRequest {
-  string id = 1;
+  optional string id = 1;
   // Units to add (positive) or remove (negative).
-  int32 delta = 2;
+  optional int32 delta = 2;
 }
 
 message DeleteItemRequest {
-  string id = 1;
+  optional string id = 1;
 }

@@ -16,6 +16,7 @@ package io.americanexpress.synapse.api.rest.internal.binding;
 import java.util.Map;
 import java.util.Optional;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreType;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -29,6 +30,7 @@ import tools.jackson.databind.annotation.JsonDeserialize;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.AuditedBookRequest;
+import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.CustomBookRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.GuardedRequest;
 import io.americanexpress.synapse.api.rest.internal.binding.fixture.BindingFixtures.PublishBookRequest;
 
@@ -214,5 +216,74 @@ class JsonNamesTest {
     void keepsComponentNamesWithoutAStrategy() {
         assertThat(JsonNames.of(JsonMapper.builder().build(), PublishBookRequest.class))
                 .containsExactly(entry("publishedOn", "publishedOn"), entry("isbn", "isbn13"));
+    }
+
+    @Test
+    void readNamesWhatTheMapperReadsForABean() {
+        JsonMapper snakeCase = JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build();
+
+        // Settable properties only, by their primary JSON name: the alias and the getter-only property are left out.
+        assertThat(JsonNames.read(snakeCase, ShelfBean.class))
+                .containsOnly(entry("countryCode", "country_code"), entry("isbn", "isbn13"));
+        assertThat(JsonNames.read(snakeCase, String.class)).isEmpty();
+        // A creator parameter is read too.
+        assertThat(JsonNames.read(snakeCase, CreatedBean.class)).containsOnly(entry("countryCode", "country_code"));
+    }
+
+    @Test
+    void readOfARecordIsOf() {
+        JsonMapper snakeCase = JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build();
+
+        assertThat(JsonNames.read(snakeCase, PublishBookRequest.class))
+                .isEqualTo(JsonNames.of(snakeCase, PublishBookRequest.class))
+                .containsExactly(entry("publishedOn", "published_on"), entry("isbn", "isbn13"));
+        assertThat(JsonNames.read(snakeCase, GuardedRequest.class)).containsExactly(entry("name", "name"));
+        // A record with its own deserializer isn't read property by property.
+        assertThat(JsonNames.read(snakeCase, CustomBookRequest.class)).isEmpty();
+    }
+
+    /** A bean Jackson reads through its creator. */
+    static final class CreatedBean {
+
+        private final String countryCode;
+
+        @JsonCreator(mode = JsonCreator.Mode.PROPERTIES)
+        CreatedBean(String countryCode) {
+            this.countryCode = countryCode;
+        }
+
+        public String getCountryCode() {
+            return countryCode;
+        }
+    }
+
+    /** A bean Jackson reads through its setters. */
+    static final class ShelfBean {
+
+        private @Nullable String countryCode;
+
+        private @Nullable String isbn;
+
+        public @Nullable String getCountryCode() {
+            return countryCode;
+        }
+
+        @JsonAlias("cc")
+        public void setCountryCode(@Nullable String countryCode) {
+            this.countryCode = countryCode;
+        }
+
+        @JsonProperty("isbn13")
+        public void setIsbn(@Nullable String isbn) {
+            this.isbn = isbn;
+        }
+
+        public @Nullable String getIsbn() {
+            return isbn;
+        }
+
+        public String getComputed() {
+            return "computed";
+        }
     }
 }

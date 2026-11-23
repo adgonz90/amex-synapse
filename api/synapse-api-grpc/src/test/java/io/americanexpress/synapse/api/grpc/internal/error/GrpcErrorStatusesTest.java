@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.api.grpc.internal.error;
 
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -184,6 +185,34 @@ class GrpcErrorStatusesTest {
                         ex -> assertThat(ex.description())
                                 .isEqualTo("synapse.api.grpc.operations.get-book.errors.status.[X] is OK, which is not"
                                         + " an error status."));
+    }
+
+    @Test
+    void inverseTableMapsEveryCode() {
+        // C12: the code a hand-written service's own status maps back to.
+        Map<Status.Code, ErrorDetails> expected = new EnumMap<>(Status.Code.class);
+        expected.put(Status.Code.OK, SynapseErrors.INTERNAL);
+        expected.put(Status.Code.CANCELLED, SynapseErrors.INTERNAL);
+        expected.put(Status.Code.UNKNOWN, SynapseErrors.INTERNAL);
+        expected.put(Status.Code.INVALID_ARGUMENT, SynapseErrors.VALIDATION_FAILED);
+        expected.put(Status.Code.DEADLINE_EXCEEDED, SynapseErrors.DEADLINE_EXCEEDED);
+        expected.put(Status.Code.NOT_FOUND, SynapseErrors.NOT_FOUND);
+        expected.put(Status.Code.ALREADY_EXISTS, SynapseErrors.ALREADY_EXISTS);
+        expected.put(Status.Code.PERMISSION_DENIED, SynapseErrors.FORBIDDEN);
+        expected.put(Status.Code.RESOURCE_EXHAUSTED, SynapseErrors.RATE_LIMITED);
+        expected.put(Status.Code.FAILED_PRECONDITION, SynapseErrors.PRECONDITION_FAILED);
+        expected.put(Status.Code.ABORTED, SynapseErrors.CONFLICT);
+        expected.put(Status.Code.OUT_OF_RANGE, SynapseErrors.VALIDATION_FAILED);
+        expected.put(Status.Code.UNIMPLEMENTED, SynapseErrors.INTERNAL);
+        expected.put(Status.Code.INTERNAL, SynapseErrors.INTERNAL);
+        expected.put(Status.Code.UNAVAILABLE, SynapseErrors.UNAVAILABLE);
+        expected.put(Status.Code.DATA_LOSS, SynapseErrors.INTERNAL);
+        expected.put(Status.Code.UNAUTHENTICATED, SynapseErrors.UNAUTHENTICATED);
+
+        assertThat(expected.keySet()).containsExactly(Status.Code.values());
+        for (Status.Code code : Status.Code.values()) {
+            assertThat(GrpcErrorStatuses.codeFor(code)).as(code.name()).isSameAs(expected.get(code));
+        }
     }
 
     @Test

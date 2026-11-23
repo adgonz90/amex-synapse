@@ -13,6 +13,7 @@
  */
 package io.americanexpress.synapse.api.rest.internal.error;
 
+import java.util.Map;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,7 +24,6 @@ import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 import io.americanexpress.synapse.api.rest.RestErrors;
-import io.americanexpress.synapse.core.error.ErrorDetails;
 import io.americanexpress.synapse.core.error.SynapseErrors;
 import io.americanexpress.synapse.core.error.SynapseException;
 
@@ -31,7 +31,8 @@ import io.americanexpress.synapse.core.error.SynapseException;
  * Handles the servlet container's error dispatch (errors raised outside Spring MVC, such as in a filter) and answers
  * with a problem response instead of Boot's error page. It replaces Boot's {@code BasicErrorController}. The
  * dispatch's exception is classified as the exception resolver classifies it ({@link RestExceptionClassifier}), so it
- * gets the same code, status and log level; without an exception, the error follows the container's status.
+ * gets the same code, status and log level; without an exception, the error follows the container's status, and a
+ * status outside Synapse's table is kept ({@link StatusErrors}).
  * <p>
  * It isn't final, as Boot's isn't: an application's aspect on every {@code @Controller} matches it too, and Spring
  * proxies it by subclassing.
@@ -60,7 +61,7 @@ public class SynapseErrorController implements ErrorController {
     @RequestMapping
     public void error(HttpServletRequest request, HttpServletResponse response) {
         if (request.getAttribute(RequestDispatcher.ERROR_EXCEPTION) instanceof Throwable failure) {
-            SynapseException error = RestExceptionClassifier.classify(request, failure);
+            SynapseException error = RestExceptionClassifier.classify(request, failure, writer.mapper());
             if (failure instanceof SynapseException && writer.statusOf(request, error) >= 500) {
                 // A SynapseException that reaches the error dispatch was thrown outside the operation pipeline, so
                 // nothing logged it yet.
@@ -69,18 +70,22 @@ public class SynapseErrorController implements ErrorController {
             writer.write(request, response, error);
             return;
         }
-        writer.write(request, response, new SynapseException(errorFor(request)));
+        writer.write(request, response, errorFor(request));
     }
 
-    private static ErrorDetails errorFor(HttpServletRequest request) {
+    /**
+     * The error for the container's status: the table's code, a 4xx or 5xx outside the table kept as
+     * {@code CLIENT_ERROR} or {@code SERVER_ERROR}, and {@code INTERNAL} for 500 or a status that is not an error.
+     */
+    private static SynapseException errorFor(HttpServletRequest request) {
         Object status = request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE);
         if (status == null && request.getDispatcherType() != DispatcherType.ERROR) {
             // A direct request to the error path, not a container error dispatch.
-            return RestErrors.ROUTE_NOT_FOUND;
+            return new SynapseException(RestErrors.ROUTE_NOT_FOUND);
         }
-        if (!(status instanceof Integer code)) {
-            return SynapseErrors.INTERNAL;
-        }
-        return StatusErrors.forStatus(code, true);
+        KeptStatusException kept = status instanceof Integer code
+                ? StatusErrors.keep(code, true, Map.of(), null, null)
+                : null;
+        return kept == null ? new SynapseException(SynapseErrors.INTERNAL) : kept;
     }
 }
